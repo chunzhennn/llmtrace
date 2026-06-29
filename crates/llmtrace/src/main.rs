@@ -20,7 +20,10 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use axum::Router;
-use axum::middleware;
+use axum::body::Body;
+use axum::http::{HeaderMap, HeaderValue, Request, header};
+use axum::middleware::{self, Next};
+use axum::response::Response;
 use clap::Parser;
 use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
@@ -143,16 +146,75 @@ fn build_router(state: AppState) -> Router {
         state.clone(),
         auth::require_auth,
     ));
-
-    Router::new()
-        .merge(health::router())
+    let private_routes = Router::new()
         .nest("/api/auth", auth::router())
         .nest("/api", protected_api)
         .route("/", axum::routing::get(ui::redirect_to_ui))
         .route("/ui", axum::routing::get(ui::serve_ui))
         .route("/ui/", axum::routing::get(ui::serve_ui))
         .route("/ui/{*path}", axum::routing::get(ui::serve_ui))
+        .layer(middleware::from_fn(private_response_headers));
+
+    Router::new()
+        .merge(health::router())
+        .merge(private_routes)
         .fallback(proxy::proxy)
         .with_state(state)
         .layer(TraceLayer::new_for_http())
+}
+
+async fn private_response_headers(request: Request<Body>, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    set_private_response_headers(response.headers_mut());
+    response
+}
+
+fn set_private_response_headers(headers: &mut HeaderMap) {
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    headers.insert(header::EXPIRES, HeaderValue::from_static("0"));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_response_headers_disable_caching_and_browser_sniffing() {
+        let mut headers = HeaderMap::new();
+
+        set_private_response_headers(&mut headers);
+
+        assert_eq!(
+            header_value(&headers, header::CACHE_CONTROL),
+            Some("no-store")
+        );
+        assert_eq!(header_value(&headers, header::PRAGMA), Some("no-cache"));
+        assert_eq!(header_value(&headers, header::EXPIRES), Some("0"));
+        assert_eq!(
+            header_value(&headers, header::X_CONTENT_TYPE_OPTIONS),
+            Some("nosniff")
+        );
+        assert_eq!(
+            header_value(&headers, header::REFERRER_POLICY),
+            Some("no-referrer")
+        );
+        assert_eq!(
+            header_value(&headers, header::X_FRAME_OPTIONS),
+            Some("DENY")
+        );
+    }
+
+    fn header_value(headers: &HeaderMap, name: axum::http::HeaderName) -> Option<&str> {
+        headers.get(name).and_then(|value| value.to_str().ok())
+    }
 }
