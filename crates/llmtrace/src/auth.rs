@@ -18,6 +18,7 @@ use sqlx::Row;
 use std::net::SocketAddr;
 use std::time::Duration as StdDuration;
 
+use crate::config::OAuthConfig;
 use crate::login_throttle::LoginThrottleDecision;
 use crate::state::AppState;
 use crate::types::LoginMethod;
@@ -342,6 +343,7 @@ async fn finish_oauth(state: &AppState, code: &str) -> anyhow::Result<MeResponse
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("oauth userinfo missing email"))?
         .to_ascii_lowercase();
+    enforce_oauth_email_verified(oauth, &userinfo)?;
     enforce_oauth_allowlist(oauth, &email)?;
     let display_name = userinfo
         .get("name")
@@ -369,7 +371,19 @@ async fn oauth_metadata(state: &AppState) -> anyhow::Result<OidcMetadata> {
     }
 }
 
-fn enforce_oauth_allowlist(oauth: &crate::config::OAuthConfig, email: &str) -> anyhow::Result<()> {
+fn enforce_oauth_email_verified(oauth: &OAuthConfig, userinfo: &Value) -> anyhow::Result<()> {
+    if !oauth.require_email_verified {
+        return Ok(());
+    }
+
+    match userinfo.get("email_verified").and_then(Value::as_bool) {
+        Some(true) => Ok(()),
+        Some(false) => anyhow::bail!("oauth email is not verified"),
+        None => anyhow::bail!("oauth userinfo missing true email_verified claim"),
+    }
+}
+
+fn enforce_oauth_allowlist(oauth: &OAuthConfig, email: &str) -> anyhow::Result<()> {
     if !oauth.allowed_emails.is_empty()
         && oauth
             .allowed_emails
@@ -562,4 +576,48 @@ fn server_error(error: impl std::fmt::Display) -> Response {
         Json(json!({"error": "internal server error"})),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oauth_email_verification_accepts_true_claim() {
+        let oauth = OAuthConfig::default();
+
+        enforce_oauth_email_verified(&oauth, &json!({"email_verified": true})).unwrap();
+    }
+
+    #[test]
+    fn oauth_email_verification_rejects_false_claim() {
+        let oauth = OAuthConfig::default();
+
+        let error = enforce_oauth_email_verified(&oauth, &json!({"email_verified": false}))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("oauth email is not verified"));
+    }
+
+    #[test]
+    fn oauth_email_verification_rejects_missing_claim_when_required() {
+        let oauth = OAuthConfig::default();
+
+        let error = enforce_oauth_email_verified(&oauth, &json!({}))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("missing true email_verified"));
+    }
+
+    #[test]
+    fn oauth_email_verification_can_be_disabled_outside_production() {
+        let oauth = OAuthConfig {
+            require_email_verified: false,
+            ..OAuthConfig::default()
+        };
+
+        enforce_oauth_email_verified(&oauth, &json!({})).unwrap();
+    }
 }

@@ -92,7 +92,7 @@ pub struct LocalAdminConfig {
     pub password_hash: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct OAuthConfig {
     pub enabled: bool,
@@ -100,6 +100,7 @@ pub struct OAuthConfig {
     pub client_id: String,
     pub client_secret: String,
     pub redirect_url: String,
+    pub require_email_verified: bool,
     pub allowed_emails: Vec<String>,
     pub allowed_domains: Vec<String>,
 }
@@ -644,6 +645,12 @@ impl Config {
                     .to_string(),
             );
         }
+        if self.server.deployment.is_production() && !oauth.require_email_verified {
+            errors.push(
+                "auth.oauth.require_email_verified must be true when OAuth is enabled in production"
+                    .to_string(),
+            );
+        }
     }
 
     fn validate_redaction(&self, errors: &mut Vec<String>) {
@@ -901,6 +908,21 @@ impl Default for LocalAdminConfig {
     }
 }
 
+impl Default for OAuthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            issuer_url: String::new(),
+            client_id: String::new(),
+            client_secret: String::new(),
+            redirect_url: String::new(),
+            require_email_verified: true,
+            allowed_emails: Vec::new(),
+            allowed_domains: Vec::new(),
+        }
+    }
+}
+
 impl Default for RedactionConfig {
     fn default() -> Self {
         Self {
@@ -1020,6 +1042,26 @@ mod tests {
         config.auth.oauth.allowed_domains = vec!["example.com".to_string()];
 
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn production_config_requires_verified_oauth_email() {
+        let mut config = production_ready_config();
+        config.auth.oauth.enabled = true;
+        config.auth.oauth.issuer_url = "https://issuer.example.com".to_string();
+        config.auth.oauth.client_id = "client".to_string();
+        config.auth.oauth.client_secret = "secret".to_string();
+        config.auth.oauth.allowed_domains = vec!["example.com".to_string()];
+        config.auth.oauth.require_email_verified = false;
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("auth.oauth.require_email_verified must be true"));
+    }
+
+    #[test]
+    fn oauth_config_requires_verified_email_by_default() {
+        assert!(OAuthConfig::default().require_email_verified);
     }
 
     #[test]

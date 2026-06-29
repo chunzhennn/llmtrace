@@ -59,6 +59,8 @@ issuer_url = ""
 client_id = ""
 client_secret = ""
 redirect_url = ""
+# Production mode requires this to stay true before email/domain allowlists are applied.
+require_email_verified = true
 allowed_emails = []
 allowed_domains = []
 
