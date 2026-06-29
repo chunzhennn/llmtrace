@@ -61,8 +61,19 @@ pub struct StorageConfig {
 pub struct AuthConfig {
     pub cookie_secure: bool,
     pub session_ttl_hours: i64,
+    pub login_rate_limit: LoginRateLimitConfig,
     pub local_admin: LocalAdminConfig,
     pub oauth: OAuthConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct LoginRateLimitConfig {
+    pub enabled: bool,
+    pub max_failures: u32,
+    pub window_secs: u64,
+    pub lockout_secs: u64,
+    pub max_tracked_entries: usize,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -252,6 +263,26 @@ impl Config {
         if let Ok(value) = std::env::var("LLMTRACE_AUTH_COOKIE_SECURE") {
             config.auth.cookie_secure = parse_bool_env("LLMTRACE_AUTH_COOKIE_SECURE", &value)?;
         }
+        if let Ok(value) = std::env::var("LLMTRACE_LOGIN_RATE_LIMIT_ENABLED") {
+            config.auth.login_rate_limit.enabled =
+                parse_bool_env("LLMTRACE_LOGIN_RATE_LIMIT_ENABLED", &value)?;
+        }
+        if let Ok(value) = std::env::var("LLMTRACE_LOGIN_RATE_LIMIT_MAX_FAILURES") {
+            config.auth.login_rate_limit.max_failures =
+                parse_u32_env("LLMTRACE_LOGIN_RATE_LIMIT_MAX_FAILURES", &value)?;
+        }
+        if let Ok(value) = std::env::var("LLMTRACE_LOGIN_RATE_LIMIT_WINDOW_SECS") {
+            config.auth.login_rate_limit.window_secs =
+                parse_u64_env("LLMTRACE_LOGIN_RATE_LIMIT_WINDOW_SECS", &value)?;
+        }
+        if let Ok(value) = std::env::var("LLMTRACE_LOGIN_RATE_LIMIT_LOCKOUT_SECS") {
+            config.auth.login_rate_limit.lockout_secs =
+                parse_u64_env("LLMTRACE_LOGIN_RATE_LIMIT_LOCKOUT_SECS", &value)?;
+        }
+        if let Ok(value) = std::env::var("LLMTRACE_LOGIN_RATE_LIMIT_MAX_TRACKED_ENTRIES") {
+            config.auth.login_rate_limit.max_tracked_entries =
+                parse_usize_env("LLMTRACE_LOGIN_RATE_LIMIT_MAX_TRACKED_ENTRIES", &value)?;
+        }
         if let Ok(value) = std::env::var("LLMTRACE_ADMIN_USERNAME") {
             config.auth.local_admin.username = value;
         }
@@ -427,6 +458,8 @@ impl Config {
             ));
         }
 
+        self.validate_login_rate_limit(errors);
+
         if self.server.deployment.is_production() {
             if !self.auth.cookie_secure {
                 errors.push(
@@ -446,9 +479,45 @@ impl Config {
                         .to_string(),
                 );
             }
+            if !self.auth.login_rate_limit.enabled {
+                errors.push(
+                    "auth.login_rate_limit.enabled must be true when server.deployment is production"
+                        .to_string(),
+                );
+            }
         }
 
         self.validate_oauth(errors);
+    }
+
+    fn validate_login_rate_limit(&self, errors: &mut Vec<String>) {
+        let rate_limit = &self.auth.login_rate_limit;
+        if !rate_limit.enabled {
+            return;
+        }
+        if rate_limit.max_failures == 0 {
+            errors.push(
+                "auth.login_rate_limit.max_failures must be greater than 0 when enabled"
+                    .to_string(),
+            );
+        }
+        if rate_limit.window_secs == 0 {
+            errors.push(
+                "auth.login_rate_limit.window_secs must be greater than 0 when enabled".to_string(),
+            );
+        }
+        if rate_limit.lockout_secs == 0 {
+            errors.push(
+                "auth.login_rate_limit.lockout_secs must be greater than 0 when enabled"
+                    .to_string(),
+            );
+        }
+        if rate_limit.max_tracked_entries == 0 {
+            errors.push(
+                "auth.login_rate_limit.max_tracked_entries must be greater than 0 when enabled"
+                    .to_string(),
+            );
+        }
     }
 
     fn validate_oauth(&self, errors: &mut Vec<String>) {
@@ -647,6 +716,24 @@ fn parse_bool_env(name: &str, value: &str) -> anyhow::Result<bool> {
     }
 }
 
+fn parse_u32_env(name: &str, value: &str) -> anyhow::Result<u32> {
+    value
+        .parse()
+        .with_context(|| format!("{name} must be an unsigned integer"))
+}
+
+fn parse_u64_env(name: &str, value: &str) -> anyhow::Result<u64> {
+    value
+        .parse()
+        .with_context(|| format!("{name} must be an unsigned integer"))
+}
+
+fn parse_usize_env(name: &str, value: &str) -> anyhow::Result<usize> {
+    value
+        .parse()
+        .with_context(|| format!("{name} must be an unsigned integer"))
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -686,8 +773,21 @@ impl Default for AuthConfig {
         Self {
             cookie_secure: false,
             session_ttl_hours: 24,
+            login_rate_limit: LoginRateLimitConfig::default(),
             local_admin: LocalAdminConfig::default(),
             oauth: OAuthConfig::default(),
+        }
+    }
+}
+
+impl Default for LoginRateLimitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_failures: 5,
+            window_secs: 300,
+            lockout_secs: 900,
+            max_tracked_entries: 4096,
         }
     }
 }
@@ -755,6 +855,39 @@ mod tests {
         assert!(error.contains("auth.cookie_secure must be true"));
         assert!(error.contains("auth.local_admin.password must not be used"));
         assert!(error.contains("redaction.body_redaction must be drop or json_secrets"));
+    }
+
+    #[test]
+    fn production_config_requires_login_rate_limit() {
+        let mut config = Config::default();
+        config.server.deployment = DeploymentMode::Production;
+        config.server.public_url = "https://llmtrace.example.com".to_string();
+        config.proxy.allow_upstreams = vec!["api.openai.com".to_string()];
+        config.auth.cookie_secure = true;
+        config.auth.local_admin.password = None;
+        config.auth.local_admin.password_hash = Some(VALID_ARGON2_HASH.to_string());
+        config.auth.login_rate_limit.enabled = false;
+        config.redaction.body_redaction = BodyRedaction::JsonSecrets;
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("auth.login_rate_limit.enabled must be true"));
+    }
+
+    #[test]
+    fn validation_rejects_invalid_login_rate_limit_bounds() {
+        let mut config = Config::default();
+        config.auth.login_rate_limit.max_failures = 0;
+        config.auth.login_rate_limit.window_secs = 0;
+        config.auth.login_rate_limit.lockout_secs = 0;
+        config.auth.login_rate_limit.max_tracked_entries = 0;
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("auth.login_rate_limit.max_failures must be greater than 0"));
+        assert!(error.contains("auth.login_rate_limit.window_secs must be greater than 0"));
+        assert!(error.contains("auth.login_rate_limit.lockout_secs must be greater than 0"));
+        assert!(error.contains("auth.login_rate_limit.max_tracked_entries must be greater than 0"));
     }
 
     #[test]

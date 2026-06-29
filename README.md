@@ -32,6 +32,7 @@ Set `server.deployment = "production"` to make startup fail fast on insecure or 
 - `server.public_url` uses `https`.
 - `proxy.allow_upstreams` is non-empty, so the service cannot run as an unrestricted open proxy.
 - `auth.cookie_secure = true`.
+- `auth.login_rate_limit.enabled = true`.
 - `auth.local_admin.password_hash` is set, and plaintext `auth.local_admin.password` is not set.
 - `redaction.body_redaction` is `drop` or `json_secrets`.
 - When OAuth is enabled, `auth.oauth.allowed_emails` or `auth.oauth.allowed_domains` is configured.
@@ -52,6 +53,12 @@ allow_upstreams = ["api.openai.com"]
 cookie_secure = true
 session_ttl_hours = 24
 
+[auth.login_rate_limit]
+enabled = true
+max_failures = 5
+window_secs = 300
+lockout_secs = 900
+
 [auth.local_admin]
 username = "admin"
 password_hash = "$argon2id$v=19$m=19456,t=2,p=1$..."
@@ -60,7 +67,9 @@ password_hash = "$argon2id$v=19$m=19456,t=2,p=1$..."
 body_redaction = "json_secrets"
 ```
 
-Useful environment overrides include `LLMTRACE_DEPLOYMENT`, `LLMTRACE_PUBLIC_URL`, `LLMTRACE_LISTEN`, `DATABASE_URL`, `LLMTRACE_DEFAULT_UPSTREAM`, `LLMTRACE_AUTH_COOKIE_SECURE`, `LLMTRACE_ADMIN_USERNAME`, `LLMTRACE_ADMIN_PASSWORD`, and `LLMTRACE_ADMIN_PASSWORD_HASH`.
+Local admin login failures are throttled in memory per username and source IP. The default allows 5 failures in 300 seconds, then returns `429 Too Many Requests` with `Retry-After` for 900 seconds. This protects a single process and records `login_throttled` audit events, but production deployments with multiple replicas or internet exposure should also enforce rate limits at the edge.
+
+Useful environment overrides include `LLMTRACE_DEPLOYMENT`, `LLMTRACE_PUBLIC_URL`, `LLMTRACE_LISTEN`, `DATABASE_URL`, `LLMTRACE_DEFAULT_UPSTREAM`, `LLMTRACE_AUTH_COOKIE_SECURE`, `LLMTRACE_LOGIN_RATE_LIMIT_ENABLED`, `LLMTRACE_LOGIN_RATE_LIMIT_MAX_FAILURES`, `LLMTRACE_LOGIN_RATE_LIMIT_WINDOW_SECS`, `LLMTRACE_LOGIN_RATE_LIMIT_LOCKOUT_SECS`, `LLMTRACE_LOGIN_RATE_LIMIT_MAX_TRACKED_ENTRIES`, `LLMTRACE_ADMIN_USERNAME`, `LLMTRACE_ADMIN_PASSWORD`, and `LLMTRACE_ADMIN_PASSWORD_HASH`.
 
 ## Upstream allowlist
 

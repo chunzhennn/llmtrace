@@ -2,6 +2,7 @@ mod api;
 mod auth;
 mod config;
 mod health;
+mod login_throttle;
 mod parsers;
 mod plugins;
 mod proxy;
@@ -84,10 +85,13 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("failed to bind {addr}"))?;
 
     tracing::info!(%addr, "llmtrace listening");
-    axum::serve(listener, app.into_make_service())
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("server failed")?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("server failed")?;
 
     // Drop every recorder handle so the pipeline observes a closed channel, then drain it.
     drop(state);

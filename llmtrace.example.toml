@@ -26,6 +26,16 @@ trace_worker_count = 4
 cookie_secure = false
 session_ttl_hours = 24
 
+[auth.login_rate_limit]
+# Production mode requires this to stay enabled. Limits are tracked in memory
+# per username and source IP, so keep an edge/WAF rate limit for multi-instance
+# or internet-facing deployments.
+enabled = true
+max_failures = 5
+window_secs = 300
+lockout_secs = 900
+max_tracked_entries = 4096
+
 [auth.local_admin]
 username = "admin"
 # For development only. Prefer password_hash in production.

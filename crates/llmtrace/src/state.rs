@@ -6,6 +6,7 @@ use reqwest::Client;
 use sqlx::PgPool;
 
 use crate::config::{Config, UpstreamAllowlist};
+use crate::login_throttle::LoginThrottle;
 use crate::plugins::PluginManager;
 use crate::trace::TraceRecorder;
 
@@ -17,6 +18,7 @@ pub struct AppState {
     pub plugins: Arc<PluginManager>,
     pub traces: TraceRecorder,
     pub upstream_allowlist: UpstreamAllowlist,
+    pub login_throttle: LoginThrottle,
 }
 
 impl AppState {
@@ -37,6 +39,7 @@ impl AppState {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .context("failed to build http client")?;
+        let login_throttle = LoginThrottle::new(&config.auth.login_rate_limit);
 
         Ok(Self {
             config: Arc::new(config),
@@ -45,6 +48,7 @@ impl AppState {
             plugins,
             traces,
             upstream_allowlist,
+            login_throttle,
         })
     }
 }

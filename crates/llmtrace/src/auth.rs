@@ -1,6 +1,7 @@
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordVerifier};
 use axum::body::Body;
+use axum::extract::connect_info::ConnectInfo;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode, header};
 use axum::middleware::Next;
@@ -14,7 +15,10 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::Row;
+use std::net::SocketAddr;
+use std::time::Duration as StdDuration;
 
+use crate::login_throttle::LoginThrottleDecision;
 use crate::state::AppState;
 use crate::types::LoginMethod;
 
@@ -74,7 +78,27 @@ pub async fn require_auth(
     }
 }
 
-async fn login(State(state): State<AppState>, Json(payload): Json<LoginRequest>) -> Response {
+async fn login(
+    State(state): State<AppState>,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    Json(payload): Json<LoginRequest>,
+) -> Response {
+    let remote_ip = remote_addr.ip().to_string();
+    match state.login_throttle.check(&payload.username, &remote_ip) {
+        LoginThrottleDecision::Allowed => {}
+        LoginThrottleDecision::Limited { retry_after } => {
+            let _ = audit(
+                &state,
+                "login_throttled",
+                Some(payload.username),
+                Some(remote_ip),
+                json!({"retry_after_secs": retry_after_secs(retry_after)}),
+            )
+            .await;
+            return throttled_response(retry_after);
+        }
+    }
+
     let admin = &state.config.auth.local_admin;
     let valid_user = payload.username == admin.username;
     let valid_password = valid_user
@@ -85,20 +109,39 @@ async fn login(State(state): State<AppState>, Json(payload): Json<LoginRequest>)
         );
 
     if !valid_password {
-        let _ = audit(&state, "login_failed", Some(payload.username), json!({})).await;
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"error": "invalid username or password"})),
+        let retry_after = state
+            .login_throttle
+            .record_failure(&payload.username, &remote_ip);
+        let _ = audit(
+            &state,
+            "login_failed",
+            Some(payload.username),
+            Some(remote_ip),
+            retry_after
+                .map(|retry_after| {
+                    json!({
+                        "throttled": true,
+                        "retry_after_secs": retry_after_secs(retry_after),
+                    })
+                })
+                .unwrap_or_else(|| json!({})),
         )
-            .into_response();
+        .await;
+        return retry_after
+            .map(throttled_response)
+            .unwrap_or_else(invalid_login_response);
     }
 
+    state
+        .login_throttle
+        .record_success(&payload.username, &remote_ip);
     match create_session(&state, &admin.username, &admin.username, LoginMethod::Local).await {
         Ok(session_id) => {
             let _ = audit(
                 &state,
                 "login_ok",
                 Some(admin.username.clone()),
+                Some(remote_ip),
                 json!({"method": LoginMethod::Local.as_str()}),
             )
             .await;
@@ -116,7 +159,7 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
             .bind(&session_id)
             .execute(&state.pool)
             .await;
-        let _ = audit(&state, "logout", None, json!({})).await;
+        let _ = audit(&state, "logout", None, None, json!({})).await;
     }
     let mut response = Json(json!({"ok": true})).into_response();
     clear_session_cookie(response.headers_mut(), &state);
@@ -231,6 +274,7 @@ async fn oauth_callback(
                         &state,
                         "login_ok",
                         Some(user.user_id),
+                        None,
                         json!({"method": LoginMethod::OAuth.as_str()}),
                     )
                     .await;
@@ -414,16 +458,18 @@ async fn audit(
     state: &AppState,
     event_type: &str,
     user_id: Option<String>,
+    remote_addr: Option<String>,
     detail: Value,
 ) -> anyhow::Result<()> {
     sqlx::query(
         r#"
-        INSERT INTO ui_audit_events (event_type, user_id, detail)
-        VALUES ($1, $2, $3)
+        INSERT INTO ui_audit_events (event_type, user_id, remote_addr, detail)
+        VALUES ($1, $2, $3, $4)
         "#,
     )
     .bind(event_type)
     .bind(user_id)
+    .bind(remote_addr)
     .bind(detail)
     .execute(&state.pool)
     .await?;
@@ -479,6 +525,34 @@ fn oauth_redirect_url(state: &AppState) -> String {
 
 fn urlencoding(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+fn invalid_login_response() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({"error": "invalid username or password"})),
+    )
+        .into_response()
+}
+
+fn throttled_response(retry_after: StdDuration) -> Response {
+    let retry_after_secs = retry_after_secs(retry_after);
+    let mut response = (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(json!({
+            "error": "too many login attempts",
+            "retry_after_secs": retry_after_secs,
+        })),
+    )
+        .into_response();
+    if let Ok(value) = HeaderValue::from_str(&retry_after_secs.to_string()) {
+        response.headers_mut().insert(header::RETRY_AFTER, value);
+    }
+    response
+}
+
+fn retry_after_secs(retry_after: StdDuration) -> u64 {
+    retry_after.as_secs().max(1)
 }
 
 fn server_error(error: impl std::fmt::Display) -> Response {
