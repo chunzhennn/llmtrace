@@ -16,6 +16,7 @@ use crate::types::RequestKind;
 const DEFAULT_SESSION_MESSAGE_LIMIT: i64 = 100;
 const MAX_SESSION_MESSAGE_LIMIT: i64 = 500;
 const MAX_SESSION_MESSAGE_OFFSET: i64 = 1_000_000;
+const API_READ_STATEMENT_TIMEOUT_SQL: &str = "SET LOCAL statement_timeout = '5s'";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RetentionPruneResult {
@@ -236,6 +237,17 @@ pub async fn readiness_check(pool: &PgPool) -> anyhow::Result<()> {
         .fetch_one(pool)
         .await?;
     Ok(())
+}
+
+async fn begin_api_read_tx(pool: &PgPool) -> anyhow::Result<Transaction<'_, Postgres>> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SET TRANSACTION READ ONLY")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(API_READ_STATEMENT_TIMEOUT_SQL)
+        .execute(&mut *tx)
+        .await?;
+    Ok(tx)
 }
 
 pub fn spawn_retention_pruner(
@@ -672,6 +684,7 @@ pub async fn list_requests(
     status: Option<i32>,
     limit: i64,
 ) -> anyhow::Result<Value> {
+    let mut tx = begin_api_read_tx(pool).await?;
     let rows = sqlx::query(
         r#"
         SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
@@ -688,8 +701,9 @@ pub async fn list_requests(
     .bind(q)
     .bind(status)
     .bind(limit.clamp(1, 500))
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     let items: Vec<Value> = rows
         .into_iter()
@@ -727,6 +741,7 @@ pub async fn get_request(
     id: Uuid,
     body_decode_limit: usize,
 ) -> anyhow::Result<Option<Value>> {
+    let mut tx = begin_api_read_tx(pool).await?;
     let row = sqlx::query(
         r#"
         SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
@@ -739,8 +754,9 @@ pub async fn get_request(
         "#,
     )
     .bind(id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     let Some(row) = row else {
         return Ok(None);
@@ -788,6 +804,7 @@ pub async fn get_request(
 }
 
 pub async fn list_sessions(pool: &PgPool, limit: i64) -> anyhow::Result<Value> {
+    let mut tx = begin_api_read_tx(pool).await?;
     let rows = sqlx::query(
         r#"
         SELECT s.id, s.session_key, s.first_seen, s.last_seen, s.user_id, s.user_name,
@@ -801,8 +818,9 @@ pub async fn list_sessions(pool: &PgPool, limit: i64) -> anyhow::Result<Value> {
         "#,
     )
     .bind(limit.clamp(1, 500))
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     let items: Vec<Value> = rows
         .into_iter()
@@ -828,6 +846,7 @@ pub async fn get_session(
     messages_limit: Option<i64>,
     messages_offset: Option<i64>,
 ) -> anyhow::Result<Option<Value>> {
+    let mut tx = begin_api_read_tx(pool).await?;
     let session = sqlx::query(
         r#"
         SELECT id, session_key, first_seen, last_seen, user_id, user_name, summary
@@ -836,9 +855,10 @@ pub async fn get_session(
         "#,
     )
     .bind(id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
     let Some(session) = session else {
+        tx.commit().await?;
         return Ok(None);
     };
 
@@ -855,8 +875,9 @@ pub async fn get_session(
     .bind(id)
     .bind(page.fetch_limit())
     .bind(page.offset)
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?;
+    tx.commit().await?;
     let has_more = messages.len() > page.limit as usize;
     let messages: Vec<Value> = messages
         .into_iter()
@@ -891,6 +912,7 @@ pub async fn get_session(
 }
 
 pub async fn stats(pool: &PgPool) -> anyhow::Result<Value> {
+    let mut tx = begin_api_read_tx(pool).await?;
     let row = sqlx::query(
         r#"
         SELECT
@@ -905,8 +927,9 @@ pub async fn stats(pool: &PgPool) -> anyhow::Result<Value> {
         FROM trace_rollups_minute
         "#,
     )
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     let duration_count = row.get::<i64, _>("duration_count");
     let ttft_count = row.get::<i64, _>("ttft_count");
@@ -1320,13 +1343,7 @@ pub async fn run_structured_query(
     builder.push_bind(limit);
     builder.push(") q");
 
-    let mut tx = pool.begin().await?;
-    sqlx::query("SET TRANSACTION READ ONLY")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("SET LOCAL statement_timeout = '5s'")
-        .execute(&mut *tx)
-        .await?;
+    let mut tx = begin_api_read_tx(pool).await?;
     let rows: Value = builder.build_query_scalar().fetch_one(&mut *tx).await?;
     tx.commit().await?;
 
