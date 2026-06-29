@@ -3,6 +3,7 @@ mod auth;
 mod config;
 mod health;
 mod login_throttle;
+mod metrics;
 mod parsers;
 mod plugins;
 mod proxy;
@@ -26,6 +27,7 @@ use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
+use crate::metrics::RuntimeMetrics;
 use crate::plugins::PluginManager;
 use crate::state::AppState;
 use crate::trace::TraceRecorder;
@@ -64,7 +66,12 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let retention_pruner = storage::spawn_retention_pruner(pool.clone(), config.storage.clone());
+    let runtime_metrics = RuntimeMetrics::default();
+    let retention_pruner = storage::spawn_retention_pruner(
+        pool.clone(),
+        config.storage.clone(),
+        runtime_metrics.clone(),
+    );
     let plugins = Arc::new(PluginManager::load(&config.plugins).context("failed to load plugins")?);
     let (recorder, pipeline) = TraceRecorder::spawn(
         pool.clone(),
@@ -72,8 +79,9 @@ async fn main() -> anyhow::Result<()> {
         config.redaction.body_redaction,
         config.storage.trace_queue_capacity,
         config.storage.trace_worker_count,
+        runtime_metrics.clone(),
     );
-    let state = AppState::new(config.clone(), pool, plugins, recorder)
+    let state = AppState::new(config.clone(), pool, plugins, recorder, runtime_metrics)
         .context("failed to initialize app state")?;
     let app = build_router(state.clone());
     let addr: SocketAddr = config

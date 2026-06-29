@@ -41,7 +41,12 @@ pub fn router() -> Router<AppState> {
 
 async fn stats(State(state): State<AppState>) -> Response {
     match storage::stats(&state.pool).await {
-        Ok(value) => Json(value).into_response(),
+        Ok(mut value) => {
+            if let Some(object) = value.as_object_mut() {
+                object.insert("runtime".to_string(), state.runtime_metrics.snapshot());
+            }
+            Json(value).into_response()
+        }
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }

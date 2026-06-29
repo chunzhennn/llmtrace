@@ -10,6 +10,7 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::config::StorageConfig;
+use crate::metrics::RuntimeMetrics;
 use crate::types::RequestKind;
 
 const DEFAULT_SESSION_MESSAGE_LIMIT: i64 = 100;
@@ -207,7 +208,7 @@ impl SessionMessagePage {
 }
 
 impl RetentionPruneResult {
-    fn total_deleted(&self) -> u64 {
+    pub fn total_deleted(&self) -> u64 {
         self.request_traces
             + self.trace_rollups_minute
             + self.trace_sessions
@@ -236,7 +237,11 @@ pub async fn readiness_check(pool: &PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn spawn_retention_pruner(pool: PgPool, config: StorageConfig) -> Option<JoinHandle<()>> {
+pub fn spawn_retention_pruner(
+    pool: PgPool,
+    config: StorageConfig,
+    metrics: RuntimeMetrics,
+) -> Option<JoinHandle<()>> {
     let retention_days = config.retention_days?;
     let interval = Duration::from_secs(config.retention_prune_interval_secs);
     let batch_size = config.retention_prune_batch_size;
@@ -244,21 +249,24 @@ pub fn spawn_retention_pruner(pool: PgPool, config: StorageConfig) -> Option<Joi
     Some(tokio::spawn(async move {
         loop {
             match prune_retention(&pool, retention_days, batch_size).await {
-                Ok(result) if result.total_deleted() > 0 => {
-                    tracing::info!(
-                        request_traces = result.request_traces,
-                        trace_rollups_minute = result.trace_rollups_minute,
-                        trace_sessions = result.trace_sessions,
-                        ui_audit_events = result.ui_audit_events,
-                        ui_sessions = result.ui_sessions,
-                        oauth_states = result.oauth_states,
-                        "retention prune completed"
-                    );
-                }
-                Ok(_) => {
-                    tracing::debug!("retention prune completed with no expired rows");
+                Ok(result) => {
+                    metrics.retention_succeeded(&result);
+                    if result.total_deleted() > 0 {
+                        tracing::info!(
+                            request_traces = result.request_traces,
+                            trace_rollups_minute = result.trace_rollups_minute,
+                            trace_sessions = result.trace_sessions,
+                            ui_audit_events = result.ui_audit_events,
+                            ui_sessions = result.ui_sessions,
+                            oauth_states = result.oauth_states,
+                            "retention prune completed"
+                        );
+                    } else {
+                        tracing::debug!("retention prune completed with no expired rows");
+                    }
                 }
                 Err(error) => {
+                    metrics.retention_failed(error.to_string());
                     tracing::warn!(%error, "retention prune failed");
                 }
             }

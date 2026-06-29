@@ -7,6 +7,7 @@ use sqlx::PgPool;
 
 use crate::config::{Config, UpstreamAllowlist};
 use crate::login_throttle::LoginThrottle;
+use crate::metrics::RuntimeMetrics;
 use crate::plugins::PluginManager;
 use crate::trace::TraceRecorder;
 
@@ -19,6 +20,7 @@ pub struct AppState {
     pub traces: TraceRecorder,
     pub upstream_allowlist: UpstreamAllowlist,
     pub login_throttle: LoginThrottle,
+    pub runtime_metrics: RuntimeMetrics,
 }
 
 impl AppState {
@@ -27,6 +29,7 @@ impl AppState {
         pool: PgPool,
         plugins: Arc<PluginManager>,
         traces: TraceRecorder,
+        runtime_metrics: RuntimeMetrics,
     ) -> anyhow::Result<Self> {
         let upstream_allowlist = config
             .proxy
@@ -49,6 +52,7 @@ impl AppState {
             traces,
             upstream_allowlist,
             login_throttle,
+            runtime_metrics,
         })
     }
 }

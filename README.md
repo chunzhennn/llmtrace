@@ -109,6 +109,10 @@ curl 'http://127.0.0.1:3000/api/sessions/<session-id>?messages_limit=100&message
 
 `messages_limit` defaults to `100` and is capped at `500`; `messages_offset` defaults to `0` and is capped at `1000000`. The response includes `messages_page.has_more` and `messages_page.next_offset` so clients can request the next page without assuming all messages were returned.
 
+## Runtime stats
+
+`GET /api/stats` includes a `runtime` object with process-local background health counters. `runtime.trace_pipeline` reports enqueued, persisted, dropped, build-failed, and persist-failed trace events. `runtime.retention` reports retention prune runs, failures, last success/failure timestamps, the last error, and the rows deleted by the most recent successful prune. These metrics reset on process restart and should be paired with logs or external metrics for long-term monitoring.
+
 ## Proxying examples
 
 OpenAI-compatible base URL mode:

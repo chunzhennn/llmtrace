@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 use tokio::task::{JoinHandle, JoinSet};
 use uuid::Uuid;
 
+use crate::metrics::RuntimeMetrics;
 use crate::parsers;
 use crate::plugins::{HookInput, PluginEffects, PluginManager};
 use crate::redaction;
@@ -101,6 +102,7 @@ type BuiltTrace = (
 pub struct TraceRecorder {
     sender: mpsc::Sender<TraceEvent>,
     queue_capacity: usize,
+    metrics: RuntimeMetrics,
 }
 
 /// Owns the background dispatcher task so it can be drained on shutdown.
@@ -134,6 +136,7 @@ impl TraceRecorder {
         body_redaction: BodyRedaction,
         queue_capacity: usize,
         worker_count: usize,
+        metrics: RuntimeMetrics,
     ) -> (Self, TracePipeline) {
         let queue_capacity = queue_capacity.max(1);
         let worker_count = worker_count.max(1);
@@ -146,12 +149,14 @@ impl TraceRecorder {
             body_redaction,
             receiver,
             worker_count,
+            metrics.clone(),
         ));
 
         (
             Self {
                 sender,
                 queue_capacity,
+                metrics,
             },
             TracePipeline { handle },
         )
@@ -160,8 +165,11 @@ impl TraceRecorder {
     pub fn record(&self, event: TraceEvent) {
         let trace_id = event.id;
         match self.sender.try_send(event) {
-            Ok(()) => {}
+            Ok(()) => {
+                self.metrics.trace_enqueued();
+            }
             Err(mpsc::error::TrySendError::Full(_)) => {
+                self.metrics.trace_dropped_full();
                 tracing::warn!(
                     %trace_id,
                     queue_capacity = self.queue_capacity,
@@ -169,6 +177,7 @@ impl TraceRecorder {
                 );
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
+                self.metrics.trace_dropped_closed();
                 tracing::warn!(%trace_id, "trace pipeline is stopped; dropping trace");
             }
         }
@@ -181,6 +190,7 @@ async fn run_dispatcher(
     body_redaction: BodyRedaction,
     mut receiver: mpsc::Receiver<TraceEvent>,
     worker_count: usize,
+    metrics: RuntimeMetrics,
 ) {
     let mut workers = JoinSet::new();
 
@@ -193,6 +203,7 @@ async fn run_dispatcher(
             plugins.clone(),
             body_redaction,
             event,
+            metrics.clone(),
         ));
     }
 
@@ -204,6 +215,7 @@ async fn process_trace(
     plugins: Arc<PluginManager>,
     body_redaction: BodyRedaction,
     event: TraceEvent,
+    metrics: RuntimeMetrics,
 ) {
     let trace_id = event.id;
     let built =
@@ -211,6 +223,7 @@ async fn process_trace(
     let result = match built {
         Ok(result) => result,
         Err(error) => {
+            metrics.trace_build_failed();
             tracing::error!(%trace_id, error = %error, "trace build task failed");
             return;
         }
@@ -218,13 +231,17 @@ async fn process_trace(
     let (trace, messages, user_id, user_name) = match result {
         Ok(value) => value,
         Err(error) => {
+            metrics.trace_build_failed();
             tracing::error!(%trace_id, error = %error, "failed to build trace");
             return;
         }
     };
 
     if let Err(error) = storage::insert_trace(&pool, trace, messages, user_id, user_name).await {
+        metrics.trace_persist_failed();
         tracing::error!(%trace_id, error = %error, "failed to persist trace");
+    } else {
+        metrics.trace_persisted();
     }
 }
 
