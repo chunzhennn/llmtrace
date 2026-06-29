@@ -25,6 +25,8 @@ The service exposes unauthenticated probes for production schedulers and load ba
 
 The Docker image includes a `HEALTHCHECK` against `/readyz`, and `docker-compose.yml` waits for Postgres `pg_isready` before starting `llmtrace`. When running in a container, bind the service to `0.0.0.0:3000`; the compose file sets `LLMTRACE_LISTEN` for that.
 
+The runtime image runs as the unprivileged `llmtrace` user with UID/GID `10001`.
+
 ## Production mode
 
 Set `server.deployment = "production"` to make startup fail fast on insecure or ambiguous settings. Production mode currently requires:
