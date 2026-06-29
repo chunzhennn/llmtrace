@@ -38,6 +38,8 @@ Set `server.deployment = "production"` to make startup fail fast on insecure or 
 - `redaction.body_redaction` is `drop` or `json_secrets`.
 - When OAuth is enabled, `auth.oauth.issuer_url` and any explicit `auth.oauth.redirect_url` use `https`, `auth.oauth.require_email_verified = true`, and `auth.oauth.allowed_emails` or `auth.oauth.allowed_domains` is configured. OAuth email allowlist entries must be exact email addresses, and domain entries must be domain names such as `example.com`; URL syntax, wildcards, whitespace, and non-ASCII forms are rejected at startup.
 
+When `server.public_url` uses `https` and `auth.cookie_secure = true`, private UI/API responses include `Strict-Transport-Security: max-age=31536000`. Proxied upstream responses are not modified with this host-level header.
+
 Minimal production-oriented config shape:
 
 ```toml

@@ -21,7 +21,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use axum::Router;
 use axum::body::Body;
-use axum::extract::DefaultBodyLimit;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, HeaderValue, Request, header};
 use axum::middleware::{self, Next};
 use axum::response::Response;
@@ -37,6 +37,7 @@ use crate::state::AppState;
 use crate::trace::TraceRecorder;
 
 const PRIVATE_JSON_BODY_LIMIT_BYTES: usize = 256 * 1024;
+const STRICT_TRANSPORT_SECURITY_VALUE: &str = "max-age=31536000";
 
 #[derive(Parser, Debug)]
 #[command(name = "llmtrace")]
@@ -157,7 +158,10 @@ fn build_router(state: AppState) -> Router {
         .route("/ui/", axum::routing::get(ui::serve_ui))
         .route("/ui/{*path}", axum::routing::get(ui::serve_ui))
         .layer(DefaultBodyLimit::max(PRIVATE_JSON_BODY_LIMIT_BYTES))
-        .layer(middleware::from_fn(private_response_headers));
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            private_response_headers,
+        ));
 
     Router::new()
         .merge(health::router())
@@ -167,13 +171,25 @@ fn build_router(state: AppState) -> Router {
         .layer(TraceLayer::new_for_http())
 }
 
-async fn private_response_headers(request: Request<Body>, next: Next) -> Response {
+async fn private_response_headers(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
     let mut response = next.run(request).await;
-    set_private_response_headers(response.headers_mut());
+    set_private_response_headers(
+        response.headers_mut(),
+        private_response_hsts_enabled(&state.config),
+    );
     response
 }
 
-fn set_private_response_headers(headers: &mut HeaderMap) {
+fn private_response_hsts_enabled(config: &Config) -> bool {
+    config.auth.cookie_secure
+        && url::Url::parse(&config.server.public_url).is_ok_and(|url| url.scheme() == "https")
+}
+
+fn set_private_response_headers(headers: &mut HeaderMap, hsts_enabled: bool) {
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
     headers.insert(header::EXPIRES, HeaderValue::from_static("0"));
@@ -186,6 +202,12 @@ fn set_private_response_headers(headers: &mut HeaderMap) {
         HeaderValue::from_static("no-referrer"),
     );
     headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    if hsts_enabled {
+        headers.insert(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static(STRICT_TRANSPORT_SECURITY_VALUE),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -200,7 +222,7 @@ mod tests {
     fn private_response_headers_disable_caching_and_browser_sniffing() {
         let mut headers = HeaderMap::new();
 
-        set_private_response_headers(&mut headers);
+        set_private_response_headers(&mut headers, false);
 
         assert_eq!(
             header_value(&headers, header::CACHE_CONTROL),
@@ -220,6 +242,35 @@ mod tests {
             header_value(&headers, header::X_FRAME_OPTIONS),
             Some("DENY")
         );
+        assert_eq!(
+            header_value(&headers, header::STRICT_TRANSPORT_SECURITY),
+            None
+        );
+    }
+
+    #[test]
+    fn private_response_headers_add_hsts_when_enabled() {
+        let mut headers = HeaderMap::new();
+
+        set_private_response_headers(&mut headers, true);
+
+        assert_eq!(
+            header_value(&headers, header::STRICT_TRANSPORT_SECURITY),
+            Some(STRICT_TRANSPORT_SECURITY_VALUE)
+        );
+    }
+
+    #[test]
+    fn private_response_hsts_requires_https_public_url_and_secure_cookie() {
+        let mut config = Config::default();
+
+        assert!(!private_response_hsts_enabled(&config));
+
+        config.auth.cookie_secure = true;
+        assert!(!private_response_hsts_enabled(&config));
+
+        config.server.public_url = "https://llmtrace.example.com".to_string();
+        assert!(private_response_hsts_enabled(&config));
     }
 
     #[tokio::test]
