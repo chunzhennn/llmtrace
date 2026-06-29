@@ -59,7 +59,8 @@ password = "admin"
 
 [auth.oauth]
 enabled = false
-# Production mode requires HTTPS for issuer_url and any explicit redirect_url.
+# issuer_url may be HTTP for providers reached through an internal reverse proxy.
+# Production mode still requires HTTPS for any explicit redirect_url.
 issuer_url = ""
 client_id = ""
 client_secret = ""

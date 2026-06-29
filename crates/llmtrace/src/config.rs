@@ -165,7 +165,7 @@ impl DeploymentMode {
         }
     }
 
-    pub fn is_production(self) -> bool {
+    fn is_production(self) -> bool {
         matches!(self, Self::Production)
     }
 }
@@ -555,14 +555,7 @@ impl Config {
             &oauth.issuer_url,
             &["http", "https"],
         ) {
-            Ok(issuer_url) => {
-                if self.server.deployment.is_production() && issuer_url.scheme() != "https" {
-                    errors.push(
-                        "auth.oauth.issuer_url must use https when server.deployment is production"
-                            .to_string(),
-                    );
-                }
-            }
+            Ok(_) => {}
             Err(error) => errors.push(error),
         }
         if oauth.client_id.trim().is_empty() {
@@ -1218,7 +1211,7 @@ mod tests {
     }
 
     #[test]
-    fn production_config_requires_https_oauth_urls() {
+    fn production_config_requires_https_oauth_redirect_url() {
         let mut config = production_ready_config();
         config.auth.oauth.enabled = true;
         config.auth.oauth.issuer_url = "http://issuer.example.com".to_string();
@@ -1230,8 +1223,19 @@ mod tests {
 
         let error = config.validate().unwrap_err().to_string();
 
-        assert!(error.contains("auth.oauth.issuer_url must use https"));
         assert!(error.contains("auth.oauth.redirect_url must use https"));
+    }
+
+    #[test]
+    fn production_config_allows_http_oauth_issuer_url() {
+        let mut config = production_ready_config();
+        config.auth.oauth.enabled = true;
+        config.auth.oauth.issuer_url = "http://issuer.example.com".to_string();
+        config.auth.oauth.client_id = "client".to_string();
+        config.auth.oauth.client_secret = "secret".to_string();
+        config.auth.oauth.allowed_domains = vec!["example.com".to_string()];
+
+        config.validate().unwrap();
     }
 
     #[test]

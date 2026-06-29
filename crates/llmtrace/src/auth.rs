@@ -406,14 +406,11 @@ async fn oauth_metadata(state: &AppState) -> anyhow::Result<OidcMetadata> {
             userinfo_endpoint: Some(format!("{issuer}/userinfo")),
         },
     };
-    validate_oauth_metadata_endpoints(&metadata, state.config.server.deployment.is_production())?;
+    validate_oauth_metadata_endpoints(&metadata)?;
     Ok(metadata)
 }
 
-fn validate_oauth_metadata_endpoints(
-    metadata: &OidcMetadata,
-    require_https: bool,
-) -> anyhow::Result<()> {
+fn validate_oauth_metadata_endpoints(metadata: &OidcMetadata) -> anyhow::Result<()> {
     for (field, endpoint) in [
         (
             "authorization_endpoint",
@@ -432,9 +429,6 @@ fn validate_oauth_metadata_endpoints(
         }
         if !matches!(url.scheme(), "http" | "https") {
             anyhow::bail!("oauth {field} must use http or https");
-        }
-        if require_https && url.scheme() != "https" {
-            anyhow::bail!("oauth {field} must use https in production");
         }
         if !url.username().is_empty() || url.password().is_some() {
             anyhow::bail!("oauth {field} must not contain credentials");
@@ -883,40 +877,25 @@ mod tests {
     }
 
     #[test]
-    fn oauth_metadata_endpoint_validation_accepts_https_endpoints_in_production() {
+    fn oauth_metadata_endpoint_validation_accepts_https_endpoints() {
         let metadata = oauth_metadata_with_endpoints(
             "https://issuer.example.com/authorize",
             "https://issuer.example.com/token",
             "https://issuer.example.com/userinfo",
         );
 
-        validate_oauth_metadata_endpoints(&metadata, true).unwrap();
+        validate_oauth_metadata_endpoints(&metadata).unwrap();
     }
 
     #[test]
-    fn oauth_metadata_endpoint_validation_rejects_http_endpoints_in_production() {
-        let metadata = oauth_metadata_with_endpoints(
-            "http://issuer.example.com/authorize",
-            "https://issuer.example.com/token",
-            "https://issuer.example.com/userinfo",
-        );
-
-        let error = validate_oauth_metadata_endpoints(&metadata, true)
-            .unwrap_err()
-            .to_string();
-
-        assert!(error.contains("authorization_endpoint must use https in production"));
-    }
-
-    #[test]
-    fn oauth_metadata_endpoint_validation_allows_http_endpoints_outside_production() {
+    fn oauth_metadata_endpoint_validation_accepts_http_endpoints() {
         let metadata = oauth_metadata_with_endpoints(
             "http://issuer.example.com/authorize",
             "http://issuer.example.com/token",
             "http://issuer.example.com/userinfo",
         );
 
-        validate_oauth_metadata_endpoints(&metadata, false).unwrap();
+        validate_oauth_metadata_endpoints(&metadata).unwrap();
     }
 
     #[test]
@@ -927,7 +906,7 @@ mod tests {
             "https://issuer.example.com/userinfo",
         );
 
-        let error = validate_oauth_metadata_endpoints(&metadata, false)
+        let error = validate_oauth_metadata_endpoints(&metadata)
             .unwrap_err()
             .to_string();
 
@@ -938,7 +917,7 @@ mod tests {
             "https://user:secret@issuer.example.com/token",
             "https://issuer.example.com/userinfo",
         );
-        let error = validate_oauth_metadata_endpoints(&metadata, false)
+        let error = validate_oauth_metadata_endpoints(&metadata)
             .unwrap_err()
             .to_string();
 
