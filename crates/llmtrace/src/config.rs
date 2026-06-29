@@ -597,12 +597,20 @@ impl Config {
             return;
         }
 
-        if let Err(error) = parse_url(
+        match parse_url(
             "auth.oauth.issuer_url",
             &oauth.issuer_url,
             &["http", "https"],
         ) {
-            errors.push(error);
+            Ok(issuer_url) => {
+                if self.server.deployment.is_production() && issuer_url.scheme() != "https" {
+                    errors.push(
+                        "auth.oauth.issuer_url must use https when server.deployment is production"
+                            .to_string(),
+                    );
+                }
+            }
+            Err(error) => errors.push(error),
         }
         if oauth.client_id.trim().is_empty() {
             errors.push("auth.oauth.client_id is required when OAuth is enabled".to_string());
@@ -610,14 +618,22 @@ impl Config {
         if oauth.client_secret.trim().is_empty() {
             errors.push("auth.oauth.client_secret is required when OAuth is enabled".to_string());
         }
-        if !oauth.redirect_url.trim().is_empty()
-            && let Err(error) = parse_url(
+        if !oauth.redirect_url.trim().is_empty() {
+            match parse_url(
                 "auth.oauth.redirect_url",
                 &oauth.redirect_url,
                 &["http", "https"],
-            )
-        {
-            errors.push(error);
+            ) {
+                Ok(redirect_url) => {
+                    if self.server.deployment.is_production() && redirect_url.scheme() != "https" {
+                        errors.push(
+                            "auth.oauth.redirect_url must use https when server.deployment is production"
+                                .to_string(),
+                        );
+                    }
+                }
+                Err(error) => errors.push(error),
+            }
         }
         if self.server.deployment.is_production()
             && oauth.allowed_emails.is_empty()
@@ -976,6 +992,37 @@ mod tests {
     }
 
     #[test]
+    fn production_config_requires_https_oauth_urls() {
+        let mut config = production_ready_config();
+        config.auth.oauth.enabled = true;
+        config.auth.oauth.issuer_url = "http://issuer.example.com".to_string();
+        config.auth.oauth.client_id = "client".to_string();
+        config.auth.oauth.client_secret = "secret".to_string();
+        config.auth.oauth.redirect_url =
+            "http://llmtrace.example.com/api/auth/oauth/callback".to_string();
+        config.auth.oauth.allowed_domains = vec!["example.com".to_string()];
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("auth.oauth.issuer_url must use https"));
+        assert!(error.contains("auth.oauth.redirect_url must use https"));
+    }
+
+    #[test]
+    fn production_config_accepts_https_oauth_urls() {
+        let mut config = production_ready_config();
+        config.auth.oauth.enabled = true;
+        config.auth.oauth.issuer_url = "https://issuer.example.com".to_string();
+        config.auth.oauth.client_id = "client".to_string();
+        config.auth.oauth.client_secret = "secret".to_string();
+        config.auth.oauth.redirect_url =
+            "https://llmtrace.example.com/api/auth/oauth/callback".to_string();
+        config.auth.oauth.allowed_domains = vec!["example.com".to_string()];
+
+        config.validate().unwrap();
+    }
+
+    #[test]
     fn validation_rejects_invalid_login_rate_limit_bounds() {
         let mut config = Config::default();
         config.auth.login_rate_limit.max_failures = 0;
@@ -993,15 +1040,7 @@ mod tests {
 
     #[test]
     fn production_config_accepts_hardened_settings() {
-        let mut config = Config::default();
-        config.server.deployment = DeploymentMode::Production;
-        config.server.public_url = "https://llmtrace.example.com".to_string();
-        config.proxy.allow_upstreams = vec!["api.openai.com".to_string()];
-        config.storage.retention_days = Some(30);
-        config.auth.cookie_secure = true;
-        config.auth.local_admin.password = None;
-        config.auth.local_admin.password_hash = Some(VALID_ARGON2_HASH.to_string());
-        config.redaction.body_redaction = BodyRedaction::JsonSecrets;
+        let config = production_ready_config();
 
         config.validate().unwrap();
     }
@@ -1113,5 +1152,18 @@ mod tests {
         assert!(error.contains("must not contain credentials"));
         assert!(error.contains("must not contain a query string or fragment"));
         assert!(error.contains("host entries must be hostnames with an optional port"));
+    }
+
+    fn production_ready_config() -> Config {
+        let mut config = Config::default();
+        config.server.deployment = DeploymentMode::Production;
+        config.server.public_url = "https://llmtrace.example.com".to_string();
+        config.proxy.allow_upstreams = vec!["api.openai.com".to_string()];
+        config.storage.retention_days = Some(30);
+        config.auth.cookie_secure = true;
+        config.auth.local_admin.password = None;
+        config.auth.local_admin.password_hash = Some(VALID_ARGON2_HASH.to_string());
+        config.redaction.body_redaction = BodyRedaction::JsonSecrets;
+        config
     }
 }

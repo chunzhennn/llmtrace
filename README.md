@@ -36,7 +36,7 @@ Set `server.deployment = "production"` to make startup fail fast on insecure or 
 - `auth.login_rate_limit.enabled = true`.
 - `auth.local_admin.password_hash` is set, and plaintext `auth.local_admin.password` is not set.
 - `redaction.body_redaction` is `drop` or `json_secrets`.
-- When OAuth is enabled, `auth.oauth.allowed_emails` or `auth.oauth.allowed_domains` is configured.
+- When OAuth is enabled, `auth.oauth.issuer_url` and any explicit `auth.oauth.redirect_url` use `https`, and `auth.oauth.allowed_emails` or `auth.oauth.allowed_domains` is configured.
 
 Minimal production-oriented config shape:
 
