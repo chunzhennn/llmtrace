@@ -8,6 +8,8 @@ ui_enabled = true
 [proxy]
 default_upstream = "https://api.openai.com"
 # Required in production mode to avoid running as an open proxy.
+# Supported entries include "api.openai.com", "api.openai.com:443",
+# "https://api.openai.com", and "https://api.example.com/v1".
 allow_upstreams = []
 upstream_header = "x-llmtrace-upstream"
 timeout_secs = 300

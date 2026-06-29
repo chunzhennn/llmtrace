@@ -15,6 +15,7 @@ use crate::types::{BodyRedaction, PluginHook};
 const DEFAULT_LOCAL_ADMIN_PASSWORD: &str = "admin";
 const MAX_SESSION_TTL_HOURS: i64 = 24 * 30;
 const MAX_PLUGIN_TIMEOUT_MS: u64 = 30_000;
+const UPSTREAM_ALLOWLIST_SCHEMES: &[&str] = &["http", "https", "ws", "wss"];
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
@@ -101,6 +102,25 @@ pub struct PluginConfig {
     pub timeout_ms: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UpstreamAllowEntry {
+    Host {
+        host: String,
+        port: Option<u16>,
+    },
+    Url {
+        scheme: String,
+        host: String,
+        port: u16,
+        path_prefix: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct UpstreamAllowlist {
+    entries: Vec<UpstreamAllowEntry>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeploymentMode {
@@ -139,6 +159,63 @@ impl FromStr for DeploymentMode {
 impl fmt::Display for DeploymentMode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
+    }
+}
+
+impl ProxyConfig {
+    pub fn upstream_allowlist(&self) -> Result<UpstreamAllowlist, String> {
+        UpstreamAllowlist::parse(&self.allow_upstreams)
+    }
+}
+
+impl UpstreamAllowlist {
+    fn parse(entries: &[String]) -> Result<Self, String> {
+        let entries = entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                parse_upstream_allow_entry(&format!("proxy.allow_upstreams[{index}]"), entry)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Self { entries })
+    }
+
+    pub fn allows(&self, upstream_url: &Url) -> bool {
+        if self.entries.is_empty() {
+            return true;
+        }
+        if !UPSTREAM_ALLOWLIST_SCHEMES.contains(&upstream_url.scheme()) {
+            return false;
+        }
+
+        self.entries.iter().any(|entry| entry.matches(upstream_url))
+    }
+}
+
+impl UpstreamAllowEntry {
+    fn matches(&self, upstream_url: &Url) -> bool {
+        match self {
+            Self::Host { host, port } => {
+                upstream_url
+                    .host_str()
+                    .is_some_and(|upstream_host| upstream_host.eq_ignore_ascii_case(host))
+                    && port.is_none_or(|port| upstream_url.port_or_known_default() == Some(port))
+            }
+            Self::Url {
+                scheme,
+                host,
+                port,
+                path_prefix,
+            } => {
+                upstream_url.scheme() == scheme
+                    && upstream_url
+                        .host_str()
+                        .is_some_and(|upstream_host| upstream_host.eq_ignore_ascii_case(host))
+                    && upstream_url.port_or_known_default() == Some(*port)
+                    && path_prefix_matches(path_prefix, upstream_url.path())
+            }
+        }
     }
 }
 
@@ -274,15 +351,8 @@ impl Config {
         }
 
         for (index, upstream) in self.proxy.allow_upstreams.iter().enumerate() {
-            let upstream = upstream.trim();
-            if upstream.is_empty() {
-                errors.push(format!("proxy.allow_upstreams[{index}] must not be empty"));
-            } else if upstream.contains("://")
-                && let Err(error) = parse_url(
-                    &format!("proxy.allow_upstreams[{index}]"),
-                    upstream,
-                    &["http", "https", "ws", "wss"],
-                )
+            if let Err(error) =
+                parse_upstream_allow_entry(&format!("proxy.allow_upstreams[{index}]"), upstream)
             {
                 errors.push(error);
             }
@@ -485,6 +555,90 @@ fn parse_url(field: &str, value: &str, allowed_schemes: &[&str]) -> Result<Url, 
     Ok(url)
 }
 
+fn parse_upstream_allow_entry(field: &str, value: &str) -> Result<UpstreamAllowEntry, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!("{field} must not be empty"));
+    }
+
+    if value.contains("://") {
+        let url = parse_url(field, value, UPSTREAM_ALLOWLIST_SCHEMES)?;
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(format!("{field} must not contain credentials"));
+        }
+        if url.query().is_some() || url.fragment().is_some() {
+            return Err(format!(
+                "{field} must not contain a query string or fragment"
+            ));
+        }
+        let host = url
+            .host_str()
+            .ok_or_else(|| format!("{field} must include a host"))?
+            .to_ascii_lowercase();
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| format!("{field} must include a known port"))?;
+        return Ok(UpstreamAllowEntry::Url {
+            scheme: url.scheme().to_string(),
+            host,
+            port,
+            path_prefix: normalize_allowlist_path(url.path()),
+        });
+    }
+
+    if value
+        .bytes()
+        .any(|byte| byte.is_ascii_whitespace() || matches!(byte, b'/' | b'?' | b'#' | b'@'))
+    {
+        return Err(format!(
+            "{field} host entries must be hostnames with an optional port"
+        ));
+    }
+
+    let url = Url::parse(&format!("https://{value}"))
+        .map_err(|error| format!("{field} host entry is invalid: {error}"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| format!("{field} must include a host"))?
+        .to_ascii_lowercase();
+
+    Ok(UpstreamAllowEntry::Host {
+        host,
+        port: explicit_host_entry_port(value),
+    })
+}
+
+fn explicit_host_entry_port(value: &str) -> Option<u16> {
+    let port = if let Some(rest) = value.strip_prefix('[') {
+        let close_bracket = rest.find(']')?;
+        rest.get(close_bracket + 1..)?.strip_prefix(':')?
+    } else {
+        value.rsplit_once(':')?.1
+    };
+
+    if port.is_empty() {
+        return None;
+    }
+    port.parse().ok()
+}
+
+fn normalize_allowlist_path(path: &str) -> String {
+    if path.is_empty() || path == "/" {
+        return "/".to_string();
+    }
+    format!("/{}", path.trim_matches('/'))
+}
+
+fn path_prefix_matches(prefix: &str, path: &str) -> bool {
+    if prefix == "/" {
+        return true;
+    }
+    path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
 fn parse_bool_env(name: &str, value: &str) -> anyhow::Result<bool> {
     match value {
         "true" | "1" | "yes" | "on" => Ok(true),
@@ -643,5 +797,72 @@ mod tests {
         assert!(error.contains("storage.trace_queue_capacity must be greater than 0"));
         assert!(error.contains("storage.trace_worker_count must be greater than 0"));
         assert!(error.contains("auth.session_ttl_hours must be greater than 0"));
+    }
+
+    #[test]
+    fn upstream_allowlist_host_matches_any_path() {
+        let proxy = ProxyConfig {
+            allow_upstreams: vec!["api.openai.com".to_string()],
+            ..ProxyConfig::default()
+        };
+        let allowlist = proxy.upstream_allowlist().unwrap();
+
+        assert!(allowlist.allows(&Url::parse("https://api.openai.com/v1/chat").unwrap()));
+        assert!(!allowlist.allows(&Url::parse("https://api.example.com/v1/chat").unwrap()));
+    }
+
+    #[test]
+    fn upstream_allowlist_host_port_constrains_effective_port() {
+        let proxy = ProxyConfig {
+            allow_upstreams: vec!["api.openai.com:443".to_string()],
+            ..ProxyConfig::default()
+        };
+        let allowlist = proxy.upstream_allowlist().unwrap();
+
+        assert!(allowlist.allows(&Url::parse("https://api.openai.com/v1/chat").unwrap()));
+        assert!(!allowlist.allows(&Url::parse("http://api.openai.com/v1/chat").unwrap()));
+        assert!(!allowlist.allows(&Url::parse("https://api.openai.com:8443/v1/chat").unwrap()));
+    }
+
+    #[test]
+    fn upstream_allowlist_url_origin_matches_any_path_on_origin() {
+        let proxy = ProxyConfig {
+            allow_upstreams: vec!["https://api.openai.com".to_string()],
+            ..ProxyConfig::default()
+        };
+        let allowlist = proxy.upstream_allowlist().unwrap();
+
+        assert!(allowlist.allows(&Url::parse("https://api.openai.com/v1/chat").unwrap()));
+        assert!(!allowlist.allows(&Url::parse("http://api.openai.com/v1/chat").unwrap()));
+        assert!(!allowlist.allows(&Url::parse("https://api.openai.com:8443/v1/chat").unwrap()));
+    }
+
+    #[test]
+    fn upstream_allowlist_url_path_prefix_uses_path_boundary() {
+        let proxy = ProxyConfig {
+            allow_upstreams: vec!["https://api.example.com/v1".to_string()],
+            ..ProxyConfig::default()
+        };
+        let allowlist = proxy.upstream_allowlist().unwrap();
+
+        assert!(allowlist.allows(&Url::parse("https://api.example.com/v1").unwrap()));
+        assert!(allowlist.allows(&Url::parse("https://api.example.com/v1/chat").unwrap()));
+        assert!(!allowlist.allows(&Url::parse("https://api.example.com/v10/chat").unwrap()));
+    }
+
+    #[test]
+    fn validation_rejects_invalid_upstream_allowlist_entries() {
+        let mut config = Config::default();
+        config.proxy.allow_upstreams = vec![
+            "https://user:secret@api.example.com".to_string(),
+            "https://api.example.com/v1?debug=true".to_string(),
+            "api.example.com/path".to_string(),
+        ];
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("must not contain credentials"));
+        assert!(error.contains("must not contain a query string or fragment"));
+        assert!(error.contains("host entries must be hostnames with an optional port"));
     }
 }

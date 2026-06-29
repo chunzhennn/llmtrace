@@ -62,6 +62,23 @@ body_redaction = "json_secrets"
 
 Useful environment overrides include `LLMTRACE_DEPLOYMENT`, `LLMTRACE_PUBLIC_URL`, `LLMTRACE_LISTEN`, `DATABASE_URL`, `LLMTRACE_DEFAULT_UPSTREAM`, `LLMTRACE_AUTH_COOKIE_SECURE`, `LLMTRACE_ADMIN_USERNAME`, `LLMTRACE_ADMIN_PASSWORD`, and `LLMTRACE_ADMIN_PASSWORD_HASH`.
 
+## Upstream allowlist
+
+`proxy.allow_upstreams` accepts exact host entries, host entries with a port, URL origins, and URL path prefixes:
+
+```toml
+allow_upstreams = [
+  "api.openai.com",
+  "api.openai.com:443",
+  "https://api.anthropic.com",
+  "https://api.example.com/v1"
+]
+```
+
+Host entries match the host across supported upstream schemes and paths. `host:port` entries also constrain the effective port, so `api.openai.com:443` matches `https://api.openai.com/...` but not `http://api.openai.com/...`. URL origins match only the same scheme, host, and effective port. URL path prefixes also require a path boundary, so `https://api.example.com/v1` matches `/v1` and `/v1/chat`, but not `/v10/chat`.
+
+Allowlist entries do not support wildcards. URL entries must not contain credentials, query strings, or fragments.
+
 ## Proxying examples
 
 OpenAI-compatible base URL mode:

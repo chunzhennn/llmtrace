@@ -678,17 +678,7 @@ fn resolve_upstream(state: &AppState, uri: &Uri, headers: &HeaderMap) -> anyhow:
 }
 
 fn enforce_upstream_allowlist(state: &AppState, upstream_url: &Url) -> anyhow::Result<()> {
-    if state.config.proxy.allow_upstreams.is_empty() {
-        return Ok(());
-    }
-    let host = upstream_url.host_str().unwrap_or_default();
-    let allowed = state
-        .config
-        .proxy
-        .allow_upstreams
-        .iter()
-        .any(|entry| entry == host || entry == upstream_url.as_str());
-    if allowed {
+    if state.upstream_allowlist.allows(upstream_url) {
         Ok(())
     } else {
         anyhow::bail!("upstream {upstream_url} is not allowed")

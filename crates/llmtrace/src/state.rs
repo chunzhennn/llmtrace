@@ -5,7 +5,7 @@ use anyhow::Context;
 use reqwest::Client;
 use sqlx::PgPool;
 
-use crate::config::Config;
+use crate::config::{Config, UpstreamAllowlist};
 use crate::plugins::PluginManager;
 use crate::trace::TraceRecorder;
 
@@ -16,6 +16,7 @@ pub struct AppState {
     pub http: Client,
     pub plugins: Arc<PluginManager>,
     pub traces: TraceRecorder,
+    pub upstream_allowlist: UpstreamAllowlist,
 }
 
 impl AppState {
@@ -25,6 +26,11 @@ impl AppState {
         plugins: Arc<PluginManager>,
         traces: TraceRecorder,
     ) -> anyhow::Result<Self> {
+        let upstream_allowlist = config
+            .proxy
+            .upstream_allowlist()
+            .map_err(|error| anyhow::anyhow!(error))
+            .context("failed to build upstream allowlist")?;
         let http = Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .read_timeout(Duration::from_secs(config.proxy.timeout_secs))
@@ -38,6 +44,7 @@ impl AppState {
             http,
             plugins,
             traces,
+            upstream_allowlist,
         })
     }
 }
