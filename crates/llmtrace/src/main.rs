@@ -64,6 +64,7 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    let retention_pruner = storage::spawn_retention_pruner(pool.clone(), config.storage.clone());
     let plugins = Arc::new(PluginManager::load(&config.plugins).context("failed to load plugins")?);
     let (recorder, pipeline) = TraceRecorder::spawn(
         pool.clone(),
@@ -92,6 +93,11 @@ async fn main() -> anyhow::Result<()> {
     .with_graceful_shutdown(shutdown_signal())
     .await
     .context("server failed")?;
+
+    if let Some(handle) = retention_pruner {
+        handle.abort();
+        let _ = handle.await;
+    }
 
     // Drop every recorder handle so the pipeline observes a closed channel, then drain it.
     drop(state);

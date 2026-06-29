@@ -31,6 +31,7 @@ Set `server.deployment = "production"` to make startup fail fast on insecure or 
 
 - `server.public_url` uses `https`.
 - `proxy.allow_upstreams` is non-empty, so the service cannot run as an unrestricted open proxy.
+- `storage.retention_days` is set, so trace and audit storage growth is bounded.
 - `auth.cookie_secure = true`.
 - `auth.login_rate_limit.enabled = true`.
 - `auth.local_admin.password_hash` is set, and plaintext `auth.local_admin.password` is not set.
@@ -52,6 +53,11 @@ max_request_body_bytes = 67108864
 max_websocket_message_bytes = 16777216
 max_websocket_session_bytes = 536870912
 
+[storage]
+retention_days = 30
+retention_prune_interval_secs = 3600
+retention_prune_batch_size = 1000
+
 [auth]
 cookie_secure = true
 session_ttl_hours = 24
@@ -72,7 +78,9 @@ body_redaction = "json_secrets"
 
 Local admin login failures are throttled in memory per username and source IP. The default allows 5 failures in 300 seconds, then returns `429 Too Many Requests` with `Retry-After` for 900 seconds. This protects a single process and records `login_throttled` audit events, but production deployments with multiple replicas or internet exposure should also enforce rate limits at the edge.
 
-Useful environment overrides include `LLMTRACE_DEPLOYMENT`, `LLMTRACE_PUBLIC_URL`, `LLMTRACE_LISTEN`, `DATABASE_URL`, `LLMTRACE_DEFAULT_UPSTREAM`, `LLMTRACE_MAX_REQUEST_BODY_BYTES`, `LLMTRACE_MAX_WEBSOCKET_MESSAGE_BYTES`, `LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES`, `LLMTRACE_AUTH_COOKIE_SECURE`, `LLMTRACE_LOGIN_RATE_LIMIT_ENABLED`, `LLMTRACE_LOGIN_RATE_LIMIT_MAX_FAILURES`, `LLMTRACE_LOGIN_RATE_LIMIT_WINDOW_SECS`, `LLMTRACE_LOGIN_RATE_LIMIT_LOCKOUT_SECS`, `LLMTRACE_LOGIN_RATE_LIMIT_MAX_TRACKED_ENTRIES`, `LLMTRACE_ADMIN_USERNAME`, `LLMTRACE_ADMIN_PASSWORD`, and `LLMTRACE_ADMIN_PASSWORD_HASH`.
+When `storage.retention_days` is set, a background task prunes old `request_traces`, minute rollups, empty trace sessions, and UI audit events in batches of `storage.retention_prune_batch_size` every `storage.retention_prune_interval_secs` seconds. Expired UI sessions and OAuth states are also cleaned up by the same task. Development mode leaves `retention_days` unset by default, so local data is not pruned unless you opt in.
+
+Useful environment overrides include `LLMTRACE_DEPLOYMENT`, `LLMTRACE_PUBLIC_URL`, `LLMTRACE_LISTEN`, `DATABASE_URL`, `LLMTRACE_RETENTION_DAYS`, `LLMTRACE_RETENTION_PRUNE_INTERVAL_SECS`, `LLMTRACE_RETENTION_PRUNE_BATCH_SIZE`, `LLMTRACE_DEFAULT_UPSTREAM`, `LLMTRACE_MAX_REQUEST_BODY_BYTES`, `LLMTRACE_MAX_WEBSOCKET_MESSAGE_BYTES`, `LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES`, `LLMTRACE_AUTH_COOKIE_SECURE`, `LLMTRACE_LOGIN_RATE_LIMIT_ENABLED`, `LLMTRACE_LOGIN_RATE_LIMIT_MAX_FAILURES`, `LLMTRACE_LOGIN_RATE_LIMIT_WINDOW_SECS`, `LLMTRACE_LOGIN_RATE_LIMIT_LOCKOUT_SECS`, `LLMTRACE_LOGIN_RATE_LIMIT_MAX_TRACKED_ENTRIES`, `LLMTRACE_ADMIN_USERNAME`, `LLMTRACE_ADMIN_PASSWORD`, and `LLMTRACE_ADMIN_PASSWORD_HASH`.
 
 ## Upstream allowlist
 

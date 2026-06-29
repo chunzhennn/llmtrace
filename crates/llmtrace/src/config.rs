@@ -14,6 +14,8 @@ use crate::types::{BodyRedaction, PluginHook};
 
 const DEFAULT_LOCAL_ADMIN_PASSWORD: &str = "admin";
 const MAX_SESSION_TTL_HOURS: i64 = 24 * 30;
+const MAX_RETENTION_DAYS: i64 = 36500;
+const MAX_RETENTION_PRUNE_BATCH_SIZE: i64 = 100_000;
 const MAX_PLUGIN_TIMEOUT_MS: u64 = 30_000;
 const UPSTREAM_ALLOWLIST_SCHEMES: &[&str] = &["http", "https", "ws", "wss"];
 
@@ -57,6 +59,9 @@ pub struct StorageConfig {
     pub max_connections: u32,
     pub trace_queue_capacity: usize,
     pub trace_worker_count: usize,
+    pub retention_days: Option<i64>,
+    pub retention_prune_interval_secs: u64,
+    pub retention_prune_batch_size: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -251,6 +256,17 @@ impl Config {
         if let Ok(value) = std::env::var("DATABASE_URL") {
             config.storage.postgres_url = value;
         }
+        if let Ok(value) = std::env::var("LLMTRACE_RETENTION_DAYS") {
+            config.storage.retention_days = Some(parse_i64_env("LLMTRACE_RETENTION_DAYS", &value)?);
+        }
+        if let Ok(value) = std::env::var("LLMTRACE_RETENTION_PRUNE_INTERVAL_SECS") {
+            config.storage.retention_prune_interval_secs =
+                parse_u64_env("LLMTRACE_RETENTION_PRUNE_INTERVAL_SECS", &value)?;
+        }
+        if let Ok(value) = std::env::var("LLMTRACE_RETENTION_PRUNE_BATCH_SIZE") {
+            config.storage.retention_prune_batch_size =
+                parse_i64_env("LLMTRACE_RETENTION_PRUNE_BATCH_SIZE", &value)?;
+        }
         if let Ok(value) = std::env::var("LLMTRACE_LISTEN") {
             config.server.listen = value;
         }
@@ -433,6 +449,34 @@ impl Config {
         }
         if self.storage.trace_worker_count == 0 {
             errors.push("storage.trace_worker_count must be greater than 0".to_string());
+        }
+        match self.storage.retention_days {
+            Some(days) if days <= 0 => {
+                errors.push("storage.retention_days must be greater than 0 when set".to_string());
+            }
+            Some(days) if days > MAX_RETENTION_DAYS => {
+                errors.push(format!(
+                    "storage.retention_days must be at most {MAX_RETENTION_DAYS}"
+                ));
+            }
+            Some(_) => {}
+            None if self.server.deployment.is_production() => {
+                errors.push(
+                    "storage.retention_days is required when server.deployment is production"
+                        .to_string(),
+                );
+            }
+            None => {}
+        }
+        if self.storage.retention_prune_interval_secs == 0 {
+            errors.push("storage.retention_prune_interval_secs must be greater than 0".to_string());
+        }
+        if self.storage.retention_prune_batch_size <= 0 {
+            errors.push("storage.retention_prune_batch_size must be greater than 0".to_string());
+        } else if self.storage.retention_prune_batch_size > MAX_RETENTION_PRUNE_BATCH_SIZE {
+            errors.push(format!(
+                "storage.retention_prune_batch_size must be at most {MAX_RETENTION_PRUNE_BATCH_SIZE}"
+            ));
         }
     }
 
@@ -749,6 +793,12 @@ fn parse_u32_env(name: &str, value: &str) -> anyhow::Result<u32> {
         .with_context(|| format!("{name} must be an unsigned integer"))
 }
 
+fn parse_i64_env(name: &str, value: &str) -> anyhow::Result<i64> {
+    value
+        .parse()
+        .with_context(|| format!("{name} must be an integer"))
+}
+
 fn parse_u64_env(name: &str, value: &str) -> anyhow::Result<u64> {
     value
         .parse()
@@ -794,6 +844,9 @@ impl Default for StorageConfig {
             max_connections: 10,
             trace_queue_capacity: 4096,
             trace_worker_count: 4,
+            retention_days: None,
+            retention_prune_interval_secs: 3600,
+            retention_prune_batch_size: 1000,
         }
     }
 }
@@ -882,6 +935,7 @@ mod tests {
 
         assert!(error.contains("server.public_url must use https"));
         assert!(error.contains("proxy.allow_upstreams must not be empty"));
+        assert!(error.contains("storage.retention_days is required"));
         assert!(error.contains("auth.cookie_secure must be true"));
         assert!(error.contains("auth.local_admin.password must not be used"));
         assert!(error.contains("redaction.body_redaction must be drop or json_secrets"));
@@ -893,6 +947,7 @@ mod tests {
         config.server.deployment = DeploymentMode::Production;
         config.server.public_url = "https://llmtrace.example.com".to_string();
         config.proxy.allow_upstreams = vec!["api.openai.com".to_string()];
+        config.storage.retention_days = Some(30);
         config.auth.cookie_secure = true;
         config.auth.local_admin.password = None;
         config.auth.local_admin.password_hash = Some(VALID_ARGON2_HASH.to_string());
@@ -902,6 +957,22 @@ mod tests {
         let error = config.validate().unwrap_err().to_string();
 
         assert!(error.contains("auth.login_rate_limit.enabled must be true"));
+    }
+
+    #[test]
+    fn production_config_requires_retention_days() {
+        let mut config = Config::default();
+        config.server.deployment = DeploymentMode::Production;
+        config.server.public_url = "https://llmtrace.example.com".to_string();
+        config.proxy.allow_upstreams = vec!["api.openai.com".to_string()];
+        config.auth.cookie_secure = true;
+        config.auth.local_admin.password = None;
+        config.auth.local_admin.password_hash = Some(VALID_ARGON2_HASH.to_string());
+        config.redaction.body_redaction = BodyRedaction::JsonSecrets;
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("storage.retention_days is required"));
     }
 
     #[test]
@@ -926,6 +997,7 @@ mod tests {
         config.server.deployment = DeploymentMode::Production;
         config.server.public_url = "https://llmtrace.example.com".to_string();
         config.proxy.allow_upstreams = vec!["api.openai.com".to_string()];
+        config.storage.retention_days = Some(30);
         config.auth.cookie_secure = true;
         config.auth.local_admin.password = None;
         config.auth.local_admin.password_hash = Some(VALID_ARGON2_HASH.to_string());
@@ -955,6 +1027,9 @@ mod tests {
         config.storage.max_connections = 0;
         config.storage.trace_queue_capacity = 0;
         config.storage.trace_worker_count = 0;
+        config.storage.retention_days = Some(0);
+        config.storage.retention_prune_interval_secs = 0;
+        config.storage.retention_prune_batch_size = 0;
         config.auth.session_ttl_hours = 0;
 
         let error = config.validate().unwrap_err().to_string();
@@ -967,6 +1042,9 @@ mod tests {
         assert!(error.contains("storage.max_connections must be greater than 0"));
         assert!(error.contains("storage.trace_queue_capacity must be greater than 0"));
         assert!(error.contains("storage.trace_worker_count must be greater than 0"));
+        assert!(error.contains("storage.retention_days must be greater than 0"));
+        assert!(error.contains("storage.retention_prune_interval_secs must be greater than 0"));
+        assert!(error.contains("storage.retention_prune_batch_size must be greater than 0"));
         assert!(error.contains("auth.session_ttl_hours must be greater than 0"));
     }
 

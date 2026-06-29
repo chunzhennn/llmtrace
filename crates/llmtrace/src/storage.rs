@@ -1,10 +1,12 @@
 use std::io::Read;
+use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Postgres, QueryBuilder, Row, Transaction};
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::config::StorageConfig;
@@ -13,6 +15,16 @@ use crate::types::RequestKind;
 const DEFAULT_SESSION_MESSAGE_LIMIT: i64 = 100;
 const MAX_SESSION_MESSAGE_LIMIT: i64 = 500;
 const MAX_SESSION_MESSAGE_OFFSET: i64 = 1_000_000;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RetentionPruneResult {
+    pub request_traces: u64,
+    pub trace_rollups_minute: u64,
+    pub trace_sessions: u64,
+    pub ui_audit_events: u64,
+    pub ui_sessions: u64,
+    pub oauth_states: u64,
+}
 
 #[derive(Debug, Clone)]
 pub struct TraceRecord {
@@ -194,6 +206,17 @@ impl SessionMessagePage {
     }
 }
 
+impl RetentionPruneResult {
+    fn total_deleted(&self) -> u64 {
+        self.request_traces
+            + self.trace_rollups_minute
+            + self.trace_sessions
+            + self.ui_audit_events
+            + self.ui_sessions
+            + self.oauth_states
+    }
+}
+
 pub async fn connect(config: &StorageConfig) -> anyhow::Result<PgPool> {
     Ok(PgPoolOptions::new()
         .max_connections(config.max_connections)
@@ -211,6 +234,233 @@ pub async fn readiness_check(pool: &PgPool) -> anyhow::Result<()> {
         .fetch_one(pool)
         .await?;
     Ok(())
+}
+
+pub fn spawn_retention_pruner(pool: PgPool, config: StorageConfig) -> Option<JoinHandle<()>> {
+    let retention_days = config.retention_days?;
+    let interval = Duration::from_secs(config.retention_prune_interval_secs);
+    let batch_size = config.retention_prune_batch_size;
+
+    Some(tokio::spawn(async move {
+        loop {
+            match prune_retention(&pool, retention_days, batch_size).await {
+                Ok(result) if result.total_deleted() > 0 => {
+                    tracing::info!(
+                        request_traces = result.request_traces,
+                        trace_rollups_minute = result.trace_rollups_minute,
+                        trace_sessions = result.trace_sessions,
+                        ui_audit_events = result.ui_audit_events,
+                        ui_sessions = result.ui_sessions,
+                        oauth_states = result.oauth_states,
+                        "retention prune completed"
+                    );
+                }
+                Ok(_) => {
+                    tracing::debug!("retention prune completed with no expired rows");
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "retention prune failed");
+                }
+            }
+            tokio::time::sleep(interval).await;
+        }
+    }))
+}
+
+pub async fn prune_retention(
+    pool: &PgPool,
+    retention_days: i64,
+    batch_size: i64,
+) -> anyhow::Result<RetentionPruneResult> {
+    if retention_days <= 0 {
+        anyhow::bail!("retention_days must be greater than 0");
+    }
+    if batch_size <= 0 {
+        anyhow::bail!("retention prune batch_size must be greater than 0");
+    }
+
+    let now = Utc::now();
+    let cutoff = retention_cutoff(now, retention_days);
+    let request_traces = delete_request_traces_before(pool, cutoff, batch_size).await?;
+    let trace_rollups_minute = delete_rollups_before(pool, cutoff, batch_size).await?;
+    let trace_sessions = delete_empty_sessions_before(pool, cutoff, batch_size).await?;
+    let ui_audit_events = delete_ui_audit_events_before(pool, cutoff, batch_size).await?;
+    let ui_sessions = delete_expired_ui_sessions(pool, now, batch_size).await?;
+    let oauth_states = delete_expired_oauth_states(pool, now, batch_size).await?;
+
+    Ok(RetentionPruneResult {
+        request_traces,
+        trace_rollups_minute,
+        trace_sessions,
+        ui_audit_events,
+        ui_sessions,
+        oauth_states,
+    })
+}
+
+fn retention_cutoff(now: DateTime<Utc>, retention_days: i64) -> DateTime<Utc> {
+    now - ChronoDuration::days(retention_days)
+}
+
+async fn delete_request_traces_before(
+    pool: &PgPool,
+    cutoff: DateTime<Utc>,
+    batch_size: i64,
+) -> anyhow::Result<u64> {
+    let result = sqlx::query(
+        r#"
+        WITH doomed AS (
+            SELECT id
+            FROM request_traces
+            WHERE started_at < $1
+            ORDER BY started_at ASC
+            LIMIT $2
+        )
+        DELETE FROM request_traces r
+        USING doomed
+        WHERE r.id = doomed.id
+        "#,
+    )
+    .bind(cutoff)
+    .bind(batch_size)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+async fn delete_rollups_before(
+    pool: &PgPool,
+    cutoff: DateTime<Utc>,
+    batch_size: i64,
+) -> anyhow::Result<u64> {
+    let result = sqlx::query(
+        r#"
+        WITH doomed AS (
+            SELECT bucket
+            FROM trace_rollups_minute
+            WHERE bucket < $1
+            ORDER BY bucket ASC
+            LIMIT $2
+        )
+        DELETE FROM trace_rollups_minute r
+        USING doomed
+        WHERE r.bucket = doomed.bucket
+        "#,
+    )
+    .bind(cutoff)
+    .bind(batch_size)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+async fn delete_empty_sessions_before(
+    pool: &PgPool,
+    cutoff: DateTime<Utc>,
+    batch_size: i64,
+) -> anyhow::Result<u64> {
+    let result = sqlx::query(
+        r#"
+        WITH doomed AS (
+            SELECT s.id
+            FROM trace_sessions s
+            WHERE s.last_seen < $1
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM request_traces r
+                  WHERE r.session_id = s.id
+              )
+            ORDER BY s.last_seen ASC
+            LIMIT $2
+        )
+        DELETE FROM trace_sessions s
+        USING doomed
+        WHERE s.id = doomed.id
+        "#,
+    )
+    .bind(cutoff)
+    .bind(batch_size)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+async fn delete_ui_audit_events_before(
+    pool: &PgPool,
+    cutoff: DateTime<Utc>,
+    batch_size: i64,
+) -> anyhow::Result<u64> {
+    let result = sqlx::query(
+        r#"
+        WITH doomed AS (
+            SELECT id
+            FROM ui_audit_events
+            WHERE created_at < $1
+            ORDER BY created_at ASC, id ASC
+            LIMIT $2
+        )
+        DELETE FROM ui_audit_events e
+        USING doomed
+        WHERE e.id = doomed.id
+        "#,
+    )
+    .bind(cutoff)
+    .bind(batch_size)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+async fn delete_expired_ui_sessions(
+    pool: &PgPool,
+    now: DateTime<Utc>,
+    batch_size: i64,
+) -> anyhow::Result<u64> {
+    let result = sqlx::query(
+        r#"
+        WITH doomed AS (
+            SELECT id
+            FROM ui_sessions
+            WHERE expires_at < $1
+            ORDER BY expires_at ASC
+            LIMIT $2
+        )
+        DELETE FROM ui_sessions s
+        USING doomed
+        WHERE s.id = doomed.id
+        "#,
+    )
+    .bind(now)
+    .bind(batch_size)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+async fn delete_expired_oauth_states(
+    pool: &PgPool,
+    now: DateTime<Utc>,
+    batch_size: i64,
+) -> anyhow::Result<u64> {
+    let result = sqlx::query(
+        r#"
+        WITH doomed AS (
+            SELECT state
+            FROM oauth_states
+            WHERE expires_at < $1
+            ORDER BY expires_at ASC
+            LIMIT $2
+        )
+        DELETE FROM oauth_states s
+        USING doomed
+        WHERE s.state = doomed.state
+        "#,
+    )
+    .bind(now)
+    .bind(batch_size)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 pub fn compress(data: &[u8]) -> anyhow::Result<Vec<u8>> {
@@ -1540,6 +1790,34 @@ mod tests {
 
         assert_eq!(page.next_offset(true), Some(150));
         assert_eq!(page.next_offset(false), None);
+    }
+
+    #[test]
+    fn retention_cutoff_subtracts_retention_days() {
+        let now = DateTime::parse_from_rfc3339("2026-06-29T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        assert_eq!(
+            retention_cutoff(now, 30),
+            DateTime::parse_from_rfc3339("2026-05-30T12:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+    }
+
+    #[test]
+    fn retention_prune_result_sums_deleted_rows() {
+        let result = RetentionPruneResult {
+            request_traces: 1,
+            trace_rollups_minute: 2,
+            trace_sessions: 3,
+            ui_audit_events: 4,
+            ui_sessions: 5,
+            oauth_states: 6,
+        };
+
+        assert_eq!(result.total_deleted(), 21);
     }
 
     #[test]

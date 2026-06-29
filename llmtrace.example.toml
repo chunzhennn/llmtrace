@@ -25,6 +25,11 @@ postgres_url = "postgres://postgres:postgres@localhost:5432/llmtrace"
 max_connections = 10
 trace_queue_capacity = 4096
 trace_worker_count = 4
+# Production mode requires retention_days. Leave unset in development if you
+# do not want automatic trace/audit pruning.
+# retention_days = 30
+retention_prune_interval_secs = 3600
+retention_prune_batch_size = 1000
 
 [auth]
 # Required in production mode so browser session cookies are sent only over HTTPS.
