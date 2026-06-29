@@ -48,6 +48,9 @@ deployment = "production"
 [proxy]
 default_upstream = "https://api.openai.com"
 allow_upstreams = ["api.openai.com"]
+max_request_body_bytes = 67108864
+max_websocket_message_bytes = 16777216
+max_websocket_session_bytes = 536870912
 
 [auth]
 cookie_secure = true
@@ -69,7 +72,7 @@ body_redaction = "json_secrets"
 
 Local admin login failures are throttled in memory per username and source IP. The default allows 5 failures in 300 seconds, then returns `429 Too Many Requests` with `Retry-After` for 900 seconds. This protects a single process and records `login_throttled` audit events, but production deployments with multiple replicas or internet exposure should also enforce rate limits at the edge.
 
-Useful environment overrides include `LLMTRACE_DEPLOYMENT`, `LLMTRACE_PUBLIC_URL`, `LLMTRACE_LISTEN`, `DATABASE_URL`, `LLMTRACE_DEFAULT_UPSTREAM`, `LLMTRACE_AUTH_COOKIE_SECURE`, `LLMTRACE_LOGIN_RATE_LIMIT_ENABLED`, `LLMTRACE_LOGIN_RATE_LIMIT_MAX_FAILURES`, `LLMTRACE_LOGIN_RATE_LIMIT_WINDOW_SECS`, `LLMTRACE_LOGIN_RATE_LIMIT_LOCKOUT_SECS`, `LLMTRACE_LOGIN_RATE_LIMIT_MAX_TRACKED_ENTRIES`, `LLMTRACE_ADMIN_USERNAME`, `LLMTRACE_ADMIN_PASSWORD`, and `LLMTRACE_ADMIN_PASSWORD_HASH`.
+Useful environment overrides include `LLMTRACE_DEPLOYMENT`, `LLMTRACE_PUBLIC_URL`, `LLMTRACE_LISTEN`, `DATABASE_URL`, `LLMTRACE_DEFAULT_UPSTREAM`, `LLMTRACE_MAX_REQUEST_BODY_BYTES`, `LLMTRACE_MAX_WEBSOCKET_MESSAGE_BYTES`, `LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES`, `LLMTRACE_AUTH_COOKIE_SECURE`, `LLMTRACE_LOGIN_RATE_LIMIT_ENABLED`, `LLMTRACE_LOGIN_RATE_LIMIT_MAX_FAILURES`, `LLMTRACE_LOGIN_RATE_LIMIT_WINDOW_SECS`, `LLMTRACE_LOGIN_RATE_LIMIT_LOCKOUT_SECS`, `LLMTRACE_LOGIN_RATE_LIMIT_MAX_TRACKED_ENTRIES`, `LLMTRACE_ADMIN_USERNAME`, `LLMTRACE_ADMIN_PASSWORD`, and `LLMTRACE_ADMIN_PASSWORD_HASH`.
 
 ## Upstream allowlist
 
@@ -113,7 +116,7 @@ curl http://127.0.0.1:3000/v1/messages \
 
 - UI authentication is login-only: local admin and optional OAuth/OIDC. There is no authorization or role model.
 - Request/response bodies are stored unredacted by default. Set `redaction.body_redaction` to `drop` to store no body, or `json_secrets` to mask secret-looking JSON string values. Credential-like headers are redacted, and hashed when `redaction.store_header_hash` is enabled.
-- HTTP request and response bodies are streamed through the proxy. Only the first `proxy.max_body_capture_bytes` bytes are retained for trace parsing and storage. Detailed trace reads also enforce that limit while decompressing stored bodies, so malformed or unexpectedly large compressed data is rejected instead of expanded without bound.
+- HTTP request and response bodies are streamed through the proxy. Only the first `proxy.max_body_capture_bytes` bytes are retained for trace parsing and storage. Detailed trace reads also enforce that limit while decompressing stored bodies, so malformed or unexpectedly large compressed data is rejected instead of expanded without bound. Live HTTP request bodies are capped by `proxy.max_request_body_bytes`; oversized requests are rejected with `413 Payload Too Large`. WebSocket messages and per-direction session bytes are capped by `proxy.max_websocket_message_bytes` and `proxy.max_websocket_session_bytes`.
 - Trace enrichment, compression, and Postgres writes run in a bounded background pipeline: at most `storage.trace_queue_capacity` events wait in the queue and at most `storage.trace_worker_count` events are processed concurrently. If the queue is full, the proxy drops trace events instead of delaying live traffic.
 - WASM plugins use a small JSON ABI. They enrich traces asynchronously and cannot mutate live traffic. Each invocation is bounded by the plugin's `timeout_ms` and trapped if it runs longer.
 - Ad hoc analytics use a structured `/api/query` endpoint over allowlisted datasets, fields, filters, and sort keys. The legacy raw SQL endpoint is disabled.

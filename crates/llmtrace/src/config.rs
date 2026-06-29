@@ -45,6 +45,9 @@ pub struct ProxyConfig {
     pub upstream_header: String,
     pub timeout_secs: u64,
     pub max_body_capture_bytes: usize,
+    pub max_request_body_bytes: usize,
+    pub max_websocket_message_bytes: usize,
+    pub max_websocket_session_bytes: usize,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -260,6 +263,18 @@ impl Config {
         if let Ok(value) = std::env::var("LLMTRACE_DEFAULT_UPSTREAM") {
             config.proxy.default_upstream = value;
         }
+        if let Ok(value) = std::env::var("LLMTRACE_MAX_REQUEST_BODY_BYTES") {
+            config.proxy.max_request_body_bytes =
+                parse_usize_env("LLMTRACE_MAX_REQUEST_BODY_BYTES", &value)?;
+        }
+        if let Ok(value) = std::env::var("LLMTRACE_MAX_WEBSOCKET_MESSAGE_BYTES") {
+            config.proxy.max_websocket_message_bytes =
+                parse_usize_env("LLMTRACE_MAX_WEBSOCKET_MESSAGE_BYTES", &value)?;
+        }
+        if let Ok(value) = std::env::var("LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES") {
+            config.proxy.max_websocket_session_bytes =
+                parse_usize_env("LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES", &value)?;
+        }
         if let Ok(value) = std::env::var("LLMTRACE_AUTH_COOKIE_SECURE") {
             config.auth.cookie_secure = parse_bool_env("LLMTRACE_AUTH_COOKIE_SECURE", &value)?;
         }
@@ -372,6 +387,18 @@ impl Config {
 
         if self.proxy.timeout_secs == 0 {
             errors.push("proxy.timeout_secs must be greater than 0".to_string());
+        }
+        if self.proxy.max_body_capture_bytes == 0 {
+            errors.push("proxy.max_body_capture_bytes must be greater than 0".to_string());
+        }
+        if self.proxy.max_request_body_bytes == 0 {
+            errors.push("proxy.max_request_body_bytes must be greater than 0".to_string());
+        }
+        if self.proxy.max_websocket_message_bytes == 0 {
+            errors.push("proxy.max_websocket_message_bytes must be greater than 0".to_string());
+        }
+        if self.proxy.max_websocket_session_bytes == 0 {
+            errors.push("proxy.max_websocket_session_bytes must be greater than 0".to_string());
         }
 
         if self.server.deployment.is_production() && self.proxy.allow_upstreams.is_empty() {
@@ -753,6 +780,9 @@ impl Default for ProxyConfig {
             upstream_header: "x-llmtrace-upstream".to_string(),
             timeout_secs: 300,
             max_body_capture_bytes: 1024 * 1024,
+            max_request_body_bytes: 64 * 1024 * 1024,
+            max_websocket_message_bytes: 16 * 1024 * 1024,
+            max_websocket_session_bytes: 512 * 1024 * 1024,
         }
     }
 }
@@ -918,6 +948,10 @@ mod tests {
     fn validation_rejects_bad_operational_bounds() {
         let mut config = Config::default();
         config.proxy.timeout_secs = 0;
+        config.proxy.max_body_capture_bytes = 0;
+        config.proxy.max_request_body_bytes = 0;
+        config.proxy.max_websocket_message_bytes = 0;
+        config.proxy.max_websocket_session_bytes = 0;
         config.storage.max_connections = 0;
         config.storage.trace_queue_capacity = 0;
         config.storage.trace_worker_count = 0;
@@ -926,6 +960,10 @@ mod tests {
         let error = config.validate().unwrap_err().to_string();
 
         assert!(error.contains("proxy.timeout_secs must be greater than 0"));
+        assert!(error.contains("proxy.max_body_capture_bytes must be greater than 0"));
+        assert!(error.contains("proxy.max_request_body_bytes must be greater than 0"));
+        assert!(error.contains("proxy.max_websocket_message_bytes must be greater than 0"));
+        assert!(error.contains("proxy.max_websocket_session_bytes must be greater than 0"));
         assert!(error.contains("storage.max_connections must be greater than 0"));
         assert!(error.contains("storage.trace_queue_capacity must be greater than 0"));
         assert!(error.contains("storage.trace_worker_count must be greater than 0"));

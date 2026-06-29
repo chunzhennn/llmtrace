@@ -13,7 +13,12 @@ default_upstream = "https://api.openai.com"
 allow_upstreams = []
 upstream_header = "x-llmtrace-upstream"
 timeout_secs = 300
+# Stored request/response samples are capped by this value.
 max_body_capture_bytes = 1048576
+# Live proxy traffic limits. Oversized HTTP request bodies are rejected with 413.
+max_request_body_bytes = 67108864
+max_websocket_message_bytes = 16777216
+max_websocket_session_bytes = 536870912
 
 [storage]
 postgres_url = "postgres://postgres:postgres@localhost:5432/llmtrace"

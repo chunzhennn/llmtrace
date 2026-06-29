@@ -2,6 +2,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::task::{Context, Poll};
 use std::time::Instant;
+use std::{fmt, io};
 
 use axum::body::Body;
 use axum::extract::State;
@@ -34,6 +35,8 @@ const HOP_BY_HOP_HEADERS: &[&str] = &[
     "transfer-encoding",
     "upgrade",
 ];
+
+const REQUEST_BODY_LIMIT_ERROR: &str = "request body exceeds configured limit";
 
 pub async fn proxy(
     State(state): State<AppState>,
@@ -78,12 +81,39 @@ async fn proxy_http(
     enforce_upstream_allowlist(&state, &upstream_url)?;
     let upstream_host = upstream_url.host_str().map(str::to_string);
     let capture_limit = state.config.proxy.max_body_capture_bytes;
+    let max_request_body_bytes = state.config.proxy.max_request_body_bytes;
 
     let request_capture = SharedBodyCapture::default();
     let redacted_request_headers = redact_headers(&parts.headers, &state.config.redaction);
     let plugin_request_headers = headers_to_json(&parts.headers);
     let request_secret_hash = redacted_request_headers.first_secret_hash.clone();
-    let request_body = RequestCaptureStream::new(body, request_capture.clone(), capture_limit);
+
+    if content_length_exceeds(&parts.headers, max_request_body_bytes) {
+        let message = request_body_limit_message(max_request_body_bytes);
+        state.traces.record(TraceEvent {
+            completed_at: Some(chrono::Utc::now()),
+            method: method.to_string(),
+            original_uri,
+            upstream_url: upstream_url.to_string(),
+            upstream_host,
+            status: Some(StatusCode::PAYLOAD_TOO_LARGE.as_u16() as i32),
+            error: Some(message),
+            api_key_hash: request_secret_hash,
+            duration_ms: Some(started.elapsed().as_millis() as i64),
+            request_headers: redacted_request_headers.json,
+            plugin_request_headers,
+            run_plugins: false,
+            ..TraceEvent::base(trace_id, started_at)
+        });
+        return Ok(payload_too_large_response(max_request_body_bytes));
+    }
+
+    let request_body = RequestCaptureStream::new(
+        body,
+        request_capture.clone(),
+        capture_limit,
+        max_request_body_bytes,
+    );
 
     let mut upstream_request = state
         .http
@@ -102,13 +132,21 @@ async fn proxy_http(
         Ok(response) => response,
         Err(error) => {
             let request = request_capture.snapshot();
+            let request_limit_exceeded = request.limit_exceeded;
+            let error_message = if request_limit_exceeded {
+                request_body_limit_message(max_request_body_bytes)
+            } else {
+                error.to_string()
+            };
             state.traces.record(TraceEvent {
                 completed_at: Some(chrono::Utc::now()),
                 method: method.to_string(),
                 original_uri,
                 upstream_url: upstream_url.to_string(),
                 upstream_host,
-                error: Some(error.to_string()),
+                status: request_limit_exceeded
+                    .then_some(StatusCode::PAYLOAD_TOO_LARGE.as_u16() as i32),
+                error: Some(error_message),
                 api_key_hash: request_secret_hash,
                 duration_ms: Some(started.elapsed().as_millis() as i64),
                 request_body_bytes: request.total_bytes,
@@ -119,6 +157,9 @@ async fn proxy_http(
                 run_plugins: true,
                 ..TraceEvent::base(trace_id, started_at)
             });
+            if request_limit_exceeded {
+                return Ok(payload_too_large_response(max_request_body_bytes));
+            }
             anyhow::bail!(error);
         }
     };
@@ -175,24 +216,20 @@ struct BodyCapture {
     bytes: Vec<u8>,
     total_bytes: i64,
     truncated: bool,
+    limit_exceeded: bool,
 }
 
 impl SharedBodyCapture {
-    fn push(&self, chunk: &[u8], limit: usize) {
+    fn push_request(&self, chunk: &[u8], capture_limit: usize, live_limit: usize) -> bool {
         let mut capture = self
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        capture.total_bytes += chunk.len() as i64;
-
-        if capture.bytes.len() < limit {
-            let remaining = limit - capture.bytes.len();
-            let captured = remaining.min(chunk.len());
-            capture.bytes.extend_from_slice(&chunk[..captured]);
-            capture.truncated |= captured < chunk.len();
-        } else {
-            capture.truncated |= !chunk.is_empty();
+        push_body_capture(&mut capture, chunk, capture_limit);
+        if (capture.total_bytes as u128) > (live_limit as u128) {
+            capture.limit_exceeded = true;
         }
+        capture.limit_exceeded
     }
 
     fn snapshot(&self) -> BodyCapture {
@@ -206,29 +243,44 @@ impl SharedBodyCapture {
 struct RequestCaptureStream {
     inner: Pin<Box<dyn Stream<Item = Result<Bytes, axum::Error>> + Send>>,
     capture: SharedBodyCapture,
-    limit: usize,
+    capture_limit: usize,
+    live_limit: usize,
 }
 
 impl RequestCaptureStream {
-    fn new(body: Body, capture: SharedBodyCapture, limit: usize) -> Self {
+    fn new(
+        body: Body,
+        capture: SharedBodyCapture,
+        capture_limit: usize,
+        live_limit: usize,
+    ) -> Self {
         Self {
             inner: Box::pin(body.into_data_stream()),
             capture,
-            limit,
+            capture_limit,
+            live_limit,
         }
     }
 }
 
 impl Stream for RequestCaptureStream {
-    type Item = Result<Bytes, axum::Error>;
+    type Item = Result<Bytes, io::Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.inner.as_mut().poll_next(cx) {
             Poll::Ready(Some(Ok(chunk))) => {
-                self.capture.push(&chunk, self.limit);
-                Poll::Ready(Some(Ok(chunk)))
+                let limit_exceeded =
+                    self.capture
+                        .push_request(&chunk, self.capture_limit, self.live_limit);
+                if limit_exceeded {
+                    Poll::Ready(Some(Err(request_body_limit_io_error(self.live_limit))))
+                } else {
+                    Poll::Ready(Some(Ok(chunk)))
+                }
             }
-            other => other,
+            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(io::Error::other(error)))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -447,14 +499,23 @@ async fn handle_websocket(
     let (mut upstream_tx, mut upstream_rx) = upstream_socket.split();
     let c2u_stats = stats.clone();
     let u2c_stats = stats.clone();
+    let max_ws_message_bytes = state.config.proxy.max_websocket_message_bytes;
+    let max_ws_session_bytes = state.config.proxy.max_websocket_session_bytes;
 
     let client_to_upstream = async move {
         while let Some(message) = client_rx.next().await {
             let message = message?;
             {
                 let mut stats = c2u_stats.lock().await;
+                let message_size = ws_message_size(&message);
+                stats.bytes_in = add_ws_bytes(
+                    "client",
+                    stats.bytes_in,
+                    message_size,
+                    max_ws_message_bytes,
+                    max_ws_session_bytes,
+                )?;
                 stats.client_frames += 1;
-                stats.bytes_in += ws_message_size(&message) as i64;
                 capture_ws_message(&mut stats.frames, "client", &message);
             }
             if let Some(message) = axum_to_tungstenite(message) {
@@ -469,8 +530,15 @@ async fn handle_websocket(
             let message = message?;
             {
                 let mut stats = u2c_stats.lock().await;
+                let message_size = tungstenite_message_size(&message);
+                stats.bytes_out = add_ws_bytes(
+                    "upstream",
+                    stats.bytes_out,
+                    message_size,
+                    max_ws_message_bytes,
+                    max_ws_session_bytes,
+                )?;
                 stats.upstream_frames += 1;
-                stats.bytes_out += tungstenite_message_size(&message) as i64;
                 capture_tungstenite_message(&mut stats.frames, "upstream", &message);
             }
             if let Some(message) = tungstenite_to_axum(message) {
@@ -652,6 +720,83 @@ fn tungstenite_message_size(message: &TungsteniteMessage) -> usize {
     }
 }
 
+fn push_body_capture(capture: &mut BodyCapture, chunk: &[u8], limit: usize) {
+    capture.total_bytes = capture.total_bytes.saturating_add(chunk.len() as i64);
+
+    if capture.bytes.len() < limit {
+        let remaining = limit - capture.bytes.len();
+        let captured = remaining.min(chunk.len());
+        capture.bytes.extend_from_slice(&chunk[..captured]);
+        capture.truncated |= captured < chunk.len();
+    } else {
+        capture.truncated |= !chunk.is_empty();
+    }
+}
+
+fn content_length_exceeds(headers: &HeaderMap, limit: usize) -> bool {
+    headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u128>().ok())
+        .is_some_and(|content_length| content_length > limit as u128)
+}
+
+fn payload_too_large_response(limit: usize) -> axum::response::Response {
+    (
+        StatusCode::PAYLOAD_TOO_LARGE,
+        axum::Json(json!({
+            "error": REQUEST_BODY_LIMIT_ERROR,
+            "max_request_body_bytes": limit,
+        })),
+    )
+        .into_response()
+}
+
+fn request_body_limit_message(limit: usize) -> String {
+    format!("{REQUEST_BODY_LIMIT_ERROR} of {limit} bytes")
+}
+
+fn request_body_limit_io_error(limit: usize) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        RequestBodyLimitExceeded { limit },
+    )
+}
+
+#[derive(Debug)]
+struct RequestBodyLimitExceeded {
+    limit: usize,
+}
+
+impl fmt::Display for RequestBodyLimitExceeded {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&request_body_limit_message(self.limit))
+    }
+}
+
+impl std::error::Error for RequestBodyLimitExceeded {}
+
+fn add_ws_bytes(
+    direction: &str,
+    current: i64,
+    message_size: usize,
+    max_message_bytes: usize,
+    max_session_bytes: usize,
+) -> anyhow::Result<i64> {
+    if message_size > max_message_bytes {
+        anyhow::bail!(
+            "websocket {direction} message exceeds configured limit of {max_message_bytes} bytes"
+        );
+    }
+    let next = current.saturating_add(message_size as i64);
+    if (next as u128) > (max_session_bytes as u128) {
+        anyhow::bail!(
+            "websocket {direction} session exceeds configured limit of {max_session_bytes} bytes"
+        );
+    }
+    Ok(next)
+}
+
 fn resolve_upstream(state: &AppState, uri: &Uri, headers: &HeaderMap) -> anyhow::Result<Url> {
     if let Some(value) = headers.get(state.config.proxy.upstream_header.as_str()) {
         let value = value.to_str()?;
@@ -724,4 +869,57 @@ fn headers_to_json_axum_compat(headers: &tokio_tungstenite::tungstenite::http::H
         map.insert(name.as_str().to_ascii_lowercase(), json!(value));
     }
     Value::Object(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_length_exceeds_detects_oversized_request() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_LENGTH, "1025".parse().unwrap());
+
+        assert!(content_length_exceeds(&headers, 1024));
+        assert!(!content_length_exceeds(&headers, 1025));
+    }
+
+    #[test]
+    fn request_capture_marks_live_limit_exceeded_without_overcapturing() {
+        let capture = SharedBodyCapture::default();
+
+        assert!(!capture.push_request(b"abc", 4, 5));
+        assert!(capture.push_request(b"def", 4, 5));
+
+        let snapshot = capture.snapshot();
+        assert_eq!(snapshot.bytes, b"abcd");
+        assert_eq!(snapshot.total_bytes, 6);
+        assert!(snapshot.truncated);
+        assert!(snapshot.limit_exceeded);
+    }
+
+    #[test]
+    fn add_ws_bytes_rejects_message_over_limit() {
+        let error = add_ws_bytes("client", 0, 11, 10, 100)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("message exceeds configured limit"));
+    }
+
+    #[test]
+    fn add_ws_bytes_rejects_session_over_limit() {
+        let error = add_ws_bytes("upstream", 95, 6, 10, 100)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("session exceeds configured limit"));
+    }
+
+    #[test]
+    fn add_ws_bytes_returns_updated_total_within_limits() {
+        let total = add_ws_bytes("client", 4, 6, 10, 20).unwrap();
+
+        assert_eq!(total, 10);
+    }
 }
