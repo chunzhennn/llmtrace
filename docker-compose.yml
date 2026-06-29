@@ -9,18 +9,30 @@ services:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d llmtrace"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   llmtrace:
     build: .
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     environment:
       LLMTRACE_CONFIG: /etc/llmtrace/llmtrace.toml
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/llmtrace
+      LLMTRACE_LISTEN: 0.0.0.0:3000
     ports:
       - "3000:3000"
     volumes:
       - ./llmtrace.example.toml:/etc/llmtrace/llmtrace.toml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/readyz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
 
 volumes:
   postgres-data:

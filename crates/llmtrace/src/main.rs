@@ -1,6 +1,7 @@
 mod api;
 mod auth;
 mod config;
+mod health;
 mod parsers;
 mod plugins;
 mod proxy;
@@ -125,6 +126,7 @@ fn build_router(state: AppState) -> Router {
     ));
 
     Router::new()
+        .merge(health::router())
         .nest("/api/auth", auth::router())
         .nest("/api", protected_api)
         .route("/", axum::routing::get(ui::redirect_to_ui))

@@ -16,6 +16,15 @@ This repository currently contains only the Rust backend. The frontend has been 
 
 Proxy traffic is sent to any non-`/api` and non-`/ui` route. HTTP requests are proxied as HTTP, and requests that negotiate a WebSocket upgrade are proxied as WebSocket traffic on the original path. `/ui/*` currently returns a backend placeholder until a new frontend is provided.
 
+## Health and readiness probes
+
+The service exposes unauthenticated probes for production schedulers and load balancers:
+
+- `GET /healthz` returns process liveness and does not touch external dependencies.
+- `GET /readyz` verifies PostgreSQL connectivity with a lightweight `SELECT 1`. It returns `503 Service Unavailable` when storage is unavailable.
+
+The Docker image includes a `HEALTHCHECK` against `/readyz`, and `docker-compose.yml` waits for Postgres `pg_isready` before starting `llmtrace`. When running in a container, bind the service to `0.0.0.0:3000`; the compose file sets `LLMTRACE_LISTEN` for that.
+
 ## Proxying examples
 
 OpenAI-compatible base URL mode:

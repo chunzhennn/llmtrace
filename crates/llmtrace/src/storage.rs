@@ -175,6 +175,13 @@ pub async fn migrate(pool: &PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub async fn readiness_check(pool: &PgPool) -> anyhow::Result<()> {
+    sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(pool)
+        .await?;
+    Ok(())
+}
+
 pub fn compress(data: &[u8]) -> anyhow::Result<Vec<u8>> {
     if data.is_empty() {
         return Ok(Vec::new());
