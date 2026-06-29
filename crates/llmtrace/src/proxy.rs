@@ -570,11 +570,12 @@ async fn handle_websocket(
         anyhow::Ok(())
     };
 
-    let (left, right) = tokio::join!(client_to_upstream, upstream_to_client);
-    let error = left
-        .err()
-        .or_else(|| right.err())
-        .map(|error| error.to_string());
+    tokio::pin!(client_to_upstream);
+    tokio::pin!(upstream_to_client);
+    let error = tokio::select! {
+        result = &mut client_to_upstream => websocket_bridge_error(result),
+        result = &mut upstream_to_client => websocket_bridge_error(result),
+    };
     let stats = stats.lock().await.clone();
     let duration_ms = started.elapsed().as_millis() as i64;
     let session_key =
@@ -808,6 +809,10 @@ fn websocket_connect_timeout_message(timeout_secs: u64) -> String {
     format!("websocket upstream connection timed out after {timeout_secs} seconds")
 }
 
+fn websocket_bridge_error(result: anyhow::Result<()>) -> Option<String> {
+    result.err().map(|error| error.to_string())
+}
+
 #[derive(Debug)]
 struct RequestBodyLimitExceeded {
     limit: usize,
@@ -1024,5 +1029,18 @@ mod tests {
             websocket_connect_timeout_message(12),
             "websocket upstream connection timed out after 12 seconds"
         );
+    }
+
+    #[test]
+    fn websocket_bridge_error_reports_first_direction_error() {
+        assert_eq!(
+            websocket_bridge_error(Err(anyhow::anyhow!("client frame error"))),
+            Some("client frame error".to_string())
+        );
+    }
+
+    #[test]
+    fn websocket_bridge_error_is_none_for_clean_direction_end() {
+        assert_eq!(websocket_bridge_error(Ok(())), None);
     }
 }
