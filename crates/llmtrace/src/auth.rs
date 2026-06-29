@@ -19,7 +19,7 @@ use std::net::SocketAddr;
 use std::time::Duration as StdDuration;
 use url::Url;
 
-use crate::config::OAuthConfig;
+use crate::config::{LocalAdminConfig, OAuthConfig};
 use crate::login_throttle::LoginThrottleDecision;
 use crate::state::AppState;
 use crate::types::LoginMethod;
@@ -117,13 +117,8 @@ async fn login(
     }
 
     let admin = &state.config.auth.local_admin;
-    let valid_user = payload.username == admin.username;
-    let valid_password = valid_user
-        && verify_password(
-            &payload.password,
-            admin.password_hash.as_deref(),
-            admin.password.as_deref(),
-        );
+    let valid_password =
+        verify_local_admin_credentials(admin, &payload.username, &payload.password);
 
     if !valid_password {
         let retry_after = state
@@ -483,7 +478,34 @@ fn verify_password(password: &str, hash: Option<&str>, development_password: Opt
             .verify_password(password.as_bytes(), &parsed)
             .is_ok();
     }
-    development_password.is_some_and(|expected| expected == password)
+    development_password
+        .is_some_and(|expected| constant_time_eq(expected.as_bytes(), password.as_bytes()))
+}
+
+fn verify_local_admin_credentials(
+    admin: &LocalAdminConfig,
+    username: &str,
+    password: &str,
+) -> bool {
+    // Always verify the password before combining results so unknown usernames
+    // do not skip expensive hash verification.
+    let password_valid = verify_password(
+        password,
+        admin.password_hash.as_deref(),
+        admin.password.as_deref(),
+    );
+    let username_valid = constant_time_eq(admin.username.as_bytes(), username.as_bytes());
+    password_valid & username_valid
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let max_len = left.len().max(right.len());
+    let mut diff = left.len() ^ right.len();
+    for index in 0..max_len {
+        diff |= left.get(index).copied().unwrap_or(0) as usize
+            ^ right.get(index).copied().unwrap_or(0) as usize;
+    }
+    diff == 0
 }
 
 async fn create_session(
@@ -714,6 +736,7 @@ fn server_error(error: impl std::fmt::Display) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use argon2::password_hash::{PasswordHasher, SaltString};
 
     const PUBLIC_URL: &str = "https://llmtrace.example.com";
 
@@ -754,6 +777,74 @@ mod tests {
         };
 
         enforce_oauth_email_verified(&oauth, &json!({})).unwrap();
+    }
+
+    #[test]
+    fn local_admin_credentials_accept_valid_hash_credentials() {
+        let password_hash = test_password_hash("correct-password");
+        let admin = LocalAdminConfig {
+            username: "admin".to_string(),
+            password: None,
+            password_hash: Some(password_hash),
+        };
+
+        assert!(verify_local_admin_credentials(
+            &admin,
+            "admin",
+            "correct-password"
+        ));
+    }
+
+    #[test]
+    fn local_admin_credentials_reject_wrong_user_even_with_valid_password() {
+        let password_hash = test_password_hash("correct-password");
+        let admin = LocalAdminConfig {
+            username: "admin".to_string(),
+            password: None,
+            password_hash: Some(password_hash),
+        };
+
+        assert!(!verify_local_admin_credentials(
+            &admin,
+            "other-admin",
+            "correct-password"
+        ));
+    }
+
+    #[test]
+    fn local_admin_credentials_reject_wrong_password_for_valid_user() {
+        let password_hash = test_password_hash("correct-password");
+        let admin = LocalAdminConfig {
+            username: "admin".to_string(),
+            password: None,
+            password_hash: Some(password_hash),
+        };
+
+        assert!(!verify_local_admin_credentials(
+            &admin,
+            "admin",
+            "wrong-password"
+        ));
+    }
+
+    #[test]
+    fn local_admin_credentials_support_development_plaintext_password() {
+        let admin = LocalAdminConfig {
+            username: "admin".to_string(),
+            password: Some("dev-password".to_string()),
+            password_hash: None,
+        };
+
+        assert!(verify_local_admin_credentials(
+            &admin,
+            "admin",
+            "dev-password"
+        ));
+        assert!(!verify_local_admin_credentials(
+            &admin,
+            "admin",
+            "wrong-password"
+        ));
     }
 
     #[test]
@@ -919,5 +1010,13 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(name, HeaderValue::from_static(value));
         headers
+    }
+
+    fn test_password_hash(password: &str) -> String {
+        let salt = SaltString::encode_b64(b"llmtrace-test-salt").unwrap();
+        Argon2::default()
+            .hash_password(password.as_bytes(), &salt)
+            .unwrap()
+            .to_string()
     }
 }
