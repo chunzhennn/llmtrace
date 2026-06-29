@@ -50,6 +50,7 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
     let config = Config::load(args.config.as_deref()).context("failed to load config")?;
+    config.validate().context("invalid config")?;
     let pool = storage::connect(&config.storage)
         .await
         .context("failed to connect to postgres")?;

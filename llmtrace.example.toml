@@ -1,10 +1,13 @@
 [server]
 listen = "127.0.0.1:3000"
 public_url = "http://127.0.0.1:3000"
+# Use "production" to enable stricter startup validation for secure deployments.
+deployment = "development"
 ui_enabled = true
 
 [proxy]
 default_upstream = "https://api.openai.com"
+# Required in production mode to avoid running as an open proxy.
 allow_upstreams = []
 upstream_header = "x-llmtrace-upstream"
 timeout_secs = 300
@@ -17,6 +20,7 @@ trace_queue_capacity = 4096
 trace_worker_count = 4
 
 [auth]
+# Required in production mode so browser session cookies are sent only over HTTPS.
 cookie_secure = false
 session_ttl_hours = 24
 
@@ -47,7 +51,8 @@ sensitive_headers = [
 ]
 store_header_hash = true
 # Body storage mode: "disabled" (store as-is), "drop" (store nothing),
-# or "json_secrets" (mask secret-looking JSON string values).
+# or "json_secrets" (mask secret-looking JSON string values). Production
+# mode requires "drop" or "json_secrets".
 body_redaction = "disabled"
 
 # [[plugins]]

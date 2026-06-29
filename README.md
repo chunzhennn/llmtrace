@@ -25,6 +25,43 @@ The service exposes unauthenticated probes for production schedulers and load ba
 
 The Docker image includes a `HEALTHCHECK` against `/readyz`, and `docker-compose.yml` waits for Postgres `pg_isready` before starting `llmtrace`. When running in a container, bind the service to `0.0.0.0:3000`; the compose file sets `LLMTRACE_LISTEN` for that.
 
+## Production mode
+
+Set `server.deployment = "production"` to make startup fail fast on insecure or ambiguous settings. Production mode currently requires:
+
+- `server.public_url` uses `https`.
+- `proxy.allow_upstreams` is non-empty, so the service cannot run as an unrestricted open proxy.
+- `auth.cookie_secure = true`.
+- `auth.local_admin.password_hash` is set, and plaintext `auth.local_admin.password` is not set.
+- `redaction.body_redaction` is `drop` or `json_secrets`.
+- When OAuth is enabled, `auth.oauth.allowed_emails` or `auth.oauth.allowed_domains` is configured.
+
+Minimal production-oriented config shape:
+
+```toml
+[server]
+listen = "0.0.0.0:3000"
+public_url = "https://llmtrace.example.com"
+deployment = "production"
+
+[proxy]
+default_upstream = "https://api.openai.com"
+allow_upstreams = ["api.openai.com"]
+
+[auth]
+cookie_secure = true
+session_ttl_hours = 24
+
+[auth.local_admin]
+username = "admin"
+password_hash = "$argon2id$v=19$m=19456,t=2,p=1$..."
+
+[redaction]
+body_redaction = "json_secrets"
+```
+
+Useful environment overrides include `LLMTRACE_DEPLOYMENT`, `LLMTRACE_PUBLIC_URL`, `LLMTRACE_LISTEN`, `DATABASE_URL`, `LLMTRACE_DEFAULT_UPSTREAM`, `LLMTRACE_AUTH_COOKIE_SECURE`, `LLMTRACE_ADMIN_USERNAME`, `LLMTRACE_ADMIN_PASSWORD`, and `LLMTRACE_ADMIN_PASSWORD_HASH`.
+
 ## Proxying examples
 
 OpenAI-compatible base URL mode:

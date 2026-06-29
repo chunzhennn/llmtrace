@@ -1,9 +1,20 @@
+use std::collections::HashSet;
+use std::fmt;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use anyhow::Context;
+use argon2::password_hash::PasswordHash;
+use http::HeaderName;
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 use crate::types::{BodyRedaction, PluginHook};
+
+const DEFAULT_LOCAL_ADMIN_PASSWORD: &str = "admin";
+const MAX_SESSION_TTL_HOURS: i64 = 24 * 30;
+const MAX_PLUGIN_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
@@ -21,6 +32,7 @@ pub struct Config {
 pub struct ServerConfig {
     pub listen: String,
     pub public_url: String,
+    pub deployment: DeploymentMode,
     pub ui_enabled: bool,
 }
 
@@ -89,6 +101,47 @@ pub struct PluginConfig {
     pub timeout_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeploymentMode {
+    #[default]
+    Development,
+    Production,
+}
+
+impl DeploymentMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Development => "development",
+            Self::Production => "production",
+        }
+    }
+
+    fn is_production(self) -> bool {
+        matches!(self, Self::Production)
+    }
+}
+
+impl FromStr for DeploymentMode {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "development" | "dev" => Ok(Self::Development),
+            "production" | "prod" => Ok(Self::Production),
+            other => {
+                anyhow::bail!("deployment must be one of development or production, got {other:?}")
+            }
+        }
+    }
+}
+
+impl fmt::Display for DeploymentMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 impl Config {
     pub fn load(path: Option<&Path>) -> anyhow::Result<Self> {
         let mut config = if let Some(path) = path {
@@ -110,8 +163,17 @@ impl Config {
         if let Ok(value) = std::env::var("LLMTRACE_LISTEN") {
             config.server.listen = value;
         }
+        if let Ok(value) = std::env::var("LLMTRACE_PUBLIC_URL") {
+            config.server.public_url = value;
+        }
+        if let Ok(value) = std::env::var("LLMTRACE_DEPLOYMENT") {
+            config.server.deployment = value.parse()?;
+        }
         if let Ok(value) = std::env::var("LLMTRACE_DEFAULT_UPSTREAM") {
             config.proxy.default_upstream = value;
+        }
+        if let Ok(value) = std::env::var("LLMTRACE_AUTH_COOKIE_SECURE") {
+            config.auth.cookie_secure = parse_bool_env("LLMTRACE_AUTH_COOKIE_SECURE", &value)?;
         }
         if let Ok(value) = std::env::var("LLMTRACE_ADMIN_USERNAME") {
             config.auth.local_admin.username = value;
@@ -122,8 +184,312 @@ impl Config {
         if let Ok(value) = std::env::var("LLMTRACE_ADMIN_PASSWORD_HASH") {
             config.auth.local_admin.password_hash = Some(value);
         }
+        config.normalize_sensitive_defaults();
 
         Ok(config)
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let mut errors = Vec::new();
+
+        self.validate_server(&mut errors);
+        self.validate_proxy(&mut errors);
+        self.validate_storage(&mut errors);
+        self.validate_auth(&mut errors);
+        self.validate_redaction(&mut errors);
+        self.validate_plugins(&mut errors);
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!("invalid config:\n- {}", errors.join("\n- "))
+        }
+    }
+
+    fn normalize_sensitive_defaults(&mut self) {
+        if self
+            .auth
+            .local_admin
+            .password_hash
+            .as_deref()
+            .is_some_and(|hash| !hash.trim().is_empty())
+            && self.auth.local_admin.password.as_deref() == Some(DEFAULT_LOCAL_ADMIN_PASSWORD)
+        {
+            self.auth.local_admin.password = None;
+        }
+    }
+
+    fn validate_server(&self, errors: &mut Vec<String>) {
+        if self.server.listen.trim().parse::<SocketAddr>().is_err() {
+            errors.push(format!(
+                "server.listen must be a socket address, got {:?}",
+                self.server.listen
+            ));
+        }
+
+        match parse_url(
+            "server.public_url",
+            &self.server.public_url,
+            &["http", "https"],
+        ) {
+            Ok(public_url) => {
+                if self.server.deployment.is_production() && public_url.scheme() != "https" {
+                    errors.push(
+                        "server.public_url must use https when server.deployment is production"
+                            .to_string(),
+                    );
+                }
+            }
+            Err(error) => errors.push(error),
+        }
+    }
+
+    fn validate_proxy(&self, errors: &mut Vec<String>) {
+        if let Err(error) = parse_url(
+            "proxy.default_upstream",
+            &self.proxy.default_upstream,
+            &["http", "https"],
+        ) {
+            errors.push(error);
+        }
+
+        if self.proxy.upstream_header.trim().is_empty()
+            || HeaderName::from_bytes(self.proxy.upstream_header.trim().as_bytes()).is_err()
+        {
+            errors.push(format!(
+                "proxy.upstream_header must be a valid HTTP header name, got {:?}",
+                self.proxy.upstream_header
+            ));
+        }
+
+        if self.proxy.timeout_secs == 0 {
+            errors.push("proxy.timeout_secs must be greater than 0".to_string());
+        }
+
+        if self.server.deployment.is_production() && self.proxy.allow_upstreams.is_empty() {
+            errors.push(
+                "proxy.allow_upstreams must not be empty when server.deployment is production"
+                    .to_string(),
+            );
+        }
+
+        for (index, upstream) in self.proxy.allow_upstreams.iter().enumerate() {
+            let upstream = upstream.trim();
+            if upstream.is_empty() {
+                errors.push(format!("proxy.allow_upstreams[{index}] must not be empty"));
+            } else if upstream.contains("://")
+                && let Err(error) = parse_url(
+                    &format!("proxy.allow_upstreams[{index}]"),
+                    upstream,
+                    &["http", "https", "ws", "wss"],
+                )
+            {
+                errors.push(error);
+            }
+        }
+    }
+
+    fn validate_storage(&self, errors: &mut Vec<String>) {
+        if let Err(error) = parse_url(
+            "storage.postgres_url",
+            &self.storage.postgres_url,
+            &["postgres", "postgresql"],
+        ) {
+            errors.push(error);
+        }
+        if self.storage.max_connections == 0 {
+            errors.push("storage.max_connections must be greater than 0".to_string());
+        }
+        if self.storage.trace_queue_capacity == 0 {
+            errors.push("storage.trace_queue_capacity must be greater than 0".to_string());
+        }
+        if self.storage.trace_worker_count == 0 {
+            errors.push("storage.trace_worker_count must be greater than 0".to_string());
+        }
+    }
+
+    fn validate_auth(&self, errors: &mut Vec<String>) {
+        let local_admin = &self.auth.local_admin;
+        if local_admin.username.trim().is_empty() {
+            errors.push("auth.local_admin.username must not be empty".to_string());
+        }
+
+        let has_password = match local_admin.password.as_deref().map(str::trim) {
+            Some("") => {
+                errors.push("auth.local_admin.password must not be empty when set".to_string());
+                false
+            }
+            Some(_) => true,
+            None => false,
+        };
+        let has_hash = match local_admin.password_hash.as_deref().map(str::trim) {
+            Some("") => {
+                errors
+                    .push("auth.local_admin.password_hash must not be empty when set".to_string());
+                false
+            }
+            Some(hash) => {
+                if PasswordHash::new(hash).is_err() {
+                    errors.push(
+                        "auth.local_admin.password_hash must be a valid PHC password hash"
+                            .to_string(),
+                    );
+                    false
+                } else {
+                    true
+                }
+            }
+            None => false,
+        };
+
+        if !has_password && !has_hash && !self.auth.oauth.enabled {
+            errors.push(
+                "configure auth.local_admin.password_hash, auth.local_admin.password, or enable auth.oauth"
+                    .to_string(),
+            );
+        }
+
+        if self.auth.session_ttl_hours <= 0 {
+            errors.push("auth.session_ttl_hours must be greater than 0".to_string());
+        } else if self.auth.session_ttl_hours > MAX_SESSION_TTL_HOURS {
+            errors.push(format!(
+                "auth.session_ttl_hours must be at most {MAX_SESSION_TTL_HOURS}"
+            ));
+        }
+
+        if self.server.deployment.is_production() {
+            if !self.auth.cookie_secure {
+                errors.push(
+                    "auth.cookie_secure must be true when server.deployment is production"
+                        .to_string(),
+                );
+            }
+            if has_password {
+                errors.push(
+                    "auth.local_admin.password must not be used when server.deployment is production; set auth.local_admin.password_hash instead"
+                        .to_string(),
+                );
+            }
+            if !has_hash {
+                errors.push(
+                    "auth.local_admin.password_hash is required when server.deployment is production"
+                        .to_string(),
+                );
+            }
+        }
+
+        self.validate_oauth(errors);
+    }
+
+    fn validate_oauth(&self, errors: &mut Vec<String>) {
+        let oauth = &self.auth.oauth;
+        if !oauth.enabled {
+            return;
+        }
+
+        if let Err(error) = parse_url(
+            "auth.oauth.issuer_url",
+            &oauth.issuer_url,
+            &["http", "https"],
+        ) {
+            errors.push(error);
+        }
+        if oauth.client_id.trim().is_empty() {
+            errors.push("auth.oauth.client_id is required when OAuth is enabled".to_string());
+        }
+        if oauth.client_secret.trim().is_empty() {
+            errors.push("auth.oauth.client_secret is required when OAuth is enabled".to_string());
+        }
+        if !oauth.redirect_url.trim().is_empty()
+            && let Err(error) = parse_url(
+                "auth.oauth.redirect_url",
+                &oauth.redirect_url,
+                &["http", "https"],
+            )
+        {
+            errors.push(error);
+        }
+        if self.server.deployment.is_production()
+            && oauth.allowed_emails.is_empty()
+            && oauth.allowed_domains.is_empty()
+        {
+            errors.push(
+                "auth.oauth.allowed_emails or auth.oauth.allowed_domains must be configured when OAuth is enabled in production"
+                    .to_string(),
+            );
+        }
+    }
+
+    fn validate_redaction(&self, errors: &mut Vec<String>) {
+        for (index, header) in self.redaction.sensitive_headers.iter().enumerate() {
+            if header.trim().is_empty() || HeaderName::from_bytes(header.trim().as_bytes()).is_err()
+            {
+                errors.push(format!(
+                    "redaction.sensitive_headers[{index}] must be a valid HTTP header name"
+                ));
+            }
+        }
+        if self.server.deployment.is_production()
+            && self.redaction.body_redaction == BodyRedaction::Disabled
+        {
+            errors.push(
+                "redaction.body_redaction must be drop or json_secrets when server.deployment is production"
+                    .to_string(),
+            );
+        }
+    }
+
+    fn validate_plugins(&self, errors: &mut Vec<String>) {
+        let mut names = HashSet::new();
+        for (index, plugin) in self.plugins.iter().enumerate() {
+            let name = plugin.name.trim();
+            if name.is_empty() {
+                errors.push(format!("plugins[{index}].name must not be empty"));
+            } else if !names.insert(name.to_string()) {
+                errors.push(format!("plugins[{index}].name {name:?} is duplicated"));
+            }
+            if plugin.wasm_path.as_os_str().is_empty() {
+                errors.push(format!("plugins[{index}].wasm_path must not be empty"));
+            }
+            if plugin.hooks.is_empty() {
+                errors.push(format!("plugins[{index}].hooks must not be empty"));
+            }
+            if plugin.timeout_ms == 0 {
+                errors.push(format!(
+                    "plugins[{index}].timeout_ms must be greater than 0"
+                ));
+            } else if plugin.timeout_ms > MAX_PLUGIN_TIMEOUT_MS {
+                errors.push(format!(
+                    "plugins[{index}].timeout_ms must be at most {MAX_PLUGIN_TIMEOUT_MS}"
+                ));
+            }
+        }
+    }
+}
+
+fn parse_url(field: &str, value: &str, allowed_schemes: &[&str]) -> Result<Url, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!("{field} must not be empty"));
+    }
+    let url = Url::parse(value).map_err(|error| format!("{field} is not a valid URL: {error}"))?;
+    if url.host_str().is_none() {
+        return Err(format!("{field} must include a host"));
+    }
+    if !allowed_schemes.contains(&url.scheme()) {
+        return Err(format!(
+            "{field} must use one of these schemes: {}",
+            allowed_schemes.join(", ")
+        ));
+    }
+    Ok(url)
+}
+
+fn parse_bool_env(name: &str, value: &str) -> anyhow::Result<bool> {
+    match value {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        other => anyhow::bail!("{name} must be a boolean value, got {other:?}"),
     }
 }
 
@@ -132,6 +498,7 @@ impl Default for ServerConfig {
         Self {
             listen: "127.0.0.1:3000".to_string(),
             public_url: "http://127.0.0.1:3000".to_string(),
+            deployment: DeploymentMode::Development,
             ui_enabled: true,
         }
     }
@@ -175,7 +542,7 @@ impl Default for LocalAdminConfig {
     fn default() -> Self {
         Self {
             username: "admin".to_string(),
-            password: Some("admin".to_string()),
+            password: Some(DEFAULT_LOCAL_ADMIN_PASSWORD.to_string()),
             password_hash: None,
         }
     }
@@ -207,5 +574,74 @@ impl Default for PluginConfig {
             hooks: Vec::new(),
             timeout_ms: 50,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VALID_ARGON2_HASH: &str =
+        "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQ$k9wPtUZeX9pTvvFeUq1eYn5X2IN3QmEF7L7w8zZ3xIQ";
+
+    #[test]
+    fn default_development_config_validates() {
+        Config::default().validate().unwrap();
+    }
+
+    #[test]
+    fn production_config_rejects_insecure_defaults() {
+        let mut config = Config::default();
+        config.server.deployment = DeploymentMode::Production;
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("server.public_url must use https"));
+        assert!(error.contains("proxy.allow_upstreams must not be empty"));
+        assert!(error.contains("auth.cookie_secure must be true"));
+        assert!(error.contains("auth.local_admin.password must not be used"));
+        assert!(error.contains("redaction.body_redaction must be drop or json_secrets"));
+    }
+
+    #[test]
+    fn production_config_accepts_hardened_settings() {
+        let mut config = Config::default();
+        config.server.deployment = DeploymentMode::Production;
+        config.server.public_url = "https://llmtrace.example.com".to_string();
+        config.proxy.allow_upstreams = vec!["api.openai.com".to_string()];
+        config.auth.cookie_secure = true;
+        config.auth.local_admin.password = None;
+        config.auth.local_admin.password_hash = Some(VALID_ARGON2_HASH.to_string());
+        config.redaction.body_redaction = BodyRedaction::JsonSecrets;
+
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn password_hash_clears_default_plaintext_password() {
+        let mut config = Config::default();
+        config.auth.local_admin.password_hash = Some(VALID_ARGON2_HASH.to_string());
+
+        config.normalize_sensitive_defaults();
+
+        assert!(config.auth.local_admin.password.is_none());
+    }
+
+    #[test]
+    fn validation_rejects_bad_operational_bounds() {
+        let mut config = Config::default();
+        config.proxy.timeout_secs = 0;
+        config.storage.max_connections = 0;
+        config.storage.trace_queue_capacity = 0;
+        config.storage.trace_worker_count = 0;
+        config.auth.session_ttl_hours = 0;
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("proxy.timeout_secs must be greater than 0"));
+        assert!(error.contains("storage.max_connections must be greater than 0"));
+        assert!(error.contains("storage.trace_queue_capacity must be greater than 0"));
+        assert!(error.contains("storage.trace_worker_count must be greater than 0"));
+        assert!(error.contains("auth.session_ttl_hours must be greater than 0"));
     }
 }
