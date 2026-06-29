@@ -1,7 +1,7 @@
 use std::pin::Pin;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::task::{Context, Poll};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{fmt, io};
 
 use axum::body::Body;
@@ -478,7 +478,23 @@ async fn handle_websocket(
         }
     }
 
-    let upstream = connect_async(upstream_request).await;
+    let timeout_secs = state.config.proxy.timeout_secs;
+    let upstream = match tokio::time::timeout(
+        Duration::from_secs(timeout_secs),
+        connect_async(upstream_request),
+    )
+    .await
+    {
+        Ok(result) => result.map_err(|error| error.to_string()),
+        Err(_) => {
+            tracing::warn!(
+                %trace_id,
+                timeout_secs,
+                "websocket upstream connection timed out"
+            );
+            Err(websocket_connect_timeout_message(timeout_secs))
+        }
+    };
     let (upstream_socket, upstream_response) = match upstream {
         Ok(value) => value,
         Err(error) => {
@@ -491,7 +507,7 @@ async fn handle_websocket(
                 upstream_host,
                 request_headers,
                 api_key_hash,
-                error.to_string(),
+                error,
                 started.elapsed().as_millis() as i64,
             )
             .await;
@@ -788,6 +804,10 @@ fn request_body_limit_io_error(limit: usize) -> io::Error {
     )
 }
 
+fn websocket_connect_timeout_message(timeout_secs: u64) -> String {
+    format!("websocket upstream connection timed out after {timeout_secs} seconds")
+}
+
 #[derive(Debug)]
 struct RequestBodyLimitExceeded {
     limit: usize,
@@ -996,5 +1016,13 @@ mod tests {
         let total = add_ws_bytes("client", 4, 6, 10, 20).unwrap();
 
         assert_eq!(total, 10);
+    }
+
+    #[test]
+    fn websocket_connect_timeout_message_reports_configured_limit() {
+        assert_eq!(
+            websocket_connect_timeout_message(12),
+            "websocket upstream connection timed out after 12 seconds"
+        );
     }
 }
