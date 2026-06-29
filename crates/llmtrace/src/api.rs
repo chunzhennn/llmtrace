@@ -43,7 +43,10 @@ async fn stats(State(state): State<AppState>) -> Response {
     match storage::stats(&state.pool).await {
         Ok(mut value) => {
             if let Some(object) = value.as_object_mut() {
-                object.insert("runtime".to_string(), state.runtime_metrics.snapshot());
+                object.insert(
+                    "runtime".to_string(),
+                    state.runtime_metrics.snapshot(state.traces.queue_metrics()),
+                );
             }
             Json(value).into_response()
         }

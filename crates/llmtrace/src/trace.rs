@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use tokio::task::{JoinHandle, JoinSet};
 use uuid::Uuid;
 
-use crate::metrics::RuntimeMetrics;
+use crate::metrics::{RuntimeMetrics, TraceQueueMetrics};
 use crate::parsers;
 use crate::plugins::{HookInput, PluginEffects, PluginManager};
 use crate::redaction;
@@ -181,6 +181,10 @@ impl TraceRecorder {
                 tracing::warn!(%trace_id, "trace pipeline is stopped; dropping trace");
             }
         }
+    }
+
+    pub fn queue_metrics(&self) -> TraceQueueMetrics {
+        TraceQueueMetrics::new(self.queue_capacity, self.sender.capacity())
     }
 }
 
@@ -421,5 +425,29 @@ fn object_or_empty(value: Value) -> Map<String, Value> {
             map.insert("value".to_string(), other);
             map
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trace_recorder_queue_metrics_reports_pending_events() {
+        let (sender, _receiver) = mpsc::channel(2);
+        let recorder = TraceRecorder {
+            sender,
+            queue_capacity: 2,
+            metrics: RuntimeMetrics::default(),
+        };
+
+        assert_eq!(recorder.queue_metrics(), TraceQueueMetrics::new(2, 2));
+
+        recorder
+            .sender
+            .try_send(TraceEvent::base(Uuid::new_v4(), Utc::now()))
+            .unwrap();
+
+        assert_eq!(recorder.queue_metrics(), TraceQueueMetrics::new(2, 1));
     }
 }

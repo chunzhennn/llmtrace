@@ -1,10 +1,9 @@
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::fmt::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
-use std::fmt::Write;
 
 use crate::storage::RetentionPruneResult;
 
@@ -32,6 +31,24 @@ struct RetentionMetrics {
     last_failure_at: Option<DateTime<Utc>>,
     last_error: Option<String>,
     last_deleted: RetentionPruneResult,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TraceQueueMetrics {
+    pub capacity: u64,
+    pub available: u64,
+    pub depth: u64,
+}
+
+impl TraceQueueMetrics {
+    pub fn new(capacity: usize, available: usize) -> Self {
+        let available = available.min(capacity);
+        Self {
+            capacity: usize_to_u64(capacity),
+            available: usize_to_u64(available),
+            depth: usize_to_u64(capacity.saturating_sub(available)),
+        }
+    }
 }
 
 impl RuntimeMetrics {
@@ -89,7 +106,7 @@ impl RuntimeMetrics {
         retention.last_error = Some(error);
     }
 
-    pub fn snapshot(&self) -> Value {
+    pub fn snapshot(&self, trace_queue: TraceQueueMetrics) -> Value {
         let retention = self
             .inner
             .retention
@@ -105,6 +122,9 @@ impl RuntimeMetrics {
                 "dropped_closed": self.inner.traces_dropped_closed.load(Ordering::Relaxed),
                 "build_failures": self.inner.trace_build_failures.load(Ordering::Relaxed),
                 "persist_failures": self.inner.trace_persist_failures.load(Ordering::Relaxed),
+                "queue_capacity": trace_queue.capacity,
+                "queue_available": trace_queue.available,
+                "queue_depth": trace_queue.depth,
             },
             "retention": {
                 "runs": retention.runs,
@@ -125,7 +145,12 @@ impl RuntimeMetrics {
         })
     }
 
-    pub fn prometheus_text(&self, db_pool_size: u32, db_pool_idle: usize) -> String {
+    pub fn prometheus_text(
+        &self,
+        db_pool_size: u32,
+        db_pool_idle: usize,
+        trace_queue: TraceQueueMetrics,
+    ) -> String {
         let counters = self.counters();
         let retention = self.retention_snapshot();
         let mut output = String::new();
@@ -171,6 +196,27 @@ impl RuntimeMetrics {
             "llmtrace_trace_pipeline_persist_failures_total",
             "Trace events that failed during database persistence.",
             counters.trace_persist_failures,
+        );
+        push_metric(
+            &mut output,
+            "gauge",
+            "llmtrace_trace_pipeline_queue_capacity",
+            "Configured capacity of the bounded trace pipeline queue.",
+            trace_queue.capacity,
+        );
+        push_metric(
+            &mut output,
+            "gauge",
+            "llmtrace_trace_pipeline_queue_available",
+            "Currently available slots in the bounded trace pipeline queue.",
+            trace_queue.available,
+        );
+        push_metric(
+            &mut output,
+            "gauge",
+            "llmtrace_trace_pipeline_queue_depth",
+            "Current number of events waiting in the bounded trace pipeline queue.",
+            trace_queue.depth,
         );
         push_metric(
             &mut output,
@@ -309,9 +355,37 @@ fn timestamp_seconds(timestamp: Option<DateTime<Utc>>) -> u64 {
         .unwrap_or(0)
 }
 
+fn usize_to_u64(value: usize) -> u64 {
+    value.try_into().unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trace_queue_metrics_reports_depth_from_available_capacity() {
+        assert_eq!(
+            TraceQueueMetrics::new(10, 7),
+            TraceQueueMetrics {
+                capacity: 10,
+                available: 7,
+                depth: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn trace_queue_metrics_clamps_available_to_capacity() {
+        assert_eq!(
+            TraceQueueMetrics::new(4, 9),
+            TraceQueueMetrics {
+                capacity: 4,
+                available: 4,
+                depth: 0,
+            }
+        );
+    }
 
     #[test]
     fn runtime_metrics_snapshot_counts_trace_events() {
@@ -324,13 +398,16 @@ mod tests {
         metrics.trace_persist_failed();
         metrics.trace_persisted();
 
-        let snapshot = metrics.snapshot();
+        let snapshot = metrics.snapshot(TraceQueueMetrics::new(10, 7));
         assert_eq!(snapshot["trace_pipeline"]["enqueued"], 1);
         assert_eq!(snapshot["trace_pipeline"]["dropped_full"], 1);
         assert_eq!(snapshot["trace_pipeline"]["dropped_closed"], 1);
         assert_eq!(snapshot["trace_pipeline"]["build_failures"], 1);
         assert_eq!(snapshot["trace_pipeline"]["persist_failures"], 1);
         assert_eq!(snapshot["trace_pipeline"]["persisted"], 1);
+        assert_eq!(snapshot["trace_pipeline"]["queue_capacity"], 10);
+        assert_eq!(snapshot["trace_pipeline"]["queue_available"], 7);
+        assert_eq!(snapshot["trace_pipeline"]["queue_depth"], 3);
     }
 
     #[test]
@@ -346,7 +423,7 @@ mod tests {
         });
         metrics.retention_failed("boom".to_string());
 
-        let snapshot = metrics.snapshot();
+        let snapshot = metrics.snapshot(TraceQueueMetrics::default());
         assert_eq!(snapshot["retention"]["runs"], 1);
         assert_eq!(snapshot["retention"]["failures"], 1);
         assert_eq!(snapshot["retention"]["last_error"], "boom");
@@ -367,11 +444,14 @@ mod tests {
             oauth_states: 6,
         });
 
-        let text = metrics.prometheus_text(7, 3);
+        let text = metrics.prometheus_text(7, 3, TraceQueueMetrics::new(11, 8));
 
         assert!(text.contains("# TYPE llmtrace_trace_pipeline_enqueued_total counter"));
         assert!(text.contains("llmtrace_trace_pipeline_enqueued_total 1"));
         assert!(text.contains("llmtrace_trace_pipeline_dropped_full_total 1"));
+        assert!(text.contains("llmtrace_trace_pipeline_queue_capacity 11"));
+        assert!(text.contains("llmtrace_trace_pipeline_queue_available 8"));
+        assert!(text.contains("llmtrace_trace_pipeline_queue_depth 3"));
         assert!(text.contains("llmtrace_retention_last_deleted_total 21"));
         assert!(text.contains("llmtrace_db_pool_size 7"));
         assert!(text.contains("llmtrace_db_pool_idle 3"));

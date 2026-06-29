@@ -39,9 +39,11 @@ async fn readyz(State(state): State<AppState>) -> Response {
 }
 
 async fn metrics(State(state): State<AppState>) -> Response {
-    let body = state
-        .runtime_metrics
-        .prometheus_text(state.pool.size(), state.pool.num_idle());
+    let body = state.runtime_metrics.prometheus_text(
+        state.pool.size(),
+        state.pool.num_idle(),
+        state.traces.queue_metrics(),
+    );
     let mut response = body.into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
