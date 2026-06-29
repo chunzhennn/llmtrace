@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -189,11 +191,23 @@ pub fn compress(data: &[u8]) -> anyhow::Result<Vec<u8>> {
     Ok(zstd::stream::encode_all(data, 3)?)
 }
 
-pub fn decompress(data: &[u8]) -> anyhow::Result<Vec<u8>> {
+pub fn decompress_with_limit(data: &[u8], limit: usize) -> anyhow::Result<Vec<u8>> {
     if data.is_empty() {
         return Ok(Vec::new());
     }
-    Ok(zstd::stream::decode_all(data)?)
+    let read_limit = limit
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("body decompression limit is too large"))?;
+    let mut decoder = zstd::stream::read::Decoder::new(data)?;
+    let mut output = Vec::new();
+    decoder
+        .by_ref()
+        .take(read_limit as u64)
+        .read_to_end(&mut output)?;
+    if output.len() > limit {
+        anyhow::bail!("stored trace body exceeds decompression limit of {limit} bytes");
+    }
+    Ok(output)
 }
 
 pub async fn insert_trace(
@@ -420,7 +434,11 @@ pub async fn list_requests(
     Ok(json!({ "items": items }))
 }
 
-pub async fn get_request(pool: &PgPool, id: Uuid) -> anyhow::Result<Option<Value>> {
+pub async fn get_request(
+    pool: &PgPool,
+    id: Uuid,
+    body_decode_limit: usize,
+) -> anyhow::Result<Option<Value>> {
     let row = sqlx::query(
         r#"
         SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
@@ -441,8 +459,12 @@ pub async fn get_request(pool: &PgPool, id: Uuid) -> anyhow::Result<Option<Value
     };
     let request_body: Vec<u8> = row.get("request_body_compressed");
     let response_body: Vec<u8> = row.get("response_body_compressed");
-    let request_body = String::from_utf8_lossy(&decompress(&request_body)?).to_string();
-    let response_body = String::from_utf8_lossy(&decompress(&response_body)?).to_string();
+    let request_body =
+        String::from_utf8_lossy(&decompress_with_limit(&request_body, body_decode_limit)?)
+            .to_string();
+    let response_body =
+        String::from_utf8_lossy(&decompress_with_limit(&response_body, body_decode_limit)?)
+            .to_string();
 
     Ok(Some(json!({
         "id": row.get::<Uuid, _>("id"),
@@ -1410,6 +1432,31 @@ mod tests {
         let error = dataset_spec("ui_sessions").unwrap_err().to_string();
 
         assert!(error.contains("unknown query dataset"));
+    }
+
+    #[test]
+    fn decompress_with_limit_allows_body_within_limit() {
+        let compressed = compress(b"hello").unwrap();
+        let decompressed = decompress_with_limit(&compressed, 5).unwrap();
+
+        assert_eq!(decompressed, b"hello");
+    }
+
+    #[test]
+    fn decompress_with_limit_allows_empty_body_with_zero_limit() {
+        let decompressed = decompress_with_limit(&[], 0).unwrap();
+
+        assert!(decompressed.is_empty());
+    }
+
+    #[test]
+    fn decompress_with_limit_rejects_body_over_limit() {
+        let compressed = compress(b"hello").unwrap();
+        let error = decompress_with_limit(&compressed, 4)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("decompression limit"));
     }
 
     #[test]

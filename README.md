@@ -113,7 +113,7 @@ curl http://127.0.0.1:3000/v1/messages \
 
 - UI authentication is login-only: local admin and optional OAuth/OIDC. There is no authorization or role model.
 - Request/response bodies are stored unredacted by default. Set `redaction.body_redaction` to `drop` to store no body, or `json_secrets` to mask secret-looking JSON string values. Credential-like headers are redacted, and hashed when `redaction.store_header_hash` is enabled.
-- HTTP request and response bodies are streamed through the proxy. Only the first `proxy.max_body_capture_bytes` bytes are retained for trace parsing and storage.
+- HTTP request and response bodies are streamed through the proxy. Only the first `proxy.max_body_capture_bytes` bytes are retained for trace parsing and storage. Detailed trace reads also enforce that limit while decompressing stored bodies, so malformed or unexpectedly large compressed data is rejected instead of expanded without bound.
 - Trace enrichment, compression, and Postgres writes run in a bounded background pipeline: at most `storage.trace_queue_capacity` events wait in the queue and at most `storage.trace_worker_count` events are processed concurrently. If the queue is full, the proxy drops trace events instead of delaying live traffic.
 - WASM plugins use a small JSON ABI. They enrich traces asynchronously and cannot mutate live traffic. Each invocation is bounded by the plugin's `timeout_ms` and trapped if it runs longer.
 - Ad hoc analytics use a structured `/api/query` endpoint over allowlisted datasets, fields, filters, and sort keys. The legacy raw SQL endpoint is disabled.

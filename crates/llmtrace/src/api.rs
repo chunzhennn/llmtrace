@@ -58,7 +58,7 @@ async fn list_requests(
 }
 
 async fn get_request(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
-    match storage::get_request(&state.pool, id).await {
+    match storage::get_request(&state.pool, id, state.config.proxy.max_body_capture_bytes).await {
         Ok(Some(value)) => Json(value).into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
