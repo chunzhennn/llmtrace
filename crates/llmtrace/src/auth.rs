@@ -3,7 +3,7 @@ use argon2::password_hash::{PasswordHash, PasswordVerifier};
 use axum::body::Body;
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, HeaderValue, Request, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use sqlx::Row;
 use std::net::SocketAddr;
 use std::time::Duration as StdDuration;
+use url::Url;
 
 use crate::config::OAuthConfig;
 use crate::login_throttle::LoginThrottleDecision;
@@ -65,6 +66,14 @@ pub async fn require_auth(
     mut request: Request<Body>,
     next: Next,
 ) -> Response {
+    if !same_origin_request_allowed(
+        &state.config.server.public_url,
+        request.method(),
+        request.headers(),
+    ) {
+        return cross_site_request_response(request.method());
+    }
+
     match current_user(&state, request.headers()).await {
         Ok(Some(user)) => {
             request.extensions_mut().insert(user);
@@ -82,8 +91,13 @@ pub async fn require_auth(
 async fn login(
     State(state): State<AppState>,
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(payload): Json<LoginRequest>,
 ) -> Response {
+    if !same_origin_request_allowed(&state.config.server.public_url, &Method::POST, &headers) {
+        return cross_site_request_response(&Method::POST);
+    }
+
     let remote_ip = remote_addr.ip().to_string();
     match state.login_throttle.check(&payload.username, &remote_ip) {
         LoginThrottleDecision::Allowed => {}
@@ -155,6 +169,10 @@ async fn login(
 }
 
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if !same_origin_request_allowed(&state.config.server.public_url, &Method::POST, &headers) {
+        return cross_site_request_response(&Method::POST);
+    }
+
     if let Some(session_id) = session_cookie(&headers) {
         let _ = sqlx::query("DELETE FROM ui_sessions WHERE id = $1")
             .bind(&session_id)
@@ -501,6 +519,55 @@ fn session_cookie(headers: &HeaderMap) -> Option<String> {
     None
 }
 
+fn cross_site_request_response(method: &Method) -> Response {
+    tracing::warn!(method = %method, "cross-site request rejected");
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({"error": "cross-site request rejected"})),
+    )
+        .into_response()
+}
+
+fn same_origin_request_allowed(public_url: &str, method: &Method, headers: &HeaderMap) -> bool {
+    if safe_method(method) {
+        return true;
+    }
+
+    if let Some(origin) = header_to_str(headers, header::ORIGIN) {
+        return origin_matches_public_url(public_url, origin);
+    }
+
+    header_to_str(headers, header::REFERER)
+        .map(|referer| origin_matches_public_url(public_url, referer))
+        .unwrap_or(true)
+}
+
+fn safe_method(method: &Method) -> bool {
+    matches!(
+        *method,
+        Method::GET | Method::HEAD | Method::OPTIONS | Method::TRACE
+    )
+}
+
+fn header_to_str(headers: &HeaderMap, name: axum::http::HeaderName) -> Option<&str> {
+    headers.get(name)?.to_str().ok()
+}
+
+fn origin_matches_public_url(public_url: &str, candidate: &str) -> bool {
+    let Ok(public_url) = Url::parse(public_url) else {
+        return false;
+    };
+    let Ok(candidate) = Url::parse(candidate) else {
+        return false;
+    };
+
+    public_url.scheme() == candidate.scheme()
+        && public_url.host_str().zip(candidate.host_str()).is_some_and(
+            |(public_host, candidate_host)| public_host.eq_ignore_ascii_case(candidate_host),
+        )
+        && public_url.port_or_known_default() == candidate.port_or_known_default()
+}
+
 fn set_session_cookie(headers: &mut HeaderMap, state: &AppState, session_id: &str) {
     let mut cookie = format!(
         "{SESSION_COOKIE}={session_id}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}",
@@ -582,6 +649,8 @@ fn server_error(error: impl std::fmt::Display) -> Response {
 mod tests {
     use super::*;
 
+    const PUBLIC_URL: &str = "https://llmtrace.example.com";
+
     #[test]
     fn oauth_email_verification_accepts_true_claim() {
         let oauth = OAuthConfig::default();
@@ -619,5 +688,106 @@ mod tests {
         };
 
         enforce_oauth_email_verified(&oauth, &json!({})).unwrap();
+    }
+
+    #[test]
+    fn same_origin_check_allows_safe_method_with_cross_site_origin() {
+        let headers = headers_with(header::ORIGIN, "https://evil.example.com");
+
+        assert!(same_origin_request_allowed(
+            PUBLIC_URL,
+            &Method::GET,
+            &headers
+        ));
+    }
+
+    #[test]
+    fn same_origin_check_allows_unsafe_method_without_browser_origin_headers() {
+        let headers = HeaderMap::new();
+
+        assert!(same_origin_request_allowed(
+            PUBLIC_URL,
+            &Method::POST,
+            &headers
+        ));
+    }
+
+    #[test]
+    fn same_origin_check_allows_matching_origin_for_unsafe_method() {
+        let headers = headers_with(header::ORIGIN, "https://llmtrace.example.com");
+
+        assert!(same_origin_request_allowed(
+            PUBLIC_URL,
+            &Method::POST,
+            &headers
+        ));
+    }
+
+    #[test]
+    fn same_origin_check_rejects_cross_site_origin_for_unsafe_method() {
+        let headers = headers_with(header::ORIGIN, "https://evil.example.com");
+
+        assert!(!same_origin_request_allowed(
+            PUBLIC_URL,
+            &Method::POST,
+            &headers
+        ));
+    }
+
+    #[test]
+    fn same_origin_check_uses_referer_when_origin_is_absent() {
+        let headers = headers_with(
+            header::REFERER,
+            "https://llmtrace.example.com/ui/settings?tab=auth",
+        );
+
+        assert!(same_origin_request_allowed(
+            PUBLIC_URL,
+            &Method::DELETE,
+            &headers
+        ));
+    }
+
+    #[test]
+    fn same_origin_check_rejects_cross_site_referer_when_origin_is_absent() {
+        let headers = headers_with(header::REFERER, "https://evil.example.com/form");
+
+        assert!(!same_origin_request_allowed(
+            PUBLIC_URL,
+            &Method::DELETE,
+            &headers
+        ));
+    }
+
+    #[test]
+    fn same_origin_check_rejects_null_origin_for_unsafe_method() {
+        let headers = headers_with(header::ORIGIN, "null");
+
+        assert!(!same_origin_request_allowed(
+            PUBLIC_URL,
+            &Method::POST,
+            &headers
+        ));
+    }
+
+    #[test]
+    fn same_origin_check_origin_takes_precedence_over_referer() {
+        let mut headers = headers_with(header::ORIGIN, "https://llmtrace.example.com");
+        headers.insert(
+            header::REFERER,
+            HeaderValue::from_static("https://evil.example.com/form"),
+        );
+
+        assert!(same_origin_request_allowed(
+            PUBLIC_URL,
+            &Method::POST,
+            &headers
+        ));
+    }
+
+    fn headers_with(name: axum::http::HeaderName, value: &'static str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(name, HeaderValue::from_static(value));
+        headers
     }
 }
