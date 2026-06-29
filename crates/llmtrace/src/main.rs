@@ -46,6 +46,9 @@ struct Args {
     #[arg(short, long, env = "LLMTRACE_CONFIG")]
     config: Option<PathBuf>,
 
+    #[arg(long, conflicts_with = "migrate_only")]
+    check_config: bool,
+
     #[arg(long)]
     migrate_only: bool,
 }
@@ -61,6 +64,11 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let config = Config::load(args.config.as_deref()).context("failed to load config")?;
     config.validate().context("invalid config")?;
+    if args.check_config {
+        tracing::info!("config is valid");
+        return Ok(());
+    }
+
     let pool = storage::connect(&config.storage)
         .await
         .context("failed to connect to postgres")?;
@@ -217,6 +225,23 @@ mod tests {
     use axum::http::StatusCode;
     use axum::routing::post;
     use tower::ServiceExt;
+
+    #[test]
+    fn args_parse_check_config_mode() {
+        let args = Args::try_parse_from(["llmtrace", "--check-config"]).unwrap();
+
+        assert!(args.check_config);
+        assert!(!args.migrate_only);
+    }
+
+    #[test]
+    fn args_reject_check_config_with_migrate_only() {
+        let error = Args::try_parse_from(["llmtrace", "--check-config", "--migrate-only"])
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("cannot be used with"));
+    }
 
     #[test]
     fn private_response_headers_disable_caching_and_browser_sniffing() {

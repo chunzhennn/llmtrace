@@ -14,6 +14,12 @@ This repository currently contains only the Rust backend. The frontend has been 
    cargo run -p llmtrace -- --config llmtrace.toml
    ```
 
+Validate configuration without connecting to Postgres or running migrations:
+
+```bash
+cargo run -p llmtrace -- --config llmtrace.toml --check-config
+```
+
 Proxy traffic is sent to any non-`/api` and non-`/ui` route. HTTP requests are proxied as HTTP, and requests that negotiate a WebSocket upgrade are proxied as WebSocket traffic on the original path. `/ui/*` currently returns a backend placeholder until a new frontend is provided.
 
 ## Health and readiness probes
