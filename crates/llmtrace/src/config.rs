@@ -644,6 +644,21 @@ impl Config {
                 Err(error) => errors.push(error),
             }
         }
+        for (index, email) in oauth.allowed_emails.iter().enumerate() {
+            if let Err(error) =
+                validate_oauth_allowed_email(&format!("auth.oauth.allowed_emails[{index}]"), email)
+            {
+                errors.push(error);
+            }
+        }
+        for (index, domain) in oauth.allowed_domains.iter().enumerate() {
+            if let Err(error) = validate_oauth_allowed_domain(
+                &format!("auth.oauth.allowed_domains[{index}]"),
+                domain,
+            ) {
+                errors.push(error);
+            }
+        }
         if self.server.deployment.is_production()
             && oauth.allowed_emails.is_empty()
             && oauth.allowed_domains.is_empty()
@@ -808,6 +823,67 @@ fn path_prefix_matches(prefix: &str, path: &str) -> bool {
         || path
             .strip_prefix(prefix)
             .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn validate_oauth_allowed_email(field: &str, value: &str) -> Result<(), String> {
+    let value = validate_oauth_allowlist_value(field, value)?;
+    if value.bytes().any(|byte| byte.is_ascii_whitespace()) {
+        return Err(format!("{field} must not contain whitespace"));
+    }
+    let Some((local, domain)) = value.split_once('@') else {
+        return Err(format!(
+            "{field} must be an email address such as admin@example.com"
+        ));
+    };
+    if local.is_empty() || domain.is_empty() || domain.contains('@') {
+        return Err(format!(
+            "{field} must be an email address such as admin@example.com"
+        ));
+    }
+    validate_oauth_allowed_domain(field, domain)
+        .map_err(|_| format!("{field} must contain a valid domain after @"))
+}
+
+fn validate_oauth_allowed_domain(field: &str, value: &str) -> Result<(), String> {
+    let value = validate_oauth_allowlist_value(field, value)?;
+    if value.len() > 253
+        || value.bytes().any(|byte| {
+            byte.is_ascii_whitespace()
+                || matches!(byte, b'*' | b':' | b'/' | b'?' | b'#' | b'@' | b'[' | b']')
+        })
+    {
+        return Err(format!("{field} must be a domain name such as example.com"));
+    }
+
+    for label in value.split('.') {
+        if label.is_empty()
+            || label.len() > 63
+            || label.starts_with('-')
+            || label.ends_with('-')
+            || !label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err(format!("{field} must be a domain name such as example.com"));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_oauth_allowlist_value<'a>(field: &str, value: &'a str) -> Result<&'a str, String> {
+    if value.is_empty() {
+        return Err(format!("{field} must not be empty"));
+    }
+    if value.trim() != value {
+        return Err(format!(
+            "{field} must not contain leading or trailing whitespace"
+        ));
+    }
+    if !value.is_ascii() || value.bytes().any(|byte| byte.is_ascii_control()) {
+        return Err(format!("{field} must contain only printable ASCII"));
+    }
+    Ok(value)
 }
 
 fn parse_bool_env(name: &str, value: &str) -> anyhow::Result<bool> {
@@ -1051,6 +1127,81 @@ mod tests {
         config.auth.oauth.allowed_domains = vec!["example.com".to_string()];
 
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn oauth_allowlist_accepts_exact_emails_and_domains() {
+        let mut config = Config::default();
+        config.auth.oauth.enabled = true;
+        config.auth.oauth.issuer_url = "http://issuer.example.com".to_string();
+        config.auth.oauth.client_id = "client".to_string();
+        config.auth.oauth.client_secret = "secret".to_string();
+        config.auth.oauth.allowed_emails = vec!["Admin+Prod@Example.COM".to_string()];
+        config.auth.oauth.allowed_domains = vec!["Team-1.Example.COM".to_string()];
+
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn validation_rejects_invalid_oauth_allowlist_entries() {
+        let mut config = Config::default();
+        config.auth.oauth.enabled = true;
+        config.auth.oauth.issuer_url = "http://issuer.example.com".to_string();
+        config.auth.oauth.client_id = "client".to_string();
+        config.auth.oauth.client_secret = "secret".to_string();
+        config.auth.oauth.allowed_emails = vec![
+            " admin@example.com".to_string(),
+            "admin @example.com".to_string(),
+            "admin".to_string(),
+            "admin@example.com@other".to_string(),
+        ];
+        config.auth.oauth.allowed_domains = vec![
+            "https://example.com".to_string(),
+            "*.example.com".to_string(),
+            "example.com/path".to_string(),
+            "-example.com".to_string(),
+            "example..com".to_string(),
+            "bücher.example".to_string(),
+        ];
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains(
+            "auth.oauth.allowed_emails[0] must not contain leading or trailing whitespace"
+        ));
+        assert!(error.contains("auth.oauth.allowed_emails[1] must not contain whitespace"));
+        assert!(error.contains(
+            "auth.oauth.allowed_emails[2] must be an email address such as admin@example.com"
+        ));
+        assert!(error.contains(
+            "auth.oauth.allowed_emails[3] must be an email address such as admin@example.com"
+        ));
+        assert!(
+            error.contains(
+                "auth.oauth.allowed_domains[0] must be a domain name such as example.com"
+            )
+        );
+        assert!(
+            error.contains(
+                "auth.oauth.allowed_domains[1] must be a domain name such as example.com"
+            )
+        );
+        assert!(
+            error.contains(
+                "auth.oauth.allowed_domains[2] must be a domain name such as example.com"
+            )
+        );
+        assert!(
+            error.contains(
+                "auth.oauth.allowed_domains[3] must be a domain name such as example.com"
+            )
+        );
+        assert!(
+            error.contains(
+                "auth.oauth.allowed_domains[4] must be a domain name such as example.com"
+            )
+        );
+        assert!(error.contains("auth.oauth.allowed_domains[5] must contain only printable ASCII"));
     }
 
     #[test]

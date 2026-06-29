@@ -62,7 +62,9 @@ client_secret = ""
 redirect_url = ""
 # Production mode requires this to stay true before email/domain allowlists are applied.
 require_email_verified = true
+# Exact email addresses only, for example ["admin@example.com"].
 allowed_emails = []
+# Domain names only, for example ["example.com"]. Do not use URL syntax or wildcards.
 allowed_domains = []
 
 [redaction]
