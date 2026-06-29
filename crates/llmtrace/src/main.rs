@@ -21,6 +21,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use axum::Router;
 use axum::body::Body;
+use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderMap, HeaderValue, Request, header};
 use axum::middleware::{self, Next};
 use axum::response::Response;
@@ -34,6 +35,8 @@ use crate::metrics::RuntimeMetrics;
 use crate::plugins::PluginManager;
 use crate::state::AppState;
 use crate::trace::TraceRecorder;
+
+const PRIVATE_JSON_BODY_LIMIT_BYTES: usize = 256 * 1024;
 
 #[derive(Parser, Debug)]
 #[command(name = "llmtrace")]
@@ -153,6 +156,7 @@ fn build_router(state: AppState) -> Router {
         .route("/ui", axum::routing::get(ui::serve_ui))
         .route("/ui/", axum::routing::get(ui::serve_ui))
         .route("/ui/{*path}", axum::routing::get(ui::serve_ui))
+        .layer(DefaultBodyLimit::max(PRIVATE_JSON_BODY_LIMIT_BYTES))
         .layer(middleware::from_fn(private_response_headers));
 
     Router::new()
@@ -187,6 +191,10 @@ fn set_private_response_headers(headers: &mut HeaderMap) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::Json;
+    use axum::http::StatusCode;
+    use axum::routing::post;
+    use tower::ServiceExt;
 
     #[test]
     fn private_response_headers_disable_caching_and_browser_sniffing() {
@@ -212,6 +220,49 @@ mod tests {
             header_value(&headers, header::X_FRAME_OPTIONS),
             Some("DENY")
         );
+    }
+
+    #[tokio::test]
+    async fn private_json_body_limit_allows_small_json_payloads() {
+        let app = json_echo_router();
+
+        let response = app
+            .oneshot(json_request(Body::from(r#"{"ok":true}"#)))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn private_json_body_limit_rejects_oversized_json_payloads() {
+        let app = json_echo_router();
+        let body = format!(
+            r#"{{"data":"{}"}}"#,
+            "x".repeat(PRIVATE_JSON_BODY_LIMIT_BYTES)
+        );
+
+        let response = app.oneshot(json_request(Body::from(body))).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    fn json_echo_router() -> Router {
+        Router::new()
+            .route(
+                "/json",
+                post(|Json(_payload): Json<serde_json::Value>| async { StatusCode::OK }),
+            )
+            .layer(DefaultBodyLimit::max(PRIVATE_JSON_BODY_LIMIT_BYTES))
+    }
+
+    fn json_request(body: Body) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/json")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .unwrap()
     }
 
     fn header_value(headers: &HeaderMap, name: axum::http::HeaderName) -> Option<&str> {
