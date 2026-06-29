@@ -1,0 +1,57 @@
+[server]
+listen = "127.0.0.1:3000"
+public_url = "http://127.0.0.1:3000"
+ui_enabled = true
+
+[proxy]
+default_upstream = "https://api.openai.com"
+allow_upstreams = []
+upstream_header = "x-llmtrace-upstream"
+timeout_secs = 300
+max_body_capture_bytes = 1048576
+
+[storage]
+postgres_url = "postgres://postgres:postgres@localhost:5432/llmtrace"
+max_connections = 10
+trace_queue_capacity = 4096
+trace_worker_count = 4
+
+[auth]
+cookie_secure = false
+session_ttl_hours = 24
+
+[auth.local_admin]
+username = "admin"
+# For development only. Prefer password_hash in production.
+password = "admin"
+# password_hash = "$argon2id$v=19$m=19456,t=2,p=1$..."
+
+[auth.oauth]
+enabled = false
+issuer_url = ""
+client_id = ""
+client_secret = ""
+redirect_url = ""
+allowed_emails = []
+allowed_domains = []
+
+[redaction]
+sensitive_headers = [
+  "authorization",
+  "proxy-authorization",
+  "api-key",
+  "x-api-key",
+  "openai-api-key",
+  "anthropic-api-key",
+  "x-goog-api-key"
+]
+store_header_hash = true
+# Body storage mode: "disabled" (store as-is), "drop" (store nothing),
+# or "json_secrets" (mask secret-looking JSON string values).
+body_redaction = "disabled"
+
+# [[plugins]]
+# name = "api-key-user-mapper"
+# wasm_path = "./plugins/api_key_user_mapper.wasm"
+# hooks = ["on_request_start", "on_response_headers", "on_response_end"]
+# timeout_ms = 50

@@ -1,0 +1,26 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: llmtrace
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  llmtrace:
+    build: .
+    depends_on:
+      - postgres
+    environment:
+      LLMTRACE_CONFIG: /etc/llmtrace/llmtrace.toml
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/llmtrace
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./llmtrace.example.toml:/etc/llmtrace/llmtrace.toml:ro
+
+volumes:
+  postgres-data:

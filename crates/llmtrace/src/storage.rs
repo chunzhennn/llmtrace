@@ -1,0 +1,1509 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::{PgPool, Postgres, QueryBuilder, Row, Transaction};
+use uuid::Uuid;
+
+use crate::config::StorageConfig;
+use crate::types::RequestKind;
+
+#[derive(Debug, Clone)]
+pub struct TraceRecord {
+    pub id: Uuid,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub method: String,
+    pub original_uri: String,
+    pub upstream_url: String,
+    pub upstream_host: Option<String>,
+    pub status: Option<i32>,
+    pub error: Option<String>,
+    pub request_kind: RequestKind,
+    pub model: Option<String>,
+    pub api_key_hash: Option<String>,
+    pub session_key: Option<String>,
+    pub session_id: Option<Uuid>,
+    pub ttft_ms: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub bytes_in: i64,
+    pub bytes_out: i64,
+    pub request_headers: Value,
+    pub response_headers: Value,
+    pub request_body_compressed: Vec<u8>,
+    pub response_body_compressed: Vec<u8>,
+    pub request_body_bytes: i64,
+    pub response_body_bytes: i64,
+    pub request_body_truncated: bool,
+    pub response_body_truncated: bool,
+    pub content_type: Option<String>,
+    pub plugin_metadata: Value,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ParsedMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StructuredQuery {
+    pub dataset: String,
+    pub fields: Option<Vec<String>>,
+    #[serde(default)]
+    pub filters: Vec<QueryFilter>,
+    #[serde(default)]
+    pub order_by: Vec<QueryOrder>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct QueryFilter {
+    pub field: String,
+    pub op: QueryOp,
+    pub value: Option<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct QueryOrder {
+    pub field: String,
+    #[serde(default)]
+    pub direction: SortDirection,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryOp {
+    Eq,
+    Ne,
+    Contains,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+    IsNull,
+    IsNotNull,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortDirection {
+    Asc,
+    #[default]
+    Desc,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DatasetSpec {
+    name: &'static str,
+    relation: &'static str,
+    fields: &'static [FieldSpec],
+    default_fields: &'static [&'static str],
+    default_order: &'static [DefaultOrder],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FieldSpec {
+    name: &'static str,
+    sql: &'static str,
+    filter: Option<FilterKind>,
+}
+
+#[derive(Debug, Clone)]
+enum QueryField {
+    Static(&'static FieldSpec),
+    PluginMetadataPath { name: String, path: Vec<String> },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DefaultOrder {
+    field: &'static str,
+    direction: SortDirection,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FilterKind {
+    Text,
+    Int,
+    Bool,
+    Timestamp,
+    Uuid,
+    Json,
+    JsonPath,
+    TextArray,
+}
+
+impl QueryField {
+    fn name(&self) -> &str {
+        match self {
+            Self::Static(field) => field.name,
+            Self::PluginMetadataPath { name, .. } => name,
+        }
+    }
+
+    fn filter(&self) -> Option<FilterKind> {
+        match self {
+            Self::Static(field) => field.filter,
+            Self::PluginMetadataPath { .. } => Some(FilterKind::JsonPath),
+        }
+    }
+
+    fn append_sql(&self, builder: &mut QueryBuilder<'_, Postgres>) {
+        match self {
+            Self::Static(field) => {
+                builder.push(field.sql);
+            }
+            Self::PluginMetadataPath { path, .. } => {
+                builder.push("(plugin_metadata #> ");
+                builder.push_bind(path.clone());
+                builder.push(")");
+            }
+        }
+    }
+}
+
+pub async fn connect(config: &StorageConfig) -> anyhow::Result<PgPool> {
+    Ok(PgPoolOptions::new()
+        .max_connections(config.max_connections)
+        .connect(&config.postgres_url)
+        .await?)
+}
+
+pub async fn migrate(pool: &PgPool) -> anyhow::Result<()> {
+    sqlx::migrate!("./migrations").run(pool).await?;
+    Ok(())
+}
+
+pub fn compress(data: &[u8]) -> anyhow::Result<Vec<u8>> {
+    if data.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(zstd::stream::encode_all(data, 3)?)
+}
+
+pub fn decompress(data: &[u8]) -> anyhow::Result<Vec<u8>> {
+    if data.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(zstd::stream::decode_all(data)?)
+}
+
+pub async fn insert_trace(
+    pool: &PgPool,
+    mut trace: TraceRecord,
+    messages: Vec<ParsedMessage>,
+    user_id: Option<String>,
+    user_name: Option<String>,
+) -> anyhow::Result<()> {
+    let mut tx = pool.begin().await?;
+
+    if trace.session_id.is_none()
+        && let Some(session_key) = trace.session_key.clone()
+    {
+        trace.session_id = Some(upsert_session(&mut tx, &session_key, user_id, user_name).await?);
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO request_traces (
+            id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
+            status, error, request_kind, model, api_key_hash, session_key, session_id,
+            ttft_ms, duration_ms, bytes_in, bytes_out, request_headers, response_headers,
+            request_body_compressed, response_body_compressed, request_body_bytes, response_body_bytes,
+            request_body_truncated, response_body_truncated, content_type, plugin_metadata, tags
+        )
+        VALUES (
+            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+            $21,$22,$23,$24,$25,$26,$27,$28,$29
+        )
+        "#,
+    )
+    .bind(trace.id)
+    .bind(trace.started_at)
+    .bind(trace.completed_at)
+    .bind(&trace.method)
+    .bind(&trace.original_uri)
+    .bind(&trace.upstream_url)
+    .bind(&trace.upstream_host)
+    .bind(trace.status)
+    .bind(&trace.error)
+    .bind(trace.request_kind.as_str())
+    .bind(&trace.model)
+    .bind(&trace.api_key_hash)
+    .bind(&trace.session_key)
+    .bind(trace.session_id)
+    .bind(trace.ttft_ms)
+    .bind(trace.duration_ms)
+    .bind(trace.bytes_in)
+    .bind(trace.bytes_out)
+    .bind(&trace.request_headers)
+    .bind(&trace.response_headers)
+    .bind(&trace.request_body_compressed)
+    .bind(&trace.response_body_compressed)
+    .bind(trace.request_body_bytes)
+    .bind(trace.response_body_bytes)
+    .bind(trace.request_body_truncated)
+    .bind(trace.response_body_truncated)
+    .bind(&trace.content_type)
+    .bind(&trace.plugin_metadata)
+    .bind(&trace.tags)
+    .execute(&mut *tx)
+    .await?;
+
+    update_rollup(&mut tx, &trace).await?;
+
+    if let Some(session_id) = trace.session_id
+        && !messages.is_empty()
+    {
+        let (roles, contents): (Vec<String>, Vec<String>) = messages
+            .into_iter()
+            .map(|message| (message.role, message.content))
+            .unzip();
+
+        sqlx::query(
+            r#"
+            INSERT INTO session_messages (request_id, session_id, role, content, created_at)
+            SELECT $1, $2, message.role, message.content, now()
+            FROM UNNEST($3::text[], $4::text[]) AS message(role, content)
+            "#,
+        )
+        .bind(trace.id)
+        .bind(session_id)
+        .bind(&roles)
+        .bind(&contents)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn upsert_session(
+    tx: &mut Transaction<'_, Postgres>,
+    session_key: &str,
+    user_id: Option<String>,
+    user_name: Option<String>,
+) -> anyhow::Result<Uuid> {
+    let id = Uuid::new_v4();
+    let row = sqlx::query(
+        r#"
+        INSERT INTO trace_sessions (id, session_key, first_seen, last_seen, user_id, user_name, summary)
+        VALUES ($1, $2, now(), now(), $3, $4, '{}'::jsonb)
+        ON CONFLICT (session_key) DO UPDATE
+        SET last_seen = now(),
+            user_id = COALESCE(trace_sessions.user_id, EXCLUDED.user_id),
+            user_name = COALESCE(trace_sessions.user_name, EXCLUDED.user_name)
+        RETURNING id
+        "#,
+    )
+    .bind(id)
+    .bind(session_key)
+    .bind(user_id)
+    .bind(user_name)
+    .fetch_one(&mut **tx)
+    .await?;
+
+    Ok(row.try_get("id")?)
+}
+
+async fn update_rollup(
+    tx: &mut Transaction<'_, Postgres>,
+    trace: &TraceRecord,
+) -> anyhow::Result<()> {
+    let errors = if trace.error.is_some() || trace.status.is_some_and(|status| status >= 500) {
+        1
+    } else {
+        0
+    };
+    let captured_bytes = trace.request_body_bytes + trace.response_body_bytes;
+    let duration_count = if trace.duration_ms.is_some() { 1 } else { 0 };
+    let duration_sum_ms = trace.duration_ms.unwrap_or_default();
+    let ttft_count = if trace.ttft_ms.is_some() { 1 } else { 0 };
+    let ttft_sum_ms = trace.ttft_ms.unwrap_or_default();
+
+    sqlx::query(
+        r#"
+        INSERT INTO trace_rollups_minute (
+            bucket, last_seen, total, errors, captured_bytes,
+            duration_count, duration_sum_ms, ttft_count, ttft_sum_ms
+        )
+        VALUES (
+            date_trunc('minute', $1::timestamptz), $1,
+            1, $2, $3, $4, $5, $6, $7
+        )
+        ON CONFLICT (bucket) DO UPDATE
+        SET last_seen = GREATEST(trace_rollups_minute.last_seen, EXCLUDED.last_seen),
+            total = trace_rollups_minute.total + EXCLUDED.total,
+            errors = trace_rollups_minute.errors + EXCLUDED.errors,
+            captured_bytes = trace_rollups_minute.captured_bytes + EXCLUDED.captured_bytes,
+            duration_count = trace_rollups_minute.duration_count + EXCLUDED.duration_count,
+            duration_sum_ms = trace_rollups_minute.duration_sum_ms + EXCLUDED.duration_sum_ms,
+            ttft_count = trace_rollups_minute.ttft_count + EXCLUDED.ttft_count,
+            ttft_sum_ms = trace_rollups_minute.ttft_sum_ms + EXCLUDED.ttft_sum_ms
+        "#,
+    )
+    .bind(trace.started_at)
+    .bind(errors)
+    .bind(captured_bytes)
+    .bind(duration_count)
+    .bind(duration_sum_ms)
+    .bind(ttft_count)
+    .bind(ttft_sum_ms)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn list_requests(
+    pool: &PgPool,
+    q: Option<String>,
+    status: Option<i32>,
+    limit: i64,
+) -> anyhow::Result<Value> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
+               status, error, request_kind, model, api_key_hash, session_id, ttft_ms,
+               duration_ms, bytes_in, bytes_out, request_body_truncated, response_body_truncated,
+               plugin_metadata, tags
+        FROM trace_requests
+        WHERE ($1::text IS NULL OR upstream_url ILIKE '%' || $1 || '%' OR model ILIKE '%' || $1 || '%' OR request_kind ILIKE '%' || $1 || '%')
+          AND ($2::int IS NULL OR status = $2)
+        ORDER BY started_at DESC
+        LIMIT $3
+        "#,
+    )
+    .bind(q)
+    .bind(status)
+    .bind(limit.clamp(1, 500))
+    .fetch_all(pool)
+    .await?;
+
+    let items: Vec<Value> = rows
+        .into_iter()
+        .map(|row| {
+            json!({
+                "id": row.get::<Uuid, _>("id"),
+                "started_at": row.get::<DateTime<Utc>, _>("started_at"),
+                "completed_at": row.try_get::<Option<DateTime<Utc>>, _>("completed_at").ok().flatten(),
+                "method": row.get::<String, _>("method"),
+                "original_uri": row.get::<String, _>("original_uri"),
+                "upstream_url": row.get::<String, _>("upstream_url"),
+                "upstream_host": row.try_get::<Option<String>, _>("upstream_host").ok().flatten(),
+                "status": row.try_get::<Option<i32>, _>("status").ok().flatten(),
+                "error": row.try_get::<Option<String>, _>("error").ok().flatten(),
+                "request_kind": row.get::<String, _>("request_kind"),
+                "model": row.try_get::<Option<String>, _>("model").ok().flatten(),
+                "api_key_hash": row.try_get::<Option<String>, _>("api_key_hash").ok().flatten(),
+                "session_id": row.try_get::<Option<Uuid>, _>("session_id").ok().flatten(),
+                "ttft_ms": row.try_get::<Option<i64>, _>("ttft_ms").ok().flatten(),
+                "duration_ms": row.try_get::<Option<i64>, _>("duration_ms").ok().flatten(),
+                "bytes_in": row.get::<i64, _>("bytes_in"),
+                "bytes_out": row.get::<i64, _>("bytes_out"),
+                "request_body_truncated": row.get::<bool, _>("request_body_truncated"),
+                "response_body_truncated": row.get::<bool, _>("response_body_truncated"),
+                "plugin_metadata": row.get::<Value, _>("plugin_metadata"),
+                "tags": row.get::<Vec<String>, _>("tags"),
+            })
+        })
+        .collect();
+    Ok(json!({ "items": items }))
+}
+
+pub async fn get_request(pool: &PgPool, id: Uuid) -> anyhow::Result<Option<Value>> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
+               status, error, request_kind, model, api_key_hash, session_key, session_id,
+               ttft_ms, duration_ms, bytes_in, bytes_out, request_headers, response_headers,
+               request_body_compressed, response_body_compressed, request_body_bytes, response_body_bytes,
+               request_body_truncated, response_body_truncated, content_type, plugin_metadata, tags
+        FROM request_traces
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let request_body: Vec<u8> = row.get("request_body_compressed");
+    let response_body: Vec<u8> = row.get("response_body_compressed");
+    let request_body = String::from_utf8_lossy(&decompress(&request_body)?).to_string();
+    let response_body = String::from_utf8_lossy(&decompress(&response_body)?).to_string();
+
+    Ok(Some(json!({
+        "id": row.get::<Uuid, _>("id"),
+        "started_at": row.get::<DateTime<Utc>, _>("started_at"),
+        "completed_at": row.try_get::<Option<DateTime<Utc>>, _>("completed_at").ok().flatten(),
+        "method": row.get::<String, _>("method"),
+        "original_uri": row.get::<String, _>("original_uri"),
+        "upstream_url": row.get::<String, _>("upstream_url"),
+        "upstream_host": row.try_get::<Option<String>, _>("upstream_host").ok().flatten(),
+        "status": row.try_get::<Option<i32>, _>("status").ok().flatten(),
+        "error": row.try_get::<Option<String>, _>("error").ok().flatten(),
+        "request_kind": row.get::<String, _>("request_kind"),
+        "model": row.try_get::<Option<String>, _>("model").ok().flatten(),
+        "api_key_hash": row.try_get::<Option<String>, _>("api_key_hash").ok().flatten(),
+        "session_key": row.try_get::<Option<String>, _>("session_key").ok().flatten(),
+        "session_id": row.try_get::<Option<Uuid>, _>("session_id").ok().flatten(),
+        "ttft_ms": row.try_get::<Option<i64>, _>("ttft_ms").ok().flatten(),
+        "duration_ms": row.try_get::<Option<i64>, _>("duration_ms").ok().flatten(),
+        "bytes_in": row.get::<i64, _>("bytes_in"),
+        "bytes_out": row.get::<i64, _>("bytes_out"),
+        "request_headers": row.get::<Value, _>("request_headers"),
+        "response_headers": row.get::<Value, _>("response_headers"),
+        "request_body": request_body,
+        "response_body": response_body,
+        "request_body_bytes": row.get::<i64, _>("request_body_bytes"),
+        "response_body_bytes": row.get::<i64, _>("response_body_bytes"),
+        "request_body_truncated": row.get::<bool, _>("request_body_truncated"),
+        "response_body_truncated": row.get::<bool, _>("response_body_truncated"),
+        "content_type": row.try_get::<Option<String>, _>("content_type").ok().flatten(),
+        "plugin_metadata": row.get::<Value, _>("plugin_metadata"),
+        "tags": row.get::<Vec<String>, _>("tags"),
+    })))
+}
+
+pub async fn list_sessions(pool: &PgPool, limit: i64) -> anyhow::Result<Value> {
+    let rows = sqlx::query(
+        r#"
+        SELECT s.id, s.session_key, s.first_seen, s.last_seen, s.user_id, s.user_name,
+               COUNT(r.id)::bigint AS request_count,
+               COALESCE(MAX(r.duration_ms), 0)::bigint AS max_duration_ms
+        FROM trace_sessions s
+        LEFT JOIN request_traces r ON r.session_id = s.id
+        GROUP BY s.id
+        ORDER BY s.last_seen DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit.clamp(1, 500))
+    .fetch_all(pool)
+    .await?;
+
+    let items: Vec<Value> = rows
+        .into_iter()
+        .map(|row| {
+            json!({
+                "id": row.get::<Uuid, _>("id"),
+                "session_key": row.get::<String, _>("session_key"),
+                "first_seen": row.get::<DateTime<Utc>, _>("first_seen"),
+                "last_seen": row.get::<DateTime<Utc>, _>("last_seen"),
+                "user_id": row.try_get::<Option<String>, _>("user_id").ok().flatten(),
+                "user_name": row.try_get::<Option<String>, _>("user_name").ok().flatten(),
+                "request_count": row.get::<i64, _>("request_count"),
+                "max_duration_ms": row.get::<i64, _>("max_duration_ms"),
+            })
+        })
+        .collect();
+    Ok(json!({ "items": items }))
+}
+
+pub async fn get_session(pool: &PgPool, id: Uuid) -> anyhow::Result<Option<Value>> {
+    let session = sqlx::query(
+        r#"
+        SELECT id, session_key, first_seen, last_seen, user_id, user_name, summary
+        FROM trace_sessions
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    let Some(session) = session else {
+        return Ok(None);
+    };
+
+    let messages = sqlx::query(
+        r#"
+        SELECT id, request_id, role, content, created_at
+        FROM session_messages
+        WHERE session_id = $1
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1000
+        "#,
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await?;
+    let messages: Vec<Value> = messages
+        .into_iter()
+        .map(|row| {
+            json!({
+                "id": row.get::<i64, _>("id"),
+                "request_id": row.get::<Uuid, _>("request_id"),
+                "role": row.get::<String, _>("role"),
+                "content": row.get::<String, _>("content"),
+                "created_at": row.get::<DateTime<Utc>, _>("created_at"),
+            })
+        })
+        .collect();
+
+    Ok(Some(json!({
+        "id": session.get::<Uuid, _>("id"),
+        "session_key": session.get::<String, _>("session_key"),
+        "first_seen": session.get::<DateTime<Utc>, _>("first_seen"),
+        "last_seen": session.get::<DateTime<Utc>, _>("last_seen"),
+        "user_id": session.try_get::<Option<String>, _>("user_id").ok().flatten(),
+        "user_name": session.try_get::<Option<String>, _>("user_name").ok().flatten(),
+        "summary": session.get::<Value, _>("summary"),
+        "messages": messages,
+    })))
+}
+
+pub async fn stats(pool: &PgPool) -> anyhow::Result<Value> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+          COALESCE(SUM(total), 0)::bigint AS total,
+          COALESCE(SUM(total) FILTER (WHERE bucket >= date_trunc('minute', now() - interval '1 hour')), 0)::bigint AS last_hour,
+          COALESCE(SUM(errors), 0)::bigint AS errors,
+          COALESCE(SUM(captured_bytes), 0)::bigint AS captured_bytes,
+          COALESCE(SUM(duration_count), 0)::bigint AS duration_count,
+          COALESCE(SUM(duration_sum_ms), 0)::bigint AS duration_sum_ms,
+          COALESCE(SUM(ttft_count), 0)::bigint AS ttft_count,
+          COALESCE(SUM(ttft_sum_ms), 0)::bigint AS ttft_sum_ms
+        FROM trace_rollups_minute
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    let duration_count = row.get::<i64, _>("duration_count");
+    let ttft_count = row.get::<i64, _>("ttft_count");
+    let avg_duration_ms = if duration_count == 0 {
+        None
+    } else {
+        Some(row.get::<i64, _>("duration_sum_ms") / duration_count)
+    };
+    let avg_ttft_ms = if ttft_count == 0 {
+        None
+    } else {
+        Some(row.get::<i64, _>("ttft_sum_ms") / ttft_count)
+    };
+
+    Ok(json!({
+        "total": row.get::<i64, _>("total"),
+        "last_hour": row.get::<i64, _>("last_hour"),
+        "errors": row.get::<i64, _>("errors"),
+        "captured_bytes": row.get::<i64, _>("captured_bytes"),
+        "avg_duration_ms": avg_duration_ms,
+        "avg_ttft_ms": avg_ttft_ms,
+    }))
+}
+
+static REQUEST_FIELDS: &[FieldSpec] = &[
+    FieldSpec {
+        name: "id",
+        sql: "id",
+        filter: Some(FilterKind::Uuid),
+    },
+    FieldSpec {
+        name: "started_at",
+        sql: "started_at",
+        filter: Some(FilterKind::Timestamp),
+    },
+    FieldSpec {
+        name: "completed_at",
+        sql: "completed_at",
+        filter: Some(FilterKind::Timestamp),
+    },
+    FieldSpec {
+        name: "method",
+        sql: "method",
+        filter: Some(FilterKind::Text),
+    },
+    FieldSpec {
+        name: "original_uri",
+        sql: "original_uri",
+        filter: Some(FilterKind::Text),
+    },
+    FieldSpec {
+        name: "upstream_url",
+        sql: "upstream_url",
+        filter: Some(FilterKind::Text),
+    },
+    FieldSpec {
+        name: "upstream_host",
+        sql: "upstream_host",
+        filter: Some(FilterKind::Text),
+    },
+    FieldSpec {
+        name: "status",
+        sql: "status",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "error",
+        sql: "error",
+        filter: Some(FilterKind::Text),
+    },
+    FieldSpec {
+        name: "request_kind",
+        sql: "request_kind",
+        filter: Some(FilterKind::Text),
+    },
+    FieldSpec {
+        name: "model",
+        sql: "model",
+        filter: Some(FilterKind::Text),
+    },
+    FieldSpec {
+        name: "api_key_hash",
+        sql: "api_key_hash",
+        filter: Some(FilterKind::Text),
+    },
+    FieldSpec {
+        name: "session_key",
+        sql: "session_key",
+        filter: Some(FilterKind::Text),
+    },
+    FieldSpec {
+        name: "session_id",
+        sql: "session_id",
+        filter: Some(FilterKind::Uuid),
+    },
+    FieldSpec {
+        name: "ttft_ms",
+        sql: "ttft_ms",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "duration_ms",
+        sql: "duration_ms",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "bytes_in",
+        sql: "bytes_in",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "bytes_out",
+        sql: "bytes_out",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "request_headers",
+        sql: "request_headers",
+        filter: Some(FilterKind::Json),
+    },
+    FieldSpec {
+        name: "response_headers",
+        sql: "response_headers",
+        filter: Some(FilterKind::Json),
+    },
+    FieldSpec {
+        name: "request_body_bytes",
+        sql: "request_body_bytes",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "response_body_bytes",
+        sql: "response_body_bytes",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "request_body_truncated",
+        sql: "request_body_truncated",
+        filter: Some(FilterKind::Bool),
+    },
+    FieldSpec {
+        name: "response_body_truncated",
+        sql: "response_body_truncated",
+        filter: Some(FilterKind::Bool),
+    },
+    FieldSpec {
+        name: "content_type",
+        sql: "content_type",
+        filter: Some(FilterKind::Text),
+    },
+    FieldSpec {
+        name: "plugin_metadata",
+        sql: "plugin_metadata",
+        filter: Some(FilterKind::Json),
+    },
+    FieldSpec {
+        name: "tags",
+        sql: "tags",
+        filter: Some(FilterKind::TextArray),
+    },
+];
+
+static SESSION_FIELDS: &[FieldSpec] = &[
+    FieldSpec {
+        name: "id",
+        sql: "id",
+        filter: Some(FilterKind::Uuid),
+    },
+    FieldSpec {
+        name: "session_key",
+        sql: "session_key",
+        filter: Some(FilterKind::Text),
+    },
+    FieldSpec {
+        name: "first_seen",
+        sql: "first_seen",
+        filter: Some(FilterKind::Timestamp),
+    },
+    FieldSpec {
+        name: "last_seen",
+        sql: "last_seen",
+        filter: Some(FilterKind::Timestamp),
+    },
+    FieldSpec {
+        name: "user_id",
+        sql: "user_id",
+        filter: Some(FilterKind::Text),
+    },
+    FieldSpec {
+        name: "user_name",
+        sql: "user_name",
+        filter: Some(FilterKind::Text),
+    },
+    FieldSpec {
+        name: "summary",
+        sql: "summary",
+        filter: Some(FilterKind::Json),
+    },
+];
+
+static MESSAGE_FIELDS: &[FieldSpec] = &[
+    FieldSpec {
+        name: "id",
+        sql: "id",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "request_id",
+        sql: "request_id",
+        filter: Some(FilterKind::Uuid),
+    },
+    FieldSpec {
+        name: "session_id",
+        sql: "session_id",
+        filter: Some(FilterKind::Uuid),
+    },
+    FieldSpec {
+        name: "role",
+        sql: "role",
+        filter: Some(FilterKind::Text),
+    },
+    FieldSpec {
+        name: "content",
+        sql: "content",
+        filter: Some(FilterKind::Text),
+    },
+    FieldSpec {
+        name: "created_at",
+        sql: "created_at",
+        filter: Some(FilterKind::Timestamp),
+    },
+];
+
+static ROLLUP_FIELDS: &[FieldSpec] = &[
+    FieldSpec {
+        name: "bucket",
+        sql: "bucket",
+        filter: Some(FilterKind::Timestamp),
+    },
+    FieldSpec {
+        name: "last_seen",
+        sql: "last_seen",
+        filter: Some(FilterKind::Timestamp),
+    },
+    FieldSpec {
+        name: "total",
+        sql: "total",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "errors",
+        sql: "errors",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "captured_bytes",
+        sql: "captured_bytes",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "duration_count",
+        sql: "duration_count",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "duration_sum_ms",
+        sql: "duration_sum_ms",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "ttft_count",
+        sql: "ttft_count",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "ttft_sum_ms",
+        sql: "ttft_sum_ms",
+        filter: Some(FilterKind::Int),
+    },
+];
+
+static DATASETS: &[DatasetSpec] = &[
+    DatasetSpec {
+        name: "requests",
+        relation: "trace_requests",
+        fields: REQUEST_FIELDS,
+        default_fields: &[
+            "id",
+            "started_at",
+            "method",
+            "original_uri",
+            "upstream_host",
+            "status",
+            "request_kind",
+            "model",
+            "duration_ms",
+            "bytes_in",
+            "bytes_out",
+            "tags",
+        ],
+        default_order: &[DefaultOrder {
+            field: "started_at",
+            direction: SortDirection::Desc,
+        }],
+    },
+    DatasetSpec {
+        name: "sessions",
+        relation: "trace_sessions",
+        fields: SESSION_FIELDS,
+        default_fields: &[
+            "id",
+            "session_key",
+            "first_seen",
+            "last_seen",
+            "user_id",
+            "user_name",
+        ],
+        default_order: &[DefaultOrder {
+            field: "last_seen",
+            direction: SortDirection::Desc,
+        }],
+    },
+    DatasetSpec {
+        name: "messages",
+        relation: "trace_messages",
+        fields: MESSAGE_FIELDS,
+        default_fields: &[
+            "id",
+            "request_id",
+            "session_id",
+            "role",
+            "content",
+            "created_at",
+        ],
+        default_order: &[DefaultOrder {
+            field: "created_at",
+            direction: SortDirection::Desc,
+        }],
+    },
+    DatasetSpec {
+        name: "rollups_minute",
+        relation: "trace_rollups_minute",
+        fields: ROLLUP_FIELDS,
+        default_fields: &[
+            "bucket",
+            "last_seen",
+            "total",
+            "errors",
+            "captured_bytes",
+            "duration_count",
+            "duration_sum_ms",
+            "ttft_count",
+            "ttft_sum_ms",
+        ],
+        default_order: &[DefaultOrder {
+            field: "bucket",
+            direction: SortDirection::Desc,
+        }],
+    },
+];
+
+pub async fn run_structured_query(
+    pool: &PgPool,
+    request: StructuredQuery,
+) -> anyhow::Result<Value> {
+    let dataset = dataset_spec(&request.dataset)?;
+    let selected = selected_fields(dataset, request.fields.as_deref())?;
+    let order_by = selected_order(dataset, &request.order_by)?;
+    let limit = request.limit.unwrap_or(100).clamp(1, 500);
+
+    let mut builder = QueryBuilder::<Postgres>::new(
+        "SELECT COALESCE(jsonb_agg(to_jsonb(q)), '[]'::jsonb) AS rows FROM (SELECT ",
+    );
+
+    for (index, field) in selected.iter().enumerate() {
+        if index > 0 {
+            builder.push(", ");
+        }
+        field.append_sql(&mut builder);
+        builder.push(" AS ");
+        append_identifier(&mut builder, field.name());
+    }
+
+    builder.push(" FROM ").push(dataset.relation);
+
+    if !request.filters.is_empty() {
+        builder.push(" WHERE ");
+        for (index, filter) in request.filters.iter().enumerate() {
+            if index > 0 {
+                builder.push(" AND ");
+            }
+            append_filter(&mut builder, dataset, filter)?;
+        }
+    }
+
+    if !order_by.is_empty() {
+        builder.push(" ORDER BY ");
+        for (index, (field, direction)) in order_by.iter().enumerate() {
+            if index > 0 {
+                builder.push(", ");
+            }
+            field.append_sql(&mut builder);
+            builder.push(match direction {
+                SortDirection::Asc => " ASC",
+                SortDirection::Desc => " DESC",
+            });
+        }
+    }
+
+    builder.push(" LIMIT ");
+    builder.push_bind(limit);
+    builder.push(") q");
+
+    let mut tx = pool.begin().await?;
+    sqlx::query("SET TRANSACTION READ ONLY")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("SET LOCAL statement_timeout = '5s'")
+        .execute(&mut *tx)
+        .await?;
+    let rows: Value = builder.build_query_scalar().fetch_one(&mut *tx).await?;
+    tx.commit().await?;
+
+    Ok(json!({
+        "dataset": dataset.name,
+        "fields": selected.iter().map(|field| field.name()).collect::<Vec<_>>(),
+        "rows": rows,
+        "limit": limit,
+    }))
+}
+
+fn dataset_spec(name: &str) -> anyhow::Result<&'static DatasetSpec> {
+    DATASETS
+        .iter()
+        .find(|dataset| dataset.name == name)
+        .ok_or_else(|| anyhow::anyhow!("unknown query dataset {name}"))
+}
+
+fn selected_fields(
+    dataset: &'static DatasetSpec,
+    requested: Option<&[String]>,
+) -> anyhow::Result<Vec<QueryField>> {
+    let names: Vec<&str> = match requested {
+        Some([]) => anyhow::bail!("fields must not be empty"),
+        Some(fields) => fields.iter().map(String::as_str).collect(),
+        None => dataset.default_fields.to_vec(),
+    };
+
+    let mut selected = Vec::with_capacity(names.len());
+    for name in names {
+        let field = query_field(dataset, name)?;
+        if selected
+            .iter()
+            .any(|selected_field: &QueryField| selected_field.name() == field.name())
+        {
+            continue;
+        }
+        selected.push(field);
+    }
+
+    if selected.is_empty() {
+        anyhow::bail!("at least one field must be selected");
+    }
+    Ok(selected)
+}
+
+fn selected_order(
+    dataset: &'static DatasetSpec,
+    requested: &[QueryOrder],
+) -> anyhow::Result<Vec<(QueryField, SortDirection)>> {
+    if requested.is_empty() {
+        return dataset
+            .default_order
+            .iter()
+            .map(|order| Ok((query_field(dataset, order.field)?, order.direction)))
+            .collect();
+    }
+
+    requested
+        .iter()
+        .map(|order| Ok((query_field(dataset, &order.field)?, order.direction)))
+        .collect()
+}
+
+fn field_spec(dataset: &'static DatasetSpec, name: &str) -> anyhow::Result<&'static FieldSpec> {
+    dataset
+        .fields
+        .iter()
+        .find(|field| field.name == name)
+        .ok_or_else(|| anyhow::anyhow!("field {name} is not allowed for dataset {}", dataset.name))
+}
+
+fn query_field(dataset: &'static DatasetSpec, name: &str) -> anyhow::Result<QueryField> {
+    if let Ok(field) = field_spec(dataset, name) {
+        return Ok(QueryField::Static(field));
+    }
+
+    if dataset.name == "requests"
+        && let Some(path) = plugin_metadata_path(name)?
+    {
+        return Ok(QueryField::PluginMetadataPath {
+            name: name.to_string(),
+            path,
+        });
+    }
+
+    anyhow::bail!("field {name} is not allowed for dataset {}", dataset.name)
+}
+
+const PLUGIN_METADATA_FIELD_PREFIX: &str = "plugin_metadata.";
+const MAX_PLUGIN_METADATA_PATH_SEGMENTS: usize = 16;
+const MAX_PLUGIN_METADATA_PATH_SEGMENT_LEN: usize = 64;
+
+fn plugin_metadata_path(name: &str) -> anyhow::Result<Option<Vec<String>>> {
+    let Some(path) = name.strip_prefix(PLUGIN_METADATA_FIELD_PREFIX) else {
+        return Ok(None);
+    };
+    if path.is_empty() {
+        anyhow::bail!("plugin_metadata path must not be empty");
+    }
+
+    let segments: Vec<String> = path.split('.').map(str::to_string).collect();
+    if segments.len() > MAX_PLUGIN_METADATA_PATH_SEGMENTS {
+        anyhow::bail!(
+            "plugin_metadata path must have at most {} segments",
+            MAX_PLUGIN_METADATA_PATH_SEGMENTS
+        );
+    }
+
+    for segment in &segments {
+        if !valid_plugin_metadata_path_segment(segment) {
+            anyhow::bail!(
+                "plugin_metadata path segment {segment:?} must contain only ASCII letters, digits, '_' or '-'"
+            );
+        }
+    }
+
+    Ok(Some(segments))
+}
+
+fn valid_plugin_metadata_path_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment.len() <= MAX_PLUGIN_METADATA_PATH_SEGMENT_LEN
+        && segment
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn append_identifier(builder: &mut QueryBuilder<'_, Postgres>, name: &str) {
+    debug_assert!(!name.contains('"'));
+    builder.push("\"").push(name).push("\"");
+}
+
+fn append_filter(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    dataset: &'static DatasetSpec,
+    filter: &QueryFilter,
+) -> anyhow::Result<()> {
+    let field = query_field(dataset, &filter.field)?;
+    let kind = field
+        .filter()
+        .ok_or_else(|| anyhow::anyhow!("field {} cannot be filtered", filter.field))?;
+
+    match filter.op {
+        QueryOp::IsNull => {
+            append_null_filter(builder, &field, true);
+            return Ok(());
+        }
+        QueryOp::IsNotNull => {
+            append_null_filter(builder, &field, false);
+            return Ok(());
+        }
+        QueryOp::Eq | QueryOp::Ne if filter.value.as_ref().is_some_and(Value::is_null) => {
+            append_null_filter(builder, &field, matches!(filter.op, QueryOp::Eq));
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    let value = filter
+        .value
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("filter {} requires a value", filter.field))?;
+
+    match kind {
+        FilterKind::Text => append_text_filter(builder, &field, filter.op, value),
+        FilterKind::Int => append_int_filter(builder, &field, filter.op, value),
+        FilterKind::Bool => append_bool_filter(builder, &field, filter.op, value),
+        FilterKind::Timestamp => append_timestamp_filter(builder, &field, filter.op, value),
+        FilterKind::Uuid => append_uuid_filter(builder, &field, filter.op, value),
+        FilterKind::Json | FilterKind::JsonPath => {
+            append_json_filter(builder, &field, filter.op, value)
+        }
+        FilterKind::TextArray => append_text_array_filter(builder, &field, filter.op, value),
+    }
+}
+
+fn append_null_filter(builder: &mut QueryBuilder<'_, Postgres>, field: &QueryField, is_null: bool) {
+    match field {
+        QueryField::PluginMetadataPath { .. } => {
+            builder.push("(");
+            field.append_sql(builder);
+            builder.push(if is_null {
+                " IS NULL OR "
+            } else {
+                " IS NOT NULL AND "
+            });
+            field.append_sql(builder);
+            builder.push(if is_null {
+                " = 'null'::jsonb"
+            } else {
+                " <> 'null'::jsonb"
+            });
+            builder.push(")");
+        }
+        QueryField::Static(_) => {
+            field.append_sql(builder);
+            builder.push(if is_null { " IS NULL" } else { " IS NOT NULL" });
+        }
+    }
+}
+
+fn append_text_filter(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    field: &QueryField,
+    op: QueryOp,
+    value: &Value,
+) -> anyhow::Result<()> {
+    let value = value_as_string(field.name(), value)?;
+    match op {
+        QueryOp::Eq | QueryOp::Ne | QueryOp::Gt | QueryOp::Gte | QueryOp::Lt | QueryOp::Lte => {
+            field.append_sql(builder);
+            builder.push(comparison_operator(op)?);
+            builder.push_bind(value);
+        }
+        QueryOp::Contains => {
+            field.append_sql(builder);
+            builder.push(" ILIKE ");
+            builder.push_bind(format!("%{}%", escape_like(&value)));
+            builder.push(" ESCAPE '\\'");
+        }
+        QueryOp::IsNull | QueryOp::IsNotNull => unreachable!(),
+    }
+    Ok(())
+}
+
+fn append_int_filter(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    field: &QueryField,
+    op: QueryOp,
+    value: &Value,
+) -> anyhow::Result<()> {
+    let value = value_as_i64(field.name(), value)?;
+    field.append_sql(builder);
+    builder.push(comparison_operator(op)?);
+    builder.push_bind(value);
+    Ok(())
+}
+
+fn append_bool_filter(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    field: &QueryField,
+    op: QueryOp,
+    value: &Value,
+) -> anyhow::Result<()> {
+    let value = value_as_bool(field.name(), value)?;
+    match op {
+        QueryOp::Eq | QueryOp::Ne => {
+            field.append_sql(builder);
+            builder.push(comparison_operator(op)?);
+            builder.push_bind(value);
+            Ok(())
+        }
+        _ => anyhow::bail!(
+            "operator {:?} is not supported for boolean field {}",
+            op,
+            field.name()
+        ),
+    }
+}
+
+fn append_timestamp_filter(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    field: &QueryField,
+    op: QueryOp,
+    value: &Value,
+) -> anyhow::Result<()> {
+    let value = value_as_timestamp(field.name(), value)?;
+    field.append_sql(builder);
+    builder.push(comparison_operator(op)?);
+    builder.push_bind(value);
+    Ok(())
+}
+
+fn append_uuid_filter(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    field: &QueryField,
+    op: QueryOp,
+    value: &Value,
+) -> anyhow::Result<()> {
+    let value = value_as_uuid(field.name(), value)?;
+    match op {
+        QueryOp::Eq | QueryOp::Ne => {
+            field.append_sql(builder);
+            builder.push(comparison_operator(op)?);
+            builder.push_bind(value);
+            Ok(())
+        }
+        _ => anyhow::bail!(
+            "operator {:?} is not supported for uuid field {}",
+            op,
+            field.name()
+        ),
+    }
+}
+
+fn append_json_filter(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    field: &QueryField,
+    op: QueryOp,
+    value: &Value,
+) -> anyhow::Result<()> {
+    match op {
+        QueryOp::Eq | QueryOp::Ne => {
+            field.append_sql(builder);
+            builder.push(comparison_operator(op)?);
+            builder.push_bind(value.clone());
+            Ok(())
+        }
+        QueryOp::Contains => {
+            field.append_sql(builder);
+            builder.push(" @> ");
+            builder.push_bind(value.clone());
+            Ok(())
+        }
+        _ => anyhow::bail!(
+            "operator {:?} is not supported for json field {}",
+            op,
+            field.name()
+        ),
+    }
+}
+
+fn append_text_array_filter(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    field: &QueryField,
+    op: QueryOp,
+    value: &Value,
+) -> anyhow::Result<()> {
+    let value = value_as_string(field.name(), value)?;
+    match op {
+        QueryOp::Contains => {
+            builder.push_bind(value);
+            builder.push(" = ANY(");
+            field.append_sql(builder);
+            builder.push(")");
+            Ok(())
+        }
+        _ => anyhow::bail!(
+            "operator {:?} is not supported for text array field {}",
+            op,
+            field.name()
+        ),
+    }
+}
+
+fn comparison_operator(op: QueryOp) -> anyhow::Result<&'static str> {
+    match op {
+        QueryOp::Eq => Ok(" = "),
+        QueryOp::Ne => Ok(" <> "),
+        QueryOp::Gt => Ok(" > "),
+        QueryOp::Gte => Ok(" >= "),
+        QueryOp::Lt => Ok(" < "),
+        QueryOp::Lte => Ok(" <= "),
+        QueryOp::Contains | QueryOp::IsNull | QueryOp::IsNotNull => {
+            anyhow::bail!("operator {:?} is not a scalar comparison", op)
+        }
+    }
+}
+
+fn value_as_string(field: &str, value: &Value) -> anyhow::Result<String> {
+    value
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("field {field} requires a string value"))
+}
+
+fn value_as_i64(field: &str, value: &Value) -> anyhow::Result<i64> {
+    value
+        .as_i64()
+        .ok_or_else(|| anyhow::anyhow!("field {field} requires an integer value"))
+}
+
+fn value_as_bool(field: &str, value: &Value) -> anyhow::Result<bool> {
+    value
+        .as_bool()
+        .ok_or_else(|| anyhow::anyhow!("field {field} requires a boolean value"))
+}
+
+fn value_as_timestamp(field: &str, value: &Value) -> anyhow::Result<DateTime<Utc>> {
+    let value = value_as_string(field, value)?;
+    Ok(DateTime::parse_from_rfc3339(&value)
+        .map_err(|_| anyhow::anyhow!("field {field} requires an RFC3339 timestamp"))?
+        .with_timezone(&Utc))
+}
+
+fn value_as_uuid(field: &str, value: &Value) -> anyhow::Result<Uuid> {
+    let value = value_as_string(field, value)?;
+    Uuid::parse_str(&value).map_err(|_| anyhow::anyhow!("field {field} requires a UUID value"))
+}
+
+fn escape_like(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn structured_query_rejects_unknown_dataset() {
+        let error = dataset_spec("ui_sessions").unwrap_err().to_string();
+
+        assert!(error.contains("unknown query dataset"));
+    }
+
+    #[test]
+    fn structured_query_rejects_unknown_field() {
+        let dataset = dataset_spec("requests").unwrap();
+        let fields = vec!["id".to_string(), "request_body_compressed".to_string()];
+
+        let error = selected_fields(dataset, Some(&fields))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("is not allowed"));
+    }
+
+    #[test]
+    fn structured_query_deduplicates_selected_fields() {
+        let dataset = dataset_spec("requests").unwrap();
+        let fields = vec!["id".to_string(), "id".to_string(), "status".to_string()];
+
+        let selected = selected_fields(dataset, Some(&fields)).unwrap();
+
+        assert_eq!(
+            selected
+                .iter()
+                .map(|field| field.name())
+                .collect::<Vec<_>>(),
+            vec!["id", "status"]
+        );
+    }
+
+    #[test]
+    fn structured_query_allows_plugin_metadata_path_field() {
+        let dataset = dataset_spec("requests").unwrap();
+        let fields = vec![
+            "id".to_string(),
+            "plugin_metadata.api-key-user-mapper.customer_tier".to_string(),
+        ];
+
+        let selected = selected_fields(dataset, Some(&fields)).unwrap();
+
+        assert_eq!(
+            selected
+                .iter()
+                .map(|field| field.name())
+                .collect::<Vec<_>>(),
+            vec!["id", "plugin_metadata.api-key-user-mapper.customer_tier"]
+        );
+    }
+
+    #[test]
+    fn structured_query_rejects_invalid_plugin_metadata_path_field() {
+        let dataset = dataset_spec("requests").unwrap();
+        let fields = vec!["plugin_metadata.api.key with spaces".to_string()];
+
+        let error = selected_fields(dataset, Some(&fields))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("plugin_metadata path segment"));
+    }
+
+    #[test]
+    fn structured_query_rejects_wrong_filter_type() {
+        let dataset = dataset_spec("requests").unwrap();
+        let filter = QueryFilter {
+            field: "status".to_string(),
+            op: QueryOp::Eq,
+            value: Some(json!("200")),
+        };
+        let mut builder = QueryBuilder::<Postgres>::new("");
+
+        let error = append_filter(&mut builder, dataset, &filter)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("requires an integer value"));
+    }
+
+    #[test]
+    fn structured_query_allows_tag_membership_filter() {
+        let dataset = dataset_spec("requests").unwrap();
+        let filter = QueryFilter {
+            field: "tags".to_string(),
+            op: QueryOp::Contains,
+            value: Some(json!("websocket")),
+        };
+        let mut builder = QueryBuilder::<Postgres>::new("");
+
+        append_filter(&mut builder, dataset, &filter).unwrap();
+    }
+
+    #[test]
+    fn structured_query_allows_plugin_metadata_path_filter() {
+        let dataset = dataset_spec("requests").unwrap();
+        let filter = QueryFilter {
+            field: "plugin_metadata.api-key-user-mapper.customer_tier".to_string(),
+            op: QueryOp::Eq,
+            value: Some(json!("enterprise")),
+        };
+        let mut builder = QueryBuilder::<Postgres>::new("");
+
+        append_filter(&mut builder, dataset, &filter).unwrap();
+    }
+}
