@@ -165,7 +165,7 @@ impl DeploymentMode {
         }
     }
 
-    fn is_production(self) -> bool {
+    pub fn is_production(self) -> bool {
         matches!(self, Self::Production)
     }
 }

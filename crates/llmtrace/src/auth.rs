@@ -398,14 +398,49 @@ async fn finish_oauth(state: &AppState, code: &str) -> anyhow::Result<MeResponse
 async fn oauth_metadata(state: &AppState) -> anyhow::Result<OidcMetadata> {
     let issuer = state.config.auth.oauth.issuer_url.trim_end_matches('/');
     let discovery = format!("{issuer}/.well-known/openid-configuration");
-    match state.http.get(discovery).send().await {
-        Ok(response) if response.status().is_success() => Ok(response.json().await?),
-        _ => Ok(OidcMetadata {
+    let metadata = match state.http.get(discovery).send().await {
+        Ok(response) if response.status().is_success() => response.json().await?,
+        _ => OidcMetadata {
             authorization_endpoint: Some(format!("{issuer}/authorize")),
             token_endpoint: Some(format!("{issuer}/token")),
             userinfo_endpoint: Some(format!("{issuer}/userinfo")),
-        }),
+        },
+    };
+    validate_oauth_metadata_endpoints(&metadata, state.config.server.deployment.is_production())?;
+    Ok(metadata)
+}
+
+fn validate_oauth_metadata_endpoints(
+    metadata: &OidcMetadata,
+    require_https: bool,
+) -> anyhow::Result<()> {
+    for (field, endpoint) in [
+        (
+            "authorization_endpoint",
+            metadata.authorization_endpoint.as_deref(),
+        ),
+        ("token_endpoint", metadata.token_endpoint.as_deref()),
+        ("userinfo_endpoint", metadata.userinfo_endpoint.as_deref()),
+    ] {
+        let Some(endpoint) = endpoint else {
+            continue;
+        };
+        let url = Url::parse(endpoint)
+            .map_err(|error| anyhow::anyhow!("oauth {field} is not a valid URL: {error}"))?;
+        if url.host_str().is_none() {
+            anyhow::bail!("oauth {field} must include a host");
+        }
+        if !matches!(url.scheme(), "http" | "https") {
+            anyhow::bail!("oauth {field} must use http or https");
+        }
+        if require_https && url.scheme() != "https" {
+            anyhow::bail!("oauth {field} must use https in production");
+        }
+        if !url.username().is_empty() || url.password().is_some() {
+            anyhow::bail!("oauth {field} must not contain credentials");
+        }
     }
+    Ok(())
 }
 
 fn enforce_oauth_email_verified(oauth: &OAuthConfig, userinfo: &Value) -> anyhow::Result<()> {
@@ -848,6 +883,69 @@ mod tests {
     }
 
     #[test]
+    fn oauth_metadata_endpoint_validation_accepts_https_endpoints_in_production() {
+        let metadata = oauth_metadata_with_endpoints(
+            "https://issuer.example.com/authorize",
+            "https://issuer.example.com/token",
+            "https://issuer.example.com/userinfo",
+        );
+
+        validate_oauth_metadata_endpoints(&metadata, true).unwrap();
+    }
+
+    #[test]
+    fn oauth_metadata_endpoint_validation_rejects_http_endpoints_in_production() {
+        let metadata = oauth_metadata_with_endpoints(
+            "http://issuer.example.com/authorize",
+            "https://issuer.example.com/token",
+            "https://issuer.example.com/userinfo",
+        );
+
+        let error = validate_oauth_metadata_endpoints(&metadata, true)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("authorization_endpoint must use https in production"));
+    }
+
+    #[test]
+    fn oauth_metadata_endpoint_validation_allows_http_endpoints_outside_production() {
+        let metadata = oauth_metadata_with_endpoints(
+            "http://issuer.example.com/authorize",
+            "http://issuer.example.com/token",
+            "http://issuer.example.com/userinfo",
+        );
+
+        validate_oauth_metadata_endpoints(&metadata, false).unwrap();
+    }
+
+    #[test]
+    fn oauth_metadata_endpoint_validation_rejects_non_http_or_credentialed_endpoints() {
+        let metadata = oauth_metadata_with_endpoints(
+            "javascript:alert(1)",
+            "https://user:secret@issuer.example.com/token",
+            "https://issuer.example.com/userinfo",
+        );
+
+        let error = validate_oauth_metadata_endpoints(&metadata, false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("authorization_endpoint must include a host"));
+
+        let metadata = oauth_metadata_with_endpoints(
+            "https://issuer.example.com/authorize",
+            "https://user:secret@issuer.example.com/token",
+            "https://issuer.example.com/userinfo",
+        );
+        let error = validate_oauth_metadata_endpoints(&metadata, false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("token_endpoint must not contain credentials"));
+    }
+
+    #[test]
     fn same_origin_check_allows_safe_method_with_cross_site_origin() {
         let headers = headers_with(header::ORIGIN, "https://evil.example.com");
 
@@ -1018,5 +1116,17 @@ mod tests {
             .hash_password(password.as_bytes(), &salt)
             .unwrap()
             .to_string()
+    }
+
+    fn oauth_metadata_with_endpoints(
+        authorization_endpoint: &str,
+        token_endpoint: &str,
+        userinfo_endpoint: &str,
+    ) -> OidcMetadata {
+        OidcMetadata {
+            authorization_endpoint: Some(authorization_endpoint.to_string()),
+            token_endpoint: Some(token_endpoint.to_string()),
+            userinfo_endpoint: Some(userinfo_endpoint.to_string()),
+        }
     }
 }
