@@ -25,6 +25,8 @@ use crate::state::AppState;
 use crate::types::LoginMethod;
 
 const SESSION_COOKIE: &str = "llmtrace_session";
+const OAUTH_STATE_COOKIE: &str = "llmtrace_oauth_state";
+const OAUTH_STATE_TTL_SECS: i64 = 10 * 60;
 
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
@@ -253,13 +255,26 @@ async fn oauth_start(State(state): State<AppState>) -> Response {
         urlencoding(&redirect_url),
         urlencoding(&state_value),
     );
-    Redirect::temporary(&location).into_response()
+    let mut response = Redirect::temporary(&location).into_response();
+    set_oauth_state_cookie(response.headers_mut(), &state, &state_value);
+    response
 }
 
 async fn oauth_callback(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(callback): Query<OAuthCallback>,
 ) -> Response {
+    if oauth_state_cookie(&headers).as_deref() != Some(callback.state.as_str()) {
+        let mut response = (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "invalid oauth state"})),
+        )
+            .into_response();
+        clear_oauth_state_cookie(response.headers_mut(), &state);
+        return response;
+    }
+
     let state_row = match sqlx::query(
         "DELETE FROM oauth_states WHERE state = $1 AND expires_at > now() RETURNING state",
     )
@@ -271,11 +286,13 @@ async fn oauth_callback(
         Err(error) => return server_error(error),
     };
     if state_row.is_none() {
-        return (
+        let mut response = (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "invalid oauth state"})),
         )
             .into_response();
+        clear_oauth_state_cookie(response.headers_mut(), &state);
+        return response;
     }
 
     match finish_oauth(&state, &callback.code).await {
@@ -299,18 +316,25 @@ async fn oauth_callback(
                     .await;
                     let mut response = Redirect::temporary("/ui/").into_response();
                     set_session_cookie(response.headers_mut(), &state, &session_id);
+                    clear_oauth_state_cookie(response.headers_mut(), &state);
                     response
                 }
-                Err(error) => server_error(error),
+                Err(error) => {
+                    let mut response = server_error(error);
+                    clear_oauth_state_cookie(response.headers_mut(), &state);
+                    response
+                }
             }
         }
         Err(error) => {
             tracing::warn!(%error, "oauth callback failed");
-            (
+            let mut response = (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({"error": "oauth login failed"})),
             )
-                .into_response()
+                .into_response();
+            clear_oauth_state_cookie(response.headers_mut(), &state);
+            response
         }
     }
 }
@@ -509,12 +533,20 @@ async fn audit(
 }
 
 fn session_cookie(headers: &HeaderMap) -> Option<String> {
+    named_cookie(headers, SESSION_COOKIE)
+}
+
+fn oauth_state_cookie(headers: &HeaderMap) -> Option<String> {
+    named_cookie(headers, OAUTH_STATE_COOKIE)
+}
+
+fn named_cookie(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
     let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
     for part in cookie.split(';') {
         let Some((name, value)) = part.trim().split_once('=') else {
             continue;
         };
-        if name == SESSION_COOKIE {
+        if name == cookie_name {
             return Some(value.to_string());
         }
     }
@@ -578,7 +610,7 @@ fn set_session_cookie(headers: &mut HeaderMap, state: &AppState, session_id: &st
     if state.config.auth.cookie_secure {
         cookie.push_str("; Secure");
     }
-    headers.insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
+    append_set_cookie(headers, &cookie);
 }
 
 fn clear_session_cookie(headers: &mut HeaderMap, state: &AppState) {
@@ -586,7 +618,39 @@ fn clear_session_cookie(headers: &mut HeaderMap, state: &AppState) {
     if state.config.auth.cookie_secure {
         cookie.push_str("; Secure");
     }
-    headers.insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
+    append_set_cookie(headers, &cookie);
+}
+
+fn set_oauth_state_cookie(headers: &mut HeaderMap, state: &AppState, state_value: &str) {
+    append_set_cookie(
+        headers,
+        &oauth_state_cookie_header(
+            state_value,
+            OAUTH_STATE_TTL_SECS,
+            state.config.auth.cookie_secure,
+        ),
+    );
+}
+
+fn clear_oauth_state_cookie(headers: &mut HeaderMap, state: &AppState) {
+    append_set_cookie(
+        headers,
+        &oauth_state_cookie_header("", 0, state.config.auth.cookie_secure),
+    );
+}
+
+fn oauth_state_cookie_header(value: &str, max_age_secs: i64, secure: bool) -> String {
+    let mut cookie = format!(
+        "{OAUTH_STATE_COOKIE}={value}; Path=/api/auth/oauth; HttpOnly; SameSite=Lax; Max-Age={max_age_secs}"
+    );
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+fn append_set_cookie(headers: &mut HeaderMap, cookie: &str) {
+    headers.append(header::SET_COOKIE, HeaderValue::from_str(cookie).unwrap());
 }
 
 fn random_token() -> String {
@@ -802,6 +866,53 @@ mod tests {
         let headers = headers_with(header::COOKIE, "bad-cookie; theme=dark");
 
         assert_eq!(session_cookie(&headers), None);
+    }
+
+    #[test]
+    fn oauth_state_cookie_reads_only_oauth_state_cookie() {
+        let headers = headers_with(
+            header::COOKIE,
+            "llmtrace_session=session-123; llmtrace_oauth_state=state-456",
+        );
+
+        assert_eq!(oauth_state_cookie(&headers).as_deref(), Some("state-456"));
+    }
+
+    #[test]
+    fn oauth_state_cookie_header_is_short_lived_and_path_scoped() {
+        let cookie = oauth_state_cookie_header("state-456", OAUTH_STATE_TTL_SECS, true);
+
+        assert!(cookie.starts_with("llmtrace_oauth_state=state-456;"));
+        assert!(cookie.contains("Path=/api/auth/oauth"));
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("SameSite=Lax"));
+        assert!(cookie.contains("Max-Age=600"));
+        assert!(cookie.contains("Secure"));
+    }
+
+    #[test]
+    fn append_set_cookie_preserves_multiple_cookie_headers() {
+        let mut headers = HeaderMap::new();
+
+        append_set_cookie(&mut headers, "llmtrace_session=session-123; Path=/");
+        append_set_cookie(
+            &mut headers,
+            "llmtrace_oauth_state=; Path=/api/auth/oauth; Max-Age=0",
+        );
+
+        let values = headers
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|value| value.to_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            values,
+            vec![
+                "llmtrace_session=session-123; Path=/".to_string(),
+                "llmtrace_oauth_state=; Path=/api/auth/oauth; Max-Age=0".to_string()
+            ]
+        );
     }
 
     fn headers_with(name: axum::http::HeaderName, value: &'static str) -> HeaderMap {

@@ -89,6 +89,8 @@ body_redaction = "json_secrets"
 
 Local admin login failures are throttled in memory per username and source IP. The default allows 5 failures in 300 seconds, then returns `429 Too Many Requests` with `Retry-After` for 900 seconds. This protects a single process and records `login_throttled` audit events, but production deployments with multiple replicas or internet exposure should also enforce rate limits at the edge.
 
+OAuth login state is stored server-side and bound to a short-lived HttpOnly `SameSite=Lax` browser cookie scoped to `/api/auth/oauth`. The callback requires both the query `state` and cookie state to match, which keeps OAuth callbacks tied to the browser that started the login flow.
+
 Cookie-authenticated unsafe requests are checked for same-origin browser metadata. If a `POST`, `PUT`, `PATCH`, or `DELETE` request includes an `Origin` header, it must match `server.public_url`; when `Origin` is absent, a present `Referer` must match instead. Requests without either header are allowed so non-browser API clients and health tooling are not forced to forge browser headers.
 
 `/api`, `/api/auth`, and `/ui` responses include `Cache-Control: no-store`, legacy no-cache headers, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and `X-Frame-Options: DENY`. These headers are intentionally not applied to proxied upstream LLM responses.
