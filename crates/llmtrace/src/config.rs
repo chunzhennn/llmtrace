@@ -258,6 +258,10 @@ impl Config {
         if let Ok(value) = std::env::var("DATABASE_URL") {
             config.storage.postgres_url = value;
         }
+        if let Ok(value) = std::env::var("LLMTRACE_STORAGE_MAX_CONNECTIONS") {
+            config.storage.max_connections =
+                parse_u32_env("LLMTRACE_STORAGE_MAX_CONNECTIONS", &value)?;
+        }
         if let Ok(value) = std::env::var("LLMTRACE_RETENTION_DAYS") {
             config.storage.retention_days = Some(parse_i64_env("LLMTRACE_RETENTION_DAYS", &value)?);
         }
@@ -273,6 +277,14 @@ impl Config {
             config.storage.acquire_timeout_secs =
                 parse_u64_env("LLMTRACE_DB_ACQUIRE_TIMEOUT_SECS", &value)?;
         }
+        if let Ok(value) = std::env::var("LLMTRACE_TRACE_QUEUE_CAPACITY") {
+            config.storage.trace_queue_capacity =
+                parse_usize_env("LLMTRACE_TRACE_QUEUE_CAPACITY", &value)?;
+        }
+        if let Ok(value) = std::env::var("LLMTRACE_TRACE_WORKER_COUNT") {
+            config.storage.trace_worker_count =
+                parse_usize_env("LLMTRACE_TRACE_WORKER_COUNT", &value)?;
+        }
         if let Ok(value) = std::env::var("LLMTRACE_LISTEN") {
             config.server.listen = value;
         }
@@ -284,6 +296,16 @@ impl Config {
         }
         if let Ok(value) = std::env::var("LLMTRACE_DEFAULT_UPSTREAM") {
             config.proxy.default_upstream = value;
+        }
+        if let Ok(value) = std::env::var("LLMTRACE_ALLOW_UPSTREAMS") {
+            config.proxy.allow_upstreams = parse_csv_env("LLMTRACE_ALLOW_UPSTREAMS", &value)?;
+        }
+        if let Ok(value) = std::env::var("LLMTRACE_PROXY_TIMEOUT_SECS") {
+            config.proxy.timeout_secs = parse_u64_env("LLMTRACE_PROXY_TIMEOUT_SECS", &value)?;
+        }
+        if let Ok(value) = std::env::var("LLMTRACE_MAX_BODY_CAPTURE_BYTES") {
+            config.proxy.max_body_capture_bytes =
+                parse_usize_env("LLMTRACE_MAX_BODY_CAPTURE_BYTES", &value)?;
         }
         if let Ok(value) = std::env::var("LLMTRACE_MAX_REQUEST_BODY_BYTES") {
             config.proxy.max_request_body_bytes =
@@ -328,6 +350,10 @@ impl Config {
         }
         if let Ok(value) = std::env::var("LLMTRACE_ADMIN_PASSWORD_HASH") {
             config.auth.local_admin.password_hash = Some(value);
+        }
+        if let Ok(value) = std::env::var("LLMTRACE_BODY_REDACTION") {
+            config.redaction.body_redaction =
+                parse_body_redaction_env("LLMTRACE_BODY_REDACTION", &value)?;
         }
         config.normalize_sensitive_defaults();
 
@@ -918,6 +944,32 @@ fn parse_usize_env(name: &str, value: &str) -> anyhow::Result<usize> {
         .with_context(|| format!("{name} must be an unsigned integer"))
 }
 
+fn parse_csv_env(name: &str, value: &str) -> anyhow::Result<Vec<String>> {
+    let mut items = Vec::new();
+    for item in value.split(',') {
+        let item = item.trim();
+        if item.is_empty() {
+            anyhow::bail!("{name} must be a comma-separated list without empty items");
+        }
+        items.push(item.to_string());
+    }
+    if items.is_empty() {
+        anyhow::bail!("{name} must contain at least one item");
+    }
+    Ok(items)
+}
+
+fn parse_body_redaction_env(name: &str, value: &str) -> anyhow::Result<BodyRedaction> {
+    match value {
+        "disabled" => Ok(BodyRedaction::Disabled),
+        "drop" => Ok(BodyRedaction::Drop),
+        "json_secrets" => Ok(BodyRedaction::JsonSecrets),
+        other => {
+            anyhow::bail!("{name} must be one of disabled, drop, or json_secrets, got {other:?}")
+        }
+    }
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -1238,6 +1290,60 @@ mod tests {
         assert!(error.contains("auth.login_rate_limit.window_secs must be greater than 0"));
         assert!(error.contains("auth.login_rate_limit.lockout_secs must be greater than 0"));
         assert!(error.contains("auth.login_rate_limit.max_tracked_entries must be greater than 0"));
+    }
+
+    #[test]
+    fn csv_env_parser_trims_items_and_rejects_empty_entries() {
+        let items = parse_csv_env(
+            "LLMTRACE_ALLOW_UPSTREAMS",
+            "api.openai.com, https://api.example.com/v1",
+        )
+        .unwrap();
+
+        assert_eq!(
+            items,
+            vec![
+                "api.openai.com".to_string(),
+                "https://api.example.com/v1".to_string()
+            ]
+        );
+        assert!(
+            parse_csv_env("LLMTRACE_ALLOW_UPSTREAMS", "")
+                .unwrap_err()
+                .to_string()
+                .contains("without empty items")
+        );
+        assert!(
+            parse_csv_env("LLMTRACE_ALLOW_UPSTREAMS", "api.openai.com,")
+                .unwrap_err()
+                .to_string()
+                .contains("without empty items")
+        );
+    }
+
+    #[test]
+    fn body_redaction_env_parser_accepts_known_values() {
+        assert_eq!(
+            parse_body_redaction_env("LLMTRACE_BODY_REDACTION", "disabled").unwrap(),
+            BodyRedaction::Disabled
+        );
+        assert_eq!(
+            parse_body_redaction_env("LLMTRACE_BODY_REDACTION", "drop").unwrap(),
+            BodyRedaction::Drop
+        );
+        assert_eq!(
+            parse_body_redaction_env("LLMTRACE_BODY_REDACTION", "json_secrets").unwrap(),
+            BodyRedaction::JsonSecrets
+        );
+    }
+
+    #[test]
+    fn body_redaction_env_parser_rejects_unknown_values() {
+        let error = parse_body_redaction_env("LLMTRACE_BODY_REDACTION", "mask")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("must be one of disabled, drop, or json_secrets"));
     }
 
     #[test]
