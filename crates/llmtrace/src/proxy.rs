@@ -8,7 +8,7 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade};
-use axum::http::{HeaderMap, HeaderName, Request, Response, StatusCode, Uri, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode, Uri, header};
 use axum::response::IntoResponse;
 use bytes::Bytes;
 use futures_util::{SinkExt, Stream, StreamExt};
@@ -37,6 +37,7 @@ const HOP_BY_HOP_HEADERS: &[&str] = &[
 ];
 
 const REQUEST_BODY_LIMIT_ERROR: &str = "request body exceeds configured limit";
+const TRACE_ID_HEADER: &str = "x-llmtrace-trace-id";
 
 pub async fn proxy(
     State(state): State<AppState>,
@@ -105,7 +106,7 @@ async fn proxy_http(
             run_plugins: false,
             ..TraceEvent::base(trace_id, started_at)
         });
-        return Ok(payload_too_large_response(max_request_body_bytes));
+        return Ok(payload_too_large_response(max_request_body_bytes, trace_id));
     }
 
     let request_body = RequestCaptureStream::new(
@@ -158,9 +159,10 @@ async fn proxy_http(
                 ..TraceEvent::base(trace_id, started_at)
             });
             if request_limit_exceeded {
-                return Ok(payload_too_large_response(max_request_body_bytes));
+                return Ok(payload_too_large_response(max_request_body_bytes, trace_id));
             }
-            anyhow::bail!(error);
+            tracing::warn!(%trace_id, %error, "upstream request failed");
+            return Ok(upstream_error_response(trace_id));
         }
     };
 
@@ -203,7 +205,9 @@ async fn proxy_http(
         started,
         capture_limit,
     );
-    Ok(response_builder.body(Body::from_stream(response_body))?)
+    let mut response = response_builder.body(Body::from_stream(response_body))?;
+    set_trace_id_header(response.headers_mut(), trace_id);
+    Ok(response)
 }
 
 #[derive(Clone, Default)]
@@ -408,7 +412,7 @@ async fn proxy_websocket(
     let redacted_headers = redact_headers(&parts.headers, &state.config.redaction);
     let upstream_host = upstream_url.host_str().map(str::to_string);
 
-    ws.on_upgrade(move |socket| async move {
+    let mut response = ws.on_upgrade(move |socket| async move {
         handle_websocket(
             state,
             socket,
@@ -422,7 +426,9 @@ async fn proxy_websocket(
             parts.headers,
         )
         .await;
-    })
+    });
+    set_trace_id_header(response.headers_mut(), trace_id);
+    response
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -741,15 +747,34 @@ fn content_length_exceeds(headers: &HeaderMap, limit: usize) -> bool {
         .is_some_and(|content_length| content_length > limit as u128)
 }
 
-fn payload_too_large_response(limit: usize) -> axum::response::Response {
-    (
+fn payload_too_large_response(limit: usize, trace_id: Uuid) -> axum::response::Response {
+    let mut response = (
         StatusCode::PAYLOAD_TOO_LARGE,
         axum::Json(json!({
             "error": REQUEST_BODY_LIMIT_ERROR,
             "max_request_body_bytes": limit,
         })),
     )
-        .into_response()
+        .into_response();
+    set_trace_id_header(response.headers_mut(), trace_id);
+    response
+}
+
+fn upstream_error_response(trace_id: Uuid) -> axum::response::Response {
+    let mut response = (
+        StatusCode::BAD_GATEWAY,
+        axum::Json(json!({"error": "upstream request failed"})),
+    )
+        .into_response();
+    set_trace_id_header(response.headers_mut(), trace_id);
+    response
+}
+
+fn set_trace_id_header(headers: &mut HeaderMap, trace_id: Uuid) {
+    let value = trace_id.to_string();
+    if let Ok(value) = HeaderValue::from_str(&value) {
+        headers.insert(HeaderName::from_static(TRACE_ID_HEADER), value);
+    }
 }
 
 fn request_body_limit_message(limit: usize) -> String {
@@ -896,6 +921,56 @@ mod tests {
         assert_eq!(snapshot.total_bytes, 6);
         assert!(snapshot.truncated);
         assert!(snapshot.limit_exceeded);
+    }
+
+    #[test]
+    fn payload_too_large_response_includes_trace_id_header() {
+        let trace_id = Uuid::new_v4();
+        let trace_id_string = trace_id.to_string();
+
+        let response = payload_too_large_response(1024, trace_id);
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            response
+                .headers()
+                .get(TRACE_ID_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some(trace_id_string.as_str())
+        );
+    }
+
+    #[test]
+    fn upstream_error_response_includes_trace_id_header() {
+        let trace_id = Uuid::new_v4();
+        let trace_id_string = trace_id.to_string();
+
+        let response = upstream_error_response(trace_id);
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            response
+                .headers()
+                .get(TRACE_ID_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some(trace_id_string.as_str())
+        );
+    }
+
+    #[test]
+    fn set_trace_id_header_writes_uuid_value() {
+        let trace_id = Uuid::new_v4();
+        let trace_id_string = trace_id.to_string();
+        let mut headers = HeaderMap::new();
+
+        set_trace_id_header(&mut headers, trace_id);
+
+        assert_eq!(
+            headers
+                .get(TRACE_ID_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some(trace_id_string.as_str())
+        );
     }
 
     #[test]
