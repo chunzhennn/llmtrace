@@ -255,106 +255,7 @@ impl Config {
             Config::default()
         };
 
-        if let Ok(value) = std::env::var("DATABASE_URL") {
-            config.storage.postgres_url = value;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_STORAGE_MAX_CONNECTIONS") {
-            config.storage.max_connections =
-                parse_u32_env("LLMTRACE_STORAGE_MAX_CONNECTIONS", &value)?;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_RETENTION_DAYS") {
-            config.storage.retention_days = Some(parse_i64_env("LLMTRACE_RETENTION_DAYS", &value)?);
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_RETENTION_PRUNE_INTERVAL_SECS") {
-            config.storage.retention_prune_interval_secs =
-                parse_u64_env("LLMTRACE_RETENTION_PRUNE_INTERVAL_SECS", &value)?;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_RETENTION_PRUNE_BATCH_SIZE") {
-            config.storage.retention_prune_batch_size =
-                parse_i64_env("LLMTRACE_RETENTION_PRUNE_BATCH_SIZE", &value)?;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_DB_ACQUIRE_TIMEOUT_SECS") {
-            config.storage.acquire_timeout_secs =
-                parse_u64_env("LLMTRACE_DB_ACQUIRE_TIMEOUT_SECS", &value)?;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_TRACE_QUEUE_CAPACITY") {
-            config.storage.trace_queue_capacity =
-                parse_usize_env("LLMTRACE_TRACE_QUEUE_CAPACITY", &value)?;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_TRACE_WORKER_COUNT") {
-            config.storage.trace_worker_count =
-                parse_usize_env("LLMTRACE_TRACE_WORKER_COUNT", &value)?;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_LISTEN") {
-            config.server.listen = value;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_PUBLIC_URL") {
-            config.server.public_url = value;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_DEPLOYMENT") {
-            config.server.deployment = value.parse()?;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_DEFAULT_UPSTREAM") {
-            config.proxy.default_upstream = value;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_ALLOW_UPSTREAMS") {
-            config.proxy.allow_upstreams = parse_csv_env("LLMTRACE_ALLOW_UPSTREAMS", &value)?;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_PROXY_TIMEOUT_SECS") {
-            config.proxy.timeout_secs = parse_u64_env("LLMTRACE_PROXY_TIMEOUT_SECS", &value)?;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_MAX_BODY_CAPTURE_BYTES") {
-            config.proxy.max_body_capture_bytes =
-                parse_usize_env("LLMTRACE_MAX_BODY_CAPTURE_BYTES", &value)?;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_MAX_REQUEST_BODY_BYTES") {
-            config.proxy.max_request_body_bytes =
-                parse_usize_env("LLMTRACE_MAX_REQUEST_BODY_BYTES", &value)?;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_MAX_WEBSOCKET_MESSAGE_BYTES") {
-            config.proxy.max_websocket_message_bytes =
-                parse_usize_env("LLMTRACE_MAX_WEBSOCKET_MESSAGE_BYTES", &value)?;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES") {
-            config.proxy.max_websocket_session_bytes =
-                parse_usize_env("LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES", &value)?;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_AUTH_COOKIE_SECURE") {
-            config.auth.cookie_secure = parse_bool_env("LLMTRACE_AUTH_COOKIE_SECURE", &value)?;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_LOGIN_RATE_LIMIT_ENABLED") {
-            config.auth.login_rate_limit.enabled =
-                parse_bool_env("LLMTRACE_LOGIN_RATE_LIMIT_ENABLED", &value)?;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_LOGIN_RATE_LIMIT_MAX_FAILURES") {
-            config.auth.login_rate_limit.max_failures =
-                parse_u32_env("LLMTRACE_LOGIN_RATE_LIMIT_MAX_FAILURES", &value)?;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_LOGIN_RATE_LIMIT_WINDOW_SECS") {
-            config.auth.login_rate_limit.window_secs =
-                parse_u64_env("LLMTRACE_LOGIN_RATE_LIMIT_WINDOW_SECS", &value)?;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_LOGIN_RATE_LIMIT_LOCKOUT_SECS") {
-            config.auth.login_rate_limit.lockout_secs =
-                parse_u64_env("LLMTRACE_LOGIN_RATE_LIMIT_LOCKOUT_SECS", &value)?;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_LOGIN_RATE_LIMIT_MAX_TRACKED_ENTRIES") {
-            config.auth.login_rate_limit.max_tracked_entries =
-                parse_usize_env("LLMTRACE_LOGIN_RATE_LIMIT_MAX_TRACKED_ENTRIES", &value)?;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_ADMIN_USERNAME") {
-            config.auth.local_admin.username = value;
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_ADMIN_PASSWORD") {
-            config.auth.local_admin.password = Some(value);
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_ADMIN_PASSWORD_HASH") {
-            config.auth.local_admin.password_hash = Some(value);
-        }
-        if let Ok(value) = std::env::var("LLMTRACE_BODY_REDACTION") {
-            config.redaction.body_redaction =
-                parse_body_redaction_env("LLMTRACE_BODY_REDACTION", &value)?;
-        }
+        apply_env_overrides(&mut config, |name| std::env::var(name).ok())?;
         config.normalize_sensitive_defaults();
 
         Ok(config)
@@ -747,6 +648,152 @@ impl Config {
             }
         }
     }
+}
+
+fn apply_env_overrides(
+    config: &mut Config,
+    env: impl Fn(&str) -> Option<String>,
+) -> anyhow::Result<()> {
+    if let Some(value) = env("DATABASE_URL") {
+        config.storage.postgres_url = value;
+    }
+    if let Some(value) = env("LLMTRACE_STORAGE_MAX_CONNECTIONS") {
+        config.storage.max_connections = parse_u32_env("LLMTRACE_STORAGE_MAX_CONNECTIONS", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_RETENTION_DAYS") {
+        config.storage.retention_days = Some(parse_i64_env("LLMTRACE_RETENTION_DAYS", &value)?);
+    }
+    if let Some(value) = env("LLMTRACE_RETENTION_PRUNE_INTERVAL_SECS") {
+        config.storage.retention_prune_interval_secs =
+            parse_u64_env("LLMTRACE_RETENTION_PRUNE_INTERVAL_SECS", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_RETENTION_PRUNE_BATCH_SIZE") {
+        config.storage.retention_prune_batch_size =
+            parse_i64_env("LLMTRACE_RETENTION_PRUNE_BATCH_SIZE", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_DB_ACQUIRE_TIMEOUT_SECS") {
+        config.storage.acquire_timeout_secs =
+            parse_u64_env("LLMTRACE_DB_ACQUIRE_TIMEOUT_SECS", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_TRACE_QUEUE_CAPACITY") {
+        config.storage.trace_queue_capacity =
+            parse_usize_env("LLMTRACE_TRACE_QUEUE_CAPACITY", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_TRACE_WORKER_COUNT") {
+        config.storage.trace_worker_count = parse_usize_env("LLMTRACE_TRACE_WORKER_COUNT", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_LISTEN") {
+        config.server.listen = value;
+    }
+    if let Some(value) = env("LLMTRACE_PUBLIC_URL") {
+        config.server.public_url = value;
+    }
+    if let Some(value) = env("LLMTRACE_DEPLOYMENT") {
+        config.server.deployment = value.parse()?;
+    }
+    if let Some(value) = env("LLMTRACE_UI_ENABLED") {
+        config.server.ui_enabled = parse_bool_env("LLMTRACE_UI_ENABLED", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_DEFAULT_UPSTREAM") {
+        config.proxy.default_upstream = value;
+    }
+    if let Some(value) = env("LLMTRACE_ALLOW_UPSTREAMS") {
+        config.proxy.allow_upstreams = parse_csv_env("LLMTRACE_ALLOW_UPSTREAMS", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_UPSTREAM_HEADER") {
+        config.proxy.upstream_header = value;
+    }
+    if let Some(value) = env("LLMTRACE_PROXY_TIMEOUT_SECS") {
+        config.proxy.timeout_secs = parse_u64_env("LLMTRACE_PROXY_TIMEOUT_SECS", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_MAX_BODY_CAPTURE_BYTES") {
+        config.proxy.max_body_capture_bytes =
+            parse_usize_env("LLMTRACE_MAX_BODY_CAPTURE_BYTES", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_MAX_REQUEST_BODY_BYTES") {
+        config.proxy.max_request_body_bytes =
+            parse_usize_env("LLMTRACE_MAX_REQUEST_BODY_BYTES", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_MAX_WEBSOCKET_MESSAGE_BYTES") {
+        config.proxy.max_websocket_message_bytes =
+            parse_usize_env("LLMTRACE_MAX_WEBSOCKET_MESSAGE_BYTES", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES") {
+        config.proxy.max_websocket_session_bytes =
+            parse_usize_env("LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_AUTH_COOKIE_SECURE") {
+        config.auth.cookie_secure = parse_bool_env("LLMTRACE_AUTH_COOKIE_SECURE", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_SESSION_TTL_HOURS") {
+        config.auth.session_ttl_hours = parse_i64_env("LLMTRACE_SESSION_TTL_HOURS", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_LOGIN_RATE_LIMIT_ENABLED") {
+        config.auth.login_rate_limit.enabled =
+            parse_bool_env("LLMTRACE_LOGIN_RATE_LIMIT_ENABLED", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_LOGIN_RATE_LIMIT_MAX_FAILURES") {
+        config.auth.login_rate_limit.max_failures =
+            parse_u32_env("LLMTRACE_LOGIN_RATE_LIMIT_MAX_FAILURES", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_LOGIN_RATE_LIMIT_WINDOW_SECS") {
+        config.auth.login_rate_limit.window_secs =
+            parse_u64_env("LLMTRACE_LOGIN_RATE_LIMIT_WINDOW_SECS", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_LOGIN_RATE_LIMIT_LOCKOUT_SECS") {
+        config.auth.login_rate_limit.lockout_secs =
+            parse_u64_env("LLMTRACE_LOGIN_RATE_LIMIT_LOCKOUT_SECS", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_LOGIN_RATE_LIMIT_MAX_TRACKED_ENTRIES") {
+        config.auth.login_rate_limit.max_tracked_entries =
+            parse_usize_env("LLMTRACE_LOGIN_RATE_LIMIT_MAX_TRACKED_ENTRIES", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_ADMIN_USERNAME") {
+        config.auth.local_admin.username = value;
+    }
+    if let Some(value) = env("LLMTRACE_ADMIN_PASSWORD") {
+        config.auth.local_admin.password = Some(value);
+    }
+    if let Some(value) = env("LLMTRACE_ADMIN_PASSWORD_HASH") {
+        config.auth.local_admin.password_hash = Some(value);
+    }
+    if let Some(value) = env("LLMTRACE_OAUTH_ENABLED") {
+        config.auth.oauth.enabled = parse_bool_env("LLMTRACE_OAUTH_ENABLED", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_OAUTH_ISSUER_URL") {
+        config.auth.oauth.issuer_url = value;
+    }
+    if let Some(value) = env("LLMTRACE_OAUTH_CLIENT_ID") {
+        config.auth.oauth.client_id = value;
+    }
+    if let Some(value) = env("LLMTRACE_OAUTH_CLIENT_SECRET") {
+        config.auth.oauth.client_secret = value;
+    }
+    if let Some(value) = env("LLMTRACE_OAUTH_REDIRECT_URL") {
+        config.auth.oauth.redirect_url = value;
+    }
+    if let Some(value) = env("LLMTRACE_OAUTH_REQUIRE_EMAIL_VERIFIED") {
+        config.auth.oauth.require_email_verified =
+            parse_bool_env("LLMTRACE_OAUTH_REQUIRE_EMAIL_VERIFIED", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_OAUTH_ALLOWED_EMAILS") {
+        config.auth.oauth.allowed_emails = parse_csv_env("LLMTRACE_OAUTH_ALLOWED_EMAILS", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_OAUTH_ALLOWED_DOMAINS") {
+        config.auth.oauth.allowed_domains =
+            parse_csv_env("LLMTRACE_OAUTH_ALLOWED_DOMAINS", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_SENSITIVE_HEADERS") {
+        config.redaction.sensitive_headers = parse_csv_env("LLMTRACE_SENSITIVE_HEADERS", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_STORE_HEADER_HASH") {
+        config.redaction.store_header_hash = parse_bool_env("LLMTRACE_STORE_HEADER_HASH", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_BODY_REDACTION") {
+        config.redaction.body_redaction =
+            parse_body_redaction_env("LLMTRACE_BODY_REDACTION", &value)?;
+    }
+    Ok(())
 }
 
 fn parse_url(field: &str, value: &str, allowed_schemes: &[&str]) -> Result<Url, String> {
@@ -1290,6 +1337,65 @@ mod tests {
         assert!(error.contains("auth.login_rate_limit.window_secs must be greater than 0"));
         assert!(error.contains("auth.login_rate_limit.lockout_secs must be greater than 0"));
         assert!(error.contains("auth.login_rate_limit.max_tracked_entries must be greater than 0"));
+    }
+
+    #[test]
+    fn env_overrides_cover_oauth_and_security_settings() {
+        let mut config = Config::default();
+
+        apply_env_overrides(&mut config, |name| {
+            match name {
+                "LLMTRACE_UI_ENABLED" => Some("false"),
+                "LLMTRACE_UPSTREAM_HEADER" => Some("x-upstream"),
+                "LLMTRACE_SESSION_TTL_HOURS" => Some("12"),
+                "LLMTRACE_OAUTH_ENABLED" => Some("true"),
+                "LLMTRACE_OAUTH_ISSUER_URL" => Some("https://issuer.example.com"),
+                "LLMTRACE_OAUTH_CLIENT_ID" => Some("client-id"),
+                "LLMTRACE_OAUTH_CLIENT_SECRET" => Some("client-secret"),
+                "LLMTRACE_OAUTH_REDIRECT_URL" => {
+                    Some("https://llmtrace.example.com/api/auth/oauth/callback")
+                }
+                "LLMTRACE_OAUTH_REQUIRE_EMAIL_VERIFIED" => Some("false"),
+                "LLMTRACE_OAUTH_ALLOWED_EMAILS" => Some("admin@example.com, ops@example.com"),
+                "LLMTRACE_OAUTH_ALLOWED_DOMAINS" => Some("example.com, internal.example"),
+                "LLMTRACE_SENSITIVE_HEADERS" => Some("authorization, x-custom-secret"),
+                "LLMTRACE_STORE_HEADER_HASH" => Some("false"),
+                "LLMTRACE_BODY_REDACTION" => Some("drop"),
+                _ => None,
+            }
+            .map(str::to_string)
+        })
+        .unwrap();
+
+        assert!(!config.server.ui_enabled);
+        assert_eq!(config.proxy.upstream_header, "x-upstream");
+        assert_eq!(config.auth.session_ttl_hours, 12);
+        assert!(config.auth.oauth.enabled);
+        assert_eq!(config.auth.oauth.issuer_url, "https://issuer.example.com");
+        assert_eq!(config.auth.oauth.client_id, "client-id");
+        assert_eq!(config.auth.oauth.client_secret, "client-secret");
+        assert_eq!(
+            config.auth.oauth.redirect_url,
+            "https://llmtrace.example.com/api/auth/oauth/callback"
+        );
+        assert!(!config.auth.oauth.require_email_verified);
+        assert_eq!(
+            config.auth.oauth.allowed_emails,
+            vec![
+                "admin@example.com".to_string(),
+                "ops@example.com".to_string()
+            ]
+        );
+        assert_eq!(
+            config.auth.oauth.allowed_domains,
+            vec!["example.com".to_string(), "internal.example".to_string()]
+        );
+        assert_eq!(
+            config.redaction.sensitive_headers,
+            vec!["authorization".to_string(), "x-custom-secret".to_string()]
+        );
+        assert!(!config.redaction.store_header_hash);
+        assert_eq!(config.redaction.body_redaction, BodyRedaction::Drop);
     }
 
     #[test]
