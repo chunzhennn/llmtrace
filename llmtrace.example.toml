@@ -32,6 +32,10 @@ trace_worker_count = 4
 retention_prune_interval_secs = 3600
 retention_prune_batch_size = 1000
 
+[observability]
+# Optional. When set, GET /metrics requires Authorization: Bearer <token>.
+# metrics_bearer_token = ""
+
 [auth]
 # Required in production mode so browser session cookies are sent only over HTTPS.
 cookie_secure = false

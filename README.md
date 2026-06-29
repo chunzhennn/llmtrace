@@ -104,6 +104,7 @@ Useful environment overrides include:
 - Proxy: `LLMTRACE_DEFAULT_UPSTREAM`, `LLMTRACE_ALLOW_UPSTREAMS`, `LLMTRACE_UPSTREAM_HEADER`, `LLMTRACE_PROXY_TIMEOUT_SECS`, `LLMTRACE_MAX_BODY_CAPTURE_BYTES`, `LLMTRACE_MAX_REQUEST_BODY_BYTES`, `LLMTRACE_MAX_WEBSOCKET_MESSAGE_BYTES`, and `LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES`. `LLMTRACE_ALLOW_UPSTREAMS` is a comma-separated list using the same syntax as `proxy.allow_upstreams`.
 - Auth: `LLMTRACE_AUTH_COOKIE_SECURE`, `LLMTRACE_SESSION_TTL_HOURS`, `LLMTRACE_LOGIN_RATE_LIMIT_ENABLED`, `LLMTRACE_LOGIN_RATE_LIMIT_MAX_FAILURES`, `LLMTRACE_LOGIN_RATE_LIMIT_WINDOW_SECS`, `LLMTRACE_LOGIN_RATE_LIMIT_LOCKOUT_SECS`, `LLMTRACE_LOGIN_RATE_LIMIT_MAX_TRACKED_ENTRIES`, `LLMTRACE_ADMIN_USERNAME`, `LLMTRACE_ADMIN_PASSWORD`, and `LLMTRACE_ADMIN_PASSWORD_HASH`.
 - OAuth: `LLMTRACE_OAUTH_ENABLED`, `LLMTRACE_OAUTH_ISSUER_URL`, `LLMTRACE_OAUTH_CLIENT_ID`, `LLMTRACE_OAUTH_CLIENT_SECRET`, `LLMTRACE_OAUTH_REDIRECT_URL`, `LLMTRACE_OAUTH_REQUIRE_EMAIL_VERIFIED`, `LLMTRACE_OAUTH_ALLOWED_EMAILS`, and `LLMTRACE_OAUTH_ALLOWED_DOMAINS`. The allowed email/domain variables are comma-separated lists and use the same validation as the toml fields.
+- Observability: `LLMTRACE_METRICS_BEARER_TOKEN`, which requires `Authorization: Bearer <token>` on `GET /metrics` when set.
 - Redaction: `LLMTRACE_SENSITIVE_HEADERS`, `LLMTRACE_STORE_HEADER_HASH`, and `LLMTRACE_BODY_REDACTION`, with `LLMTRACE_BODY_REDACTION` set to one of `disabled`, `drop`, or `json_secrets`.
 
 ## Upstream allowlist
@@ -139,7 +140,7 @@ Authenticated read APIs run inside read-only database transactions with a local 
 
 `GET /api/stats` includes a `runtime` object with process-local background health counters. `runtime.trace_pipeline` reports enqueued, persisted, dropped, build-failed, and persist-failed trace events, plus the bounded queue capacity, available slots, and current depth. `runtime.retention` reports retention prune runs, failures, last success/failure timestamps, the last error, and the rows deleted by the most recent successful prune. These metrics reset on process restart and should be paired with logs or external metrics for long-term monitoring.
 
-`GET /metrics` exposes the same low-sensitivity runtime counters in Prometheus text format without authentication, plus trace queue depth/capacity and database pool size/idle gauges. It intentionally avoids request URLs, headers, body content, user identifiers, API key hashes, and plugin metadata. Protect this endpoint at the network layer if deployment policy requires authenticated metrics scraping.
+`GET /metrics` exposes the same low-sensitivity runtime counters in Prometheus text format, plus trace queue depth/capacity and database pool size/idle gauges. It intentionally avoids request URLs, headers, body content, user identifiers, API key hashes, and plugin metadata. By default this endpoint is unauthenticated for simple Prometheus scraping; set `observability.metrics_bearer_token` or `LLMTRACE_METRICS_BEARER_TOKEN` to require `Authorization: Bearer <token>`. Keep network-layer protections when deployment policy requires them.
 
 ## Proxying examples
 

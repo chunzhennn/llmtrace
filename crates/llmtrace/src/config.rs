@@ -26,6 +26,7 @@ pub struct Config {
     pub proxy: ProxyConfig,
     pub storage: StorageConfig,
     pub auth: AuthConfig,
+    pub observability: ObservabilityConfig,
     pub redaction: RedactionConfig,
     pub plugins: Vec<PluginConfig>,
 }
@@ -104,6 +105,12 @@ pub struct OAuthConfig {
     pub require_email_verified: bool,
     pub allowed_emails: Vec<String>,
     pub allowed_domains: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(default)]
+pub struct ObservabilityConfig {
+    pub metrics_bearer_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -268,6 +275,7 @@ impl Config {
         self.validate_proxy(&mut errors);
         self.validate_storage(&mut errors);
         self.validate_auth(&mut errors);
+        self.validate_observability(&mut errors);
         self.validate_redaction(&mut errors);
         self.validate_plugins(&mut errors);
 
@@ -495,6 +503,15 @@ impl Config {
         }
 
         self.validate_oauth(errors);
+    }
+
+    fn validate_observability(&self, errors: &mut Vec<String>) {
+        if let Some(token) = self.observability.metrics_bearer_token.as_deref()
+            && token.trim().is_empty()
+        {
+            errors
+                .push("observability.metrics_bearer_token must not be empty when set".to_string());
+        }
     }
 
     fn validate_login_rate_limit(&self, errors: &mut Vec<String>) {
@@ -782,6 +799,9 @@ fn apply_env_overrides(
     if let Some(value) = env("LLMTRACE_OAUTH_ALLOWED_DOMAINS") {
         config.auth.oauth.allowed_domains =
             parse_csv_env("LLMTRACE_OAUTH_ALLOWED_DOMAINS", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_METRICS_BEARER_TOKEN") {
+        config.observability.metrics_bearer_token = Some(value);
     }
     if let Some(value) = env("LLMTRACE_SENSITIVE_HEADERS") {
         config.redaction.sensitive_headers = parse_csv_env("LLMTRACE_SENSITIVE_HEADERS", &value)?;
@@ -1358,6 +1378,7 @@ mod tests {
                 "LLMTRACE_OAUTH_REQUIRE_EMAIL_VERIFIED" => Some("false"),
                 "LLMTRACE_OAUTH_ALLOWED_EMAILS" => Some("admin@example.com, ops@example.com"),
                 "LLMTRACE_OAUTH_ALLOWED_DOMAINS" => Some("example.com, internal.example"),
+                "LLMTRACE_METRICS_BEARER_TOKEN" => Some("metrics-secret"),
                 "LLMTRACE_SENSITIVE_HEADERS" => Some("authorization, x-custom-secret"),
                 "LLMTRACE_STORE_HEADER_HASH" => Some("false"),
                 "LLMTRACE_BODY_REDACTION" => Some("drop"),
@@ -1389,6 +1410,10 @@ mod tests {
         assert_eq!(
             config.auth.oauth.allowed_domains,
             vec!["example.com".to_string(), "internal.example".to_string()]
+        );
+        assert_eq!(
+            config.observability.metrics_bearer_token.as_deref(),
+            Some("metrics-secret")
         );
         assert_eq!(
             config.redaction.sensitive_headers,
@@ -1501,6 +1526,16 @@ mod tests {
         assert!(error.contains("storage.retention_prune_interval_secs must be greater than 0"));
         assert!(error.contains("storage.retention_prune_batch_size must be greater than 0"));
         assert!(error.contains("auth.session_ttl_hours must be greater than 0"));
+    }
+
+    #[test]
+    fn validation_rejects_empty_metrics_bearer_token() {
+        let mut config = Config::default();
+        config.observability.metrics_bearer_token = Some("  ".to_string());
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("observability.metrics_bearer_token must not be empty"));
     }
 
     #[test]
