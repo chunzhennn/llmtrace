@@ -221,6 +221,7 @@ impl RetentionPruneResult {
 pub async fn connect(config: &StorageConfig) -> anyhow::Result<PgPool> {
     Ok(PgPoolOptions::new()
         .max_connections(config.max_connections)
+        .acquire_timeout(Duration::from_secs(config.acquire_timeout_secs))
         .connect(&config.postgres_url)
         .await?)
 }

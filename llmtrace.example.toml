@@ -23,6 +23,7 @@ max_websocket_session_bytes = 536870912
 [storage]
 postgres_url = "postgres://postgres:postgres@localhost:5432/llmtrace"
 max_connections = 10
+acquire_timeout_secs = 30
 trace_queue_capacity = 4096
 trace_worker_count = 4
 # Production mode requires retention_days. Leave unset in development if you

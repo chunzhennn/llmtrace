@@ -57,6 +57,7 @@ pub struct ProxyConfig {
 pub struct StorageConfig {
     pub postgres_url: String,
     pub max_connections: u32,
+    pub acquire_timeout_secs: u64,
     pub trace_queue_capacity: usize,
     pub trace_worker_count: usize,
     pub retention_days: Option<i64>,
@@ -268,6 +269,10 @@ impl Config {
             config.storage.retention_prune_batch_size =
                 parse_i64_env("LLMTRACE_RETENTION_PRUNE_BATCH_SIZE", &value)?;
         }
+        if let Ok(value) = std::env::var("LLMTRACE_DB_ACQUIRE_TIMEOUT_SECS") {
+            config.storage.acquire_timeout_secs =
+                parse_u64_env("LLMTRACE_DB_ACQUIRE_TIMEOUT_SECS", &value)?;
+        }
         if let Ok(value) = std::env::var("LLMTRACE_LISTEN") {
             config.server.listen = value;
         }
@@ -444,6 +449,9 @@ impl Config {
         }
         if self.storage.max_connections == 0 {
             errors.push("storage.max_connections must be greater than 0".to_string());
+        }
+        if self.storage.acquire_timeout_secs == 0 {
+            errors.push("storage.acquire_timeout_secs must be greater than 0".to_string());
         }
         if self.storage.trace_queue_capacity == 0 {
             errors.push("storage.trace_queue_capacity must be greater than 0".to_string());
@@ -865,6 +873,7 @@ impl Default for StorageConfig {
         Self {
             postgres_url: "postgres://postgres:postgres@localhost:5432/llmtrace".to_string(),
             max_connections: 10,
+            acquire_timeout_secs: 30,
             trace_queue_capacity: 4096,
             trace_worker_count: 4,
             retention_days: None,
@@ -1106,6 +1115,7 @@ mod tests {
         config.proxy.max_websocket_message_bytes = 0;
         config.proxy.max_websocket_session_bytes = 0;
         config.storage.max_connections = 0;
+        config.storage.acquire_timeout_secs = 0;
         config.storage.trace_queue_capacity = 0;
         config.storage.trace_worker_count = 0;
         config.storage.retention_days = Some(0);
@@ -1121,6 +1131,7 @@ mod tests {
         assert!(error.contains("proxy.max_websocket_message_bytes must be greater than 0"));
         assert!(error.contains("proxy.max_websocket_session_bytes must be greater than 0"));
         assert!(error.contains("storage.max_connections must be greater than 0"));
+        assert!(error.contains("storage.acquire_timeout_secs must be greater than 0"));
         assert!(error.contains("storage.trace_queue_capacity must be greater than 0"));
         assert!(error.contains("storage.trace_worker_count must be greater than 0"));
         assert!(error.contains("storage.retention_days must be greater than 0"));
