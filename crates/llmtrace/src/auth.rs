@@ -511,7 +511,9 @@ async fn audit(
 fn session_cookie(headers: &HeaderMap) -> Option<String> {
     let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
     for part in cookie.split(';') {
-        let (name, value) = part.trim().split_once('=')?;
+        let Some((name, value)) = part.trim().split_once('=') else {
+            continue;
+        };
         if name == SESSION_COOKIE {
             return Some(value.to_string());
         }
@@ -783,6 +785,23 @@ mod tests {
             &Method::POST,
             &headers
         ));
+    }
+
+    #[test]
+    fn session_cookie_reads_cookie_after_malformed_segments() {
+        let headers = headers_with(
+            header::COOKIE,
+            "bad-cookie; theme=dark; llmtrace_session=session-123",
+        );
+
+        assert_eq!(session_cookie(&headers).as_deref(), Some("session-123"));
+    }
+
+    #[test]
+    fn session_cookie_ignores_malformed_segments_without_session_cookie() {
+        let headers = headers_with(header::COOKIE, "bad-cookie; theme=dark");
+
+        assert_eq!(session_cookie(&headers), None);
     }
 
     fn headers_with(name: axum::http::HeaderName, value: &'static str) -> HeaderMap {
