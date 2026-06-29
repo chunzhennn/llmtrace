@@ -38,6 +38,7 @@ const HOP_BY_HOP_HEADERS: &[&str] = &[
 
 const REQUEST_BODY_LIMIT_ERROR: &str = "request body exceeds configured limit";
 const TRACE_ID_HEADER: &str = "x-llmtrace-trace-id";
+const MAX_WEBSOCKET_CAPTURED_FRAMES: usize = 200;
 
 pub async fn proxy(
     State(state): State<AppState>,
@@ -523,6 +524,7 @@ async fn handle_websocket(
     let u2c_stats = stats.clone();
     let max_ws_message_bytes = state.config.proxy.max_websocket_message_bytes;
     let max_ws_session_bytes = state.config.proxy.max_websocket_session_bytes;
+    let capture_limit = state.config.proxy.max_body_capture_bytes;
 
     let client_to_upstream = async move {
         while let Some(message) = client_rx.next().await {
@@ -538,7 +540,7 @@ async fn handle_websocket(
                     max_ws_session_bytes,
                 )?;
                 stats.client_frames += 1;
-                capture_ws_message(&mut stats.frames, "client", &message);
+                capture_ws_message(&mut stats, "client", &message, capture_limit);
             }
             if let Some(message) = axum_to_tungstenite(message) {
                 upstream_tx.send(message).await?;
@@ -561,7 +563,7 @@ async fn handle_websocket(
                     max_ws_session_bytes,
                 )?;
                 stats.upstream_frames += 1;
-                capture_tungstenite_message(&mut stats.frames, "upstream", &message);
+                capture_tungstenite_message(&mut stats, "upstream", &message, capture_limit);
             }
             if let Some(message) = tungstenite_to_axum(message) {
                 client_tx.send(message).await?;
@@ -577,6 +579,8 @@ async fn handle_websocket(
         result = &mut upstream_to_client => websocket_bridge_error(result),
     };
     let stats = stats.lock().await.clone();
+    let (response_body, response_body_truncated) =
+        websocket_response_body(&stats.frames, capture_limit);
     let duration_ms = started.elapsed().as_millis() as i64;
     let session_key =
         trace::fallback_session_key(upstream_host.as_deref(), api_key_hash.as_deref());
@@ -597,8 +601,8 @@ async fn handle_websocket(
         request_headers,
         response_headers: response_headers.clone(),
         plugin_response_headers: response_headers,
-        response_body: json!(stats.frames).to_string().into_bytes(),
-        response_body_truncated: stats.frames_truncated,
+        response_body,
+        response_body_truncated: stats.frames_truncated || response_body_truncated,
         content_type: Some("websocket".to_string()),
         plugin_metadata: json!({
             "websocket": {
@@ -649,56 +653,114 @@ struct WsStats {
     bytes_out: i64,
     frames: Vec<Value>,
     frames_truncated: bool,
+    captured_text_bytes: usize,
 }
 
-fn capture_ws_message(frames: &mut Vec<Value>, direction: &str, message: &AxumWsMessage) {
-    if frames.len() >= 200 {
+fn capture_ws_message(
+    stats: &mut WsStats,
+    direction: &str,
+    message: &AxumWsMessage,
+    capture_limit: usize,
+) {
+    if stats.frames.len() >= MAX_WEBSOCKET_CAPTURED_FRAMES {
+        stats.frames_truncated = true;
         return;
     }
     match message {
         AxumWsMessage::Text(text) => {
-            frames.push(json!({"direction": direction, "type": "text", "text": text.to_string()}))
+            capture_text_ws_frame(stats, direction, text.as_str(), capture_limit)
         }
-        AxumWsMessage::Binary(bytes) => {
-            frames.push(json!({"direction": direction, "type": "binary", "bytes": bytes.len()}))
-        }
-        AxumWsMessage::Ping(bytes) => {
-            frames.push(json!({"direction": direction, "type": "ping", "bytes": bytes.len()}))
-        }
-        AxumWsMessage::Pong(bytes) => {
-            frames.push(json!({"direction": direction, "type": "pong", "bytes": bytes.len()}))
-        }
-        AxumWsMessage::Close(_) => frames.push(json!({"direction": direction, "type": "close"})),
+        AxumWsMessage::Binary(bytes) => stats
+            .frames
+            .push(json!({"direction": direction, "type": "binary", "bytes": bytes.len()})),
+        AxumWsMessage::Ping(bytes) => stats
+            .frames
+            .push(json!({"direction": direction, "type": "ping", "bytes": bytes.len()})),
+        AxumWsMessage::Pong(bytes) => stats
+            .frames
+            .push(json!({"direction": direction, "type": "pong", "bytes": bytes.len()})),
+        AxumWsMessage::Close(_) => stats
+            .frames
+            .push(json!({"direction": direction, "type": "close"})),
     }
 }
 
 fn capture_tungstenite_message(
-    frames: &mut Vec<Value>,
+    stats: &mut WsStats,
     direction: &str,
     message: &TungsteniteMessage,
+    capture_limit: usize,
 ) {
-    if frames.len() >= 200 {
+    if stats.frames.len() >= MAX_WEBSOCKET_CAPTURED_FRAMES {
+        stats.frames_truncated = true;
         return;
     }
     match message {
         TungsteniteMessage::Text(text) => {
-            frames.push(json!({"direction": direction, "type": "text", "text": text.to_string()}))
+            capture_text_ws_frame(stats, direction, text.as_str(), capture_limit)
         }
-        TungsteniteMessage::Binary(bytes) => {
-            frames.push(json!({"direction": direction, "type": "binary", "bytes": bytes.len()}))
-        }
-        TungsteniteMessage::Ping(bytes) => {
-            frames.push(json!({"direction": direction, "type": "ping", "bytes": bytes.len()}))
-        }
-        TungsteniteMessage::Pong(bytes) => {
-            frames.push(json!({"direction": direction, "type": "pong", "bytes": bytes.len()}))
-        }
-        TungsteniteMessage::Close(_) => {
-            frames.push(json!({"direction": direction, "type": "close"}))
-        }
-        TungsteniteMessage::Frame(_) => {
-            frames.push(json!({"direction": direction, "type": "frame"}))
-        }
+        TungsteniteMessage::Binary(bytes) => stats
+            .frames
+            .push(json!({"direction": direction, "type": "binary", "bytes": bytes.len()})),
+        TungsteniteMessage::Ping(bytes) => stats
+            .frames
+            .push(json!({"direction": direction, "type": "ping", "bytes": bytes.len()})),
+        TungsteniteMessage::Pong(bytes) => stats
+            .frames
+            .push(json!({"direction": direction, "type": "pong", "bytes": bytes.len()})),
+        TungsteniteMessage::Close(_) => stats
+            .frames
+            .push(json!({"direction": direction, "type": "close"})),
+        TungsteniteMessage::Frame(_) => stats
+            .frames
+            .push(json!({"direction": direction, "type": "frame"})),
+    }
+}
+
+fn capture_text_ws_frame(stats: &mut WsStats, direction: &str, text: &str, capture_limit: usize) {
+    let remaining = capture_limit.saturating_sub(stats.captured_text_bytes);
+    if remaining == 0 && !text.is_empty() {
+        stats.frames_truncated = true;
+        return;
+    }
+
+    let captured = utf8_prefix(text, remaining);
+    let text_truncated = captured.len() < text.len();
+    stats.captured_text_bytes = stats.captured_text_bytes.saturating_add(captured.len());
+    stats.frames_truncated |= text_truncated;
+
+    let mut frame = json!({
+        "direction": direction,
+        "type": "text",
+        "text": captured,
+    });
+    if text_truncated && let Some(object) = frame.as_object_mut() {
+        object.insert("text_truncated".to_string(), json!(true));
+    }
+    stats.frames.push(frame);
+}
+
+fn utf8_prefix(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
+fn websocket_response_body(frames: &[Value], limit: usize) -> (Vec<u8>, bool) {
+    let Ok(mut body) = serde_json::to_vec(frames) else {
+        return (b"[]".to_vec(), true);
+    };
+    if body.len() > limit {
+        body.truncate(limit);
+        (body, true)
+    } else {
+        (body, false)
     }
 }
 
@@ -1042,5 +1104,63 @@ mod tests {
     #[test]
     fn websocket_bridge_error_is_none_for_clean_direction_end() {
         assert_eq!(websocket_bridge_error(Ok(())), None);
+    }
+
+    #[test]
+    fn websocket_text_capture_respects_capture_limit_across_frames() {
+        let mut stats = WsStats::default();
+
+        capture_ws_message(&mut stats, "client", &AxumWsMessage::Text("abcd".into()), 5);
+        capture_ws_message(
+            &mut stats,
+            "upstream",
+            &AxumWsMessage::Text("efgh".into()),
+            5,
+        );
+
+        assert_eq!(stats.captured_text_bytes, 5);
+        assert!(stats.frames_truncated);
+        assert_eq!(stats.frames.len(), 2);
+        assert_eq!(stats.frames[0]["text"], "abcd");
+        assert_eq!(stats.frames[1]["text"], "e");
+        assert_eq!(stats.frames[1]["text_truncated"], true);
+    }
+
+    #[test]
+    fn websocket_text_capture_truncates_on_utf8_boundary() {
+        let mut stats = WsStats::default();
+
+        capture_ws_message(&mut stats, "client", &AxumWsMessage::Text("éabc".into()), 1);
+
+        assert!(stats.frames_truncated);
+        assert_eq!(stats.frames[0]["text"], "");
+        assert_eq!(stats.frames[0]["text_truncated"], true);
+    }
+
+    #[test]
+    fn websocket_frame_capture_marks_truncated_after_frame_limit() {
+        let mut stats = WsStats::default();
+
+        for _ in 0..=MAX_WEBSOCKET_CAPTURED_FRAMES {
+            capture_ws_message(
+                &mut stats,
+                "client",
+                &AxumWsMessage::Binary(Bytes::from_static(b"x")),
+                1024,
+            );
+        }
+
+        assert_eq!(stats.frames.len(), MAX_WEBSOCKET_CAPTURED_FRAMES);
+        assert!(stats.frames_truncated);
+    }
+
+    #[test]
+    fn websocket_response_body_is_bounded_by_capture_limit() {
+        let frames = vec![json!({"direction": "client", "type": "text", "text": "abcdef"})];
+
+        let (body, truncated) = websocket_response_body(&frames, 12);
+
+        assert_eq!(body.len(), 12);
+        assert!(truncated);
     }
 }
