@@ -91,6 +91,16 @@ Host entries match the host across supported upstream schemes and paths. `host:p
 
 Allowlist entries do not support wildcards. URL entries must not contain credentials, query strings, or fragments.
 
+## API pagination
+
+List endpoints clamp `limit` to the range `1..=500`. `GET /api/sessions/{id}` returns session metadata plus a bounded page of messages. Use `messages_limit` and `messages_offset` to page through long sessions:
+
+```bash
+curl 'http://127.0.0.1:3000/api/sessions/<session-id>?messages_limit=100&messages_offset=0'
+```
+
+`messages_limit` defaults to `100` and is capped at `500`; `messages_offset` defaults to `0` and is capped at `1000000`. The response includes `messages_page.has_more` and `messages_page.next_offset` so clients can request the next page without assuming all messages were returned.
+
 ## Proxying examples
 
 OpenAI-compatible base URL mode:

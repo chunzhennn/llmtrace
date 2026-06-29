@@ -22,6 +22,12 @@ struct SessionListQuery {
     limit: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct SessionDetailQuery {
+    messages_limit: Option<i64>,
+    messages_offset: Option<i64>,
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/stats", get(stats))
@@ -79,8 +85,12 @@ async fn list_sessions(
     }
 }
 
-async fn get_session(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
-    match storage::get_session(&state.pool, id).await {
+async fn get_session(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<SessionDetailQuery>,
+) -> Response {
+    match storage::get_session(&state.pool, id, query.messages_limit, query.messages_offset).await {
         Ok(Some(value)) => Json(value).into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,

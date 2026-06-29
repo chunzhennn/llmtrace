@@ -10,6 +10,10 @@ use uuid::Uuid;
 use crate::config::StorageConfig;
 use crate::types::RequestKind;
 
+const DEFAULT_SESSION_MESSAGE_LIMIT: i64 = 100;
+const MAX_SESSION_MESSAGE_LIMIT: i64 = 500;
+const MAX_SESSION_MESSAGE_OFFSET: i64 = 1_000_000;
+
 #[derive(Debug, Clone)]
 pub struct TraceRecord {
     pub id: Uuid,
@@ -136,6 +140,12 @@ enum FilterKind {
     TextArray,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionMessagePage {
+    limit: i64,
+    offset: i64,
+}
+
 impl QueryField {
     fn name(&self) -> &str {
         match self {
@@ -162,6 +172,25 @@ impl QueryField {
                 builder.push(")");
             }
         }
+    }
+}
+
+impl SessionMessagePage {
+    fn from_query(limit: Option<i64>, offset: Option<i64>) -> Self {
+        Self {
+            limit: limit
+                .unwrap_or(DEFAULT_SESSION_MESSAGE_LIMIT)
+                .clamp(1, MAX_SESSION_MESSAGE_LIMIT),
+            offset: offset.unwrap_or(0).clamp(0, MAX_SESSION_MESSAGE_OFFSET),
+        }
+    }
+
+    fn fetch_limit(self) -> i64 {
+        self.limit + 1
+    }
+
+    fn next_offset(self, has_more: bool) -> Option<i64> {
+        has_more.then_some(self.offset.saturating_add(self.limit))
     }
 }
 
@@ -534,7 +563,12 @@ pub async fn list_sessions(pool: &PgPool, limit: i64) -> anyhow::Result<Value> {
     Ok(json!({ "items": items }))
 }
 
-pub async fn get_session(pool: &PgPool, id: Uuid) -> anyhow::Result<Option<Value>> {
+pub async fn get_session(
+    pool: &PgPool,
+    id: Uuid,
+    messages_limit: Option<i64>,
+    messages_offset: Option<i64>,
+) -> anyhow::Result<Option<Value>> {
     let session = sqlx::query(
         r#"
         SELECT id, session_key, first_seen, last_seen, user_id, user_name, summary
@@ -549,20 +583,25 @@ pub async fn get_session(pool: &PgPool, id: Uuid) -> anyhow::Result<Option<Value
         return Ok(None);
     };
 
+    let page = SessionMessagePage::from_query(messages_limit, messages_offset);
     let messages = sqlx::query(
         r#"
         SELECT id, request_id, role, content, created_at
         FROM session_messages
         WHERE session_id = $1
         ORDER BY created_at ASC, id ASC
-        LIMIT 1000
+        LIMIT $2 OFFSET $3
         "#,
     )
     .bind(id)
+    .bind(page.fetch_limit())
+    .bind(page.offset)
     .fetch_all(pool)
     .await?;
+    let has_more = messages.len() > page.limit as usize;
     let messages: Vec<Value> = messages
         .into_iter()
+        .take(page.limit as usize)
         .map(|row| {
             json!({
                 "id": row.get::<i64, _>("id"),
@@ -583,6 +622,12 @@ pub async fn get_session(pool: &PgPool, id: Uuid) -> anyhow::Result<Option<Value
         "user_name": session.try_get::<Option<String>, _>("user_name").ok().flatten(),
         "summary": session.get::<Value, _>("summary"),
         "messages": messages,
+        "messages_page": {
+            "limit": page.limit,
+            "offset": page.offset,
+            "has_more": has_more,
+            "next_offset": page.next_offset(has_more),
+        },
     })))
 }
 
@@ -1457,6 +1502,44 @@ mod tests {
             .to_string();
 
         assert!(error.contains("decompression limit"));
+    }
+
+    #[test]
+    fn session_message_page_uses_safe_defaults() {
+        let page = SessionMessagePage::from_query(None, None);
+
+        assert_eq!(
+            page,
+            SessionMessagePage {
+                limit: DEFAULT_SESSION_MESSAGE_LIMIT,
+                offset: 0,
+            }
+        );
+        assert_eq!(page.fetch_limit(), DEFAULT_SESSION_MESSAGE_LIMIT + 1);
+    }
+
+    #[test]
+    fn session_message_page_clamps_limit_and_offset() {
+        let page = SessionMessagePage::from_query(Some(i64::MAX), Some(i64::MAX));
+
+        assert_eq!(page.limit, MAX_SESSION_MESSAGE_LIMIT);
+        assert_eq!(page.offset, MAX_SESSION_MESSAGE_OFFSET);
+    }
+
+    #[test]
+    fn session_message_page_clamps_negative_values() {
+        let page = SessionMessagePage::from_query(Some(-10), Some(-10));
+
+        assert_eq!(page.limit, 1);
+        assert_eq!(page.offset, 0);
+    }
+
+    #[test]
+    fn session_message_page_reports_next_offset_only_when_more_rows_exist() {
+        let page = SessionMessagePage::from_query(Some(50), Some(100));
+
+        assert_eq!(page.next_offset(true), Some(150));
+        assert_eq!(page.next_offset(false), None);
     }
 
     #[test]
