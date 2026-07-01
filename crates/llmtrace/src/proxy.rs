@@ -994,13 +994,14 @@ fn http_to_ws_url(mut url: Url) -> anyhow::Result<Url> {
 fn should_forward_header(name: &HeaderName) -> bool {
     let name = name.as_str().to_ascii_lowercase();
     name != header::HOST.as_str()
+        && name != header::COOKIE.as_str()
         && !HOP_BY_HOP_HEADERS.contains(&name.as_str())
         && !name.starts_with("x-llmtrace-")
 }
 
 fn should_forward_response_header(name: &HeaderName) -> bool {
     let name = name.as_str().to_ascii_lowercase();
-    !HOP_BY_HOP_HEADERS.contains(&name.as_str())
+    name != header::SET_COOKIE.as_str() && !HOP_BY_HOP_HEADERS.contains(&name.as_str())
 }
 
 fn is_websocket(headers: &HeaderMap) -> bool {
@@ -1102,6 +1103,7 @@ mod tests {
     #[test]
     fn request_header_forwarding_strips_proxy_owned_headers() {
         assert!(!should_forward_header(&header::HOST));
+        assert!(!should_forward_header(&header::COOKIE));
         assert!(!should_forward_header(&header::CONNECTION));
         assert!(!should_forward_header(&HeaderName::from_static(
             "x-llmtrace-upstream"
@@ -1118,6 +1120,14 @@ mod tests {
         assert!(should_forward_header(&HeaderName::from_static(
             "x-request-id"
         )));
+    }
+
+    #[test]
+    fn response_header_forwarding_strips_cookie_and_hop_by_hop_headers() {
+        assert!(!should_forward_response_header(&header::SET_COOKIE));
+        assert!(!should_forward_response_header(&header::CONNECTION));
+        assert!(should_forward_response_header(&header::CONTENT_TYPE));
+        assert!(should_forward_response_header(&header::CACHE_CONTROL));
     }
 
     #[test]
