@@ -255,6 +255,8 @@ curl http://127.0.0.1:3000/api/query \
 
 Path filters compare JSON values exactly for `eq` and `ne`, use JSONB containment for `contains`, and support `is_null` and `is_not_null` for missing or JSON null fields. For broad indexed searches, querying the whole `plugin_metadata` field with `contains` can use the existing GIN index:
 
+Invalid structured query definitions return `400` with a validation message. Database execution failures, statement timeouts, and other internal query errors are logged server-side and return a generic `500` response so storage details are not exposed to API clients.
+
 ```json
 {
   "dataset": "requests",

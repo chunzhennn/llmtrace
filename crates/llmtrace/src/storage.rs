@@ -85,6 +85,24 @@ pub struct StructuredQuery {
     pub limit: Option<i64>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum StructuredQueryError {
+    #[error("{0}")]
+    Invalid(String),
+    #[error(transparent)]
+    Execution(#[from] anyhow::Error),
+}
+
+impl StructuredQueryError {
+    fn invalid(error: impl std::fmt::Display) -> Self {
+        Self::Invalid(error.to_string())
+    }
+
+    fn execution(error: impl Into<anyhow::Error>) -> Self {
+        Self::Execution(error.into())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct QueryFilter {
     pub field: String,
@@ -1323,11 +1341,13 @@ static DATASETS: &[DatasetSpec] = &[
 pub async fn run_structured_query(
     pool: &PgPool,
     request: StructuredQuery,
-) -> anyhow::Result<Value> {
-    let dataset = dataset_spec(&request.dataset)?;
-    let selected = selected_fields(dataset, request.fields.as_deref())?;
-    let order_by = selected_order(dataset, &request.order_by)?;
-    validate_structured_query_filters(&request.filters)?;
+) -> Result<Value, StructuredQueryError> {
+    let dataset = dataset_spec(&request.dataset).map_err(StructuredQueryError::invalid)?;
+    let selected = selected_fields(dataset, request.fields.as_deref())
+        .map_err(StructuredQueryError::invalid)?;
+    let order_by =
+        selected_order(dataset, &request.order_by).map_err(StructuredQueryError::invalid)?;
+    validate_structured_query_filters(&request.filters).map_err(StructuredQueryError::invalid)?;
     let limit = request.limit.unwrap_or(100).clamp(1, 500);
 
     let mut builder = QueryBuilder::<Postgres>::new(
@@ -1351,7 +1371,7 @@ pub async fn run_structured_query(
             if index > 0 {
                 builder.push(" AND ");
             }
-            append_filter(&mut builder, dataset, filter)?;
+            append_filter(&mut builder, dataset, filter).map_err(StructuredQueryError::invalid)?;
         }
     }
 
@@ -1373,9 +1393,15 @@ pub async fn run_structured_query(
     builder.push_bind(limit);
     builder.push(") q");
 
-    let mut tx = begin_api_read_tx(pool).await?;
-    let rows: Value = builder.build_query_scalar().fetch_one(&mut *tx).await?;
-    tx.commit().await?;
+    let mut tx = begin_api_read_tx(pool)
+        .await
+        .map_err(StructuredQueryError::execution)?;
+    let rows: Value = builder
+        .build_query_scalar()
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(StructuredQueryError::execution)?;
+    tx.commit().await.map_err(StructuredQueryError::execution)?;
 
     Ok(json!({
         "dataset": dataset.name,
