@@ -1017,10 +1017,11 @@ fn connection_header_names(headers: &HeaderMap, name: &str) -> bool {
 }
 
 fn is_websocket(headers: &HeaderMap) -> bool {
-    headers
-        .get(header::UPGRADE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+    connection_header_names(headers, "upgrade")
+        && headers
+            .get(header::UPGRADE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
 }
 
 fn headers_to_json_axum_compat(headers: &tokio_tungstenite::tungstenite::http::HeaderMap) -> Value {
@@ -1198,6 +1199,30 @@ mod tests {
             &header::CACHE_CONTROL,
             &headers
         ));
+    }
+
+    #[test]
+    fn websocket_detection_requires_upgrade_connection_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::UPGRADE, HeaderValue::from_static("websocket"));
+
+        assert!(!is_websocket(&headers));
+
+        headers.insert(
+            header::CONNECTION,
+            HeaderValue::from_static("keep-alive, Upgrade"),
+        );
+
+        assert!(is_websocket(&headers));
+    }
+
+    #[test]
+    fn websocket_detection_is_case_insensitive() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::UPGRADE, HeaderValue::from_static("WebSocket"));
+        headers.insert(header::CONNECTION, HeaderValue::from_static("uPgRaDe"));
+
+        assert!(is_websocket(&headers));
     }
 
     #[test]
