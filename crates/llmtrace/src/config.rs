@@ -31,6 +31,8 @@ const MAX_LOGIN_RATE_LIMIT_WINDOW_SECS: u64 = 24 * 60 * 60;
 const MAX_LOGIN_RATE_LIMIT_LOCKOUT_SECS: u64 = 24 * 60 * 60;
 const MAX_LOGIN_RATE_LIMIT_TRACKED_ENTRIES: usize = 1_000_000;
 const MAX_OAUTH_TIMEOUT_SECS: u64 = 300;
+const MAX_PLUGINS: usize = 64;
+const MAX_PLUGIN_NAME_BYTES: usize = 128;
 const MAX_PLUGIN_TIMEOUT_MS: u64 = 30_000;
 const UPSTREAM_ALLOWLIST_SCHEMES: &[&str] = &["http", "https", "ws", "wss"];
 
@@ -712,11 +714,29 @@ impl Config {
     }
 
     fn validate_plugins(&self, errors: &mut Vec<String>) {
+        if self.plugins.len() > MAX_PLUGINS {
+            errors.push(format!(
+                "plugins must contain at most {MAX_PLUGINS} entries"
+            ));
+        }
+
         let mut names = HashSet::new();
         for (index, plugin) in self.plugins.iter().enumerate() {
             let name = plugin.name.trim();
             if name.is_empty() {
                 errors.push(format!("plugins[{index}].name must not be empty"));
+            } else if plugin.name != name {
+                errors.push(format!(
+                    "plugins[{index}].name must not contain leading or trailing whitespace"
+                ));
+            } else if name.len() > MAX_PLUGIN_NAME_BYTES {
+                errors.push(format!(
+                    "plugins[{index}].name must be at most {MAX_PLUGIN_NAME_BYTES} bytes"
+                ));
+            } else if !name.is_ascii() || name.bytes().any(|byte| byte.is_ascii_control()) {
+                errors.push(format!(
+                    "plugins[{index}].name must contain only printable ASCII"
+                ));
             } else if !names.insert(name.to_string()) {
                 errors.push(format!("plugins[{index}].name {name:?} is duplicated"));
             }
@@ -725,6 +745,10 @@ impl Config {
             }
             if plugin.hooks.is_empty() {
                 errors.push(format!("plugins[{index}].hooks must not be empty"));
+            } else if plugin_hooks_have_duplicates(&plugin.hooks) {
+                errors.push(format!(
+                    "plugins[{index}].hooks must not contain duplicates"
+                ));
             }
             if plugin.timeout_ms == 0 {
                 errors.push(format!(
@@ -737,6 +761,19 @@ impl Config {
             }
         }
     }
+}
+
+fn plugin_hooks_have_duplicates(hooks: &[PluginHook]) -> bool {
+    for (index, hook) in hooks.iter().enumerate() {
+        if hooks
+            .iter()
+            .skip(index + 1)
+            .any(|candidate| candidate == hook)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn apply_env_overrides(
@@ -1825,6 +1862,58 @@ mod tests {
     }
 
     #[test]
+    fn validation_rejects_excessive_plugin_count() {
+        let config = Config {
+            plugins: (0..=MAX_PLUGINS)
+                .map(|index| valid_plugin_config(&format!("plugin-{index}")))
+                .collect(),
+            ..Default::default()
+        };
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("plugins must contain at most"));
+    }
+
+    #[test]
+    fn validation_rejects_invalid_plugin_bounds() {
+        let config = Config {
+            plugins: vec![
+                PluginConfig {
+                    name: " plugin".to_string(),
+                    wasm_path: "plugin.wasm".into(),
+                    hooks: vec![PluginHook::RequestStart, PluginHook::RequestStart],
+                    timeout_ms: 0,
+                },
+                PluginConfig {
+                    name: "plugín".to_string(),
+                    wasm_path: std::path::PathBuf::new(),
+                    hooks: Vec::new(),
+                    timeout_ms: MAX_PLUGIN_TIMEOUT_MS + 1,
+                },
+                PluginConfig {
+                    name: "p".repeat(MAX_PLUGIN_NAME_BYTES + 1),
+                    wasm_path: "plugin.wasm".into(),
+                    hooks: vec![PluginHook::ResponseEnd],
+                    timeout_ms: 50,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("plugins[0].name must not contain leading or trailing whitespace"));
+        assert!(error.contains("plugins[0].hooks must not contain duplicates"));
+        assert!(error.contains("plugins[0].timeout_ms must be greater than 0"));
+        assert!(error.contains("plugins[1].name must contain only printable ASCII"));
+        assert!(error.contains("plugins[1].wasm_path must not be empty"));
+        assert!(error.contains("plugins[1].hooks must not be empty"));
+        assert!(error.contains("plugins[1].timeout_ms must be at most"));
+        assert!(error.contains("plugins[2].name must be at most"));
+    }
+
+    #[test]
     fn validation_rejects_credentialed_default_upstream() {
         let mut config = Config::default();
         config.proxy.default_upstream = "https://user:secret@api.example.com".to_string();
@@ -1846,5 +1935,14 @@ mod tests {
         config.observability.metrics_bearer_token = Some("metrics-secret".to_string());
         config.redaction.body_redaction = BodyRedaction::JsonSecrets;
         config
+    }
+
+    fn valid_plugin_config(name: &str) -> PluginConfig {
+        PluginConfig {
+            name: name.to_string(),
+            wasm_path: "plugin.wasm".into(),
+            hooks: vec![PluginHook::RequestStart],
+            timeout_ms: 50,
+        }
     }
 }

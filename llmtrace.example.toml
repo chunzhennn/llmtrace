@@ -96,6 +96,7 @@ store_header_hash = true
 body_redaction = "disabled"
 
 # [[plugins]]
+# Up to 64 plugins. Names must be printable ASCII and at most 128 bytes.
 # name = "api-key-user-mapper"
 # wasm_path = "./plugins/api_key_user_mapper.wasm"
 # hooks = ["on_request_start", "on_response_headers", "on_response_end"]
