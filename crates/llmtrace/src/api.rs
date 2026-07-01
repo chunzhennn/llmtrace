@@ -8,8 +8,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use crate::config::Config;
 use crate::state::AppState;
 use crate::storage;
+use crate::types::BodyRedaction;
 
 const MAX_REQUEST_SEARCH_BYTES: usize = 512;
 const MAX_REQUEST_FILTER_BYTES: usize = 1024;
@@ -151,6 +153,7 @@ struct RequestDurationRange {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/stats", get(stats))
+        .route("/config", get(runtime_config))
         .route("/usage/summary", get(usage_summary))
         .route("/usage/api-keys", get(api_key_usage))
         .route("/usage/models", get(model_usage))
@@ -187,6 +190,10 @@ async fn stats(State(state): State<AppState>) -> Response {
         }
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
+}
+
+async fn runtime_config(State(state): State<AppState>) -> Response {
+    Json(config_summary(state.config.as_ref())).into_response()
 }
 
 async fn usage_summary(
@@ -734,9 +741,104 @@ fn normalize_usage_timeseries_bucket(value: Option<String>) -> Result<Option<Str
     Err("bucket must be one of minute, hour, or day".to_string())
 }
 
+fn config_summary(config: &Config) -> Value {
+    json!({
+        "server": {
+            "listen": &config.server.listen,
+            "public_url": &config.server.public_url,
+            "deployment": config.server.deployment.as_str(),
+            "ui_enabled": config.server.ui_enabled,
+        },
+        "proxy": {
+            "default_upstream": &config.proxy.default_upstream,
+            "allow_upstreams": &config.proxy.allow_upstreams,
+            "allow_upstreams_count": config.proxy.allow_upstreams.len(),
+            "upstream_header": &config.proxy.upstream_header,
+            "timeout_secs": config.proxy.timeout_secs,
+            "max_body_capture_bytes": config.proxy.max_body_capture_bytes,
+            "max_request_body_bytes": config.proxy.max_request_body_bytes,
+            "max_websocket_message_bytes": config.proxy.max_websocket_message_bytes,
+            "max_websocket_session_bytes": config.proxy.max_websocket_session_bytes,
+        },
+        "storage": {
+            "max_connections": config.storage.max_connections,
+            "acquire_timeout_secs": config.storage.acquire_timeout_secs,
+            "trace_queue_capacity": config.storage.trace_queue_capacity,
+            "trace_worker_count": config.storage.trace_worker_count,
+            "retention_days": config.storage.retention_days,
+            "retention_prune_interval_secs": config.storage.retention_prune_interval_secs,
+            "retention_prune_batch_size": config.storage.retention_prune_batch_size,
+        },
+        "auth": {
+            "cookie_secure": config.auth.cookie_secure,
+            "session_ttl_hours": config.auth.session_ttl_hours,
+            "local_admin": {
+                "enabled": local_admin_configured(config),
+                "password_hash_configured": config.auth.local_admin.password_hash.as_deref().is_some_and(|value| !value.trim().is_empty()),
+                "plaintext_password_configured": config.auth.local_admin.password.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            },
+            "login_rate_limit": {
+                "enabled": config.auth.login_rate_limit.enabled,
+                "max_failures": config.auth.login_rate_limit.max_failures,
+                "window_secs": config.auth.login_rate_limit.window_secs,
+                "lockout_secs": config.auth.login_rate_limit.lockout_secs,
+                "max_tracked_entries": config.auth.login_rate_limit.max_tracked_entries,
+            },
+            "oauth": {
+                "enabled": config.auth.oauth.enabled,
+                "issuer_url": &config.auth.oauth.issuer_url,
+                "redirect_url": &config.auth.oauth.redirect_url,
+                "client_id_configured": !config.auth.oauth.client_id.trim().is_empty(),
+                "client_secret_configured": !config.auth.oauth.client_secret.trim().is_empty(),
+                "timeout_secs": config.auth.oauth.timeout_secs,
+                "require_email_verified": config.auth.oauth.require_email_verified,
+                "allowed_email_count": config.auth.oauth.allowed_emails.len(),
+                "allowed_domain_count": config.auth.oauth.allowed_domains.len(),
+            },
+        },
+        "observability": {
+            "metrics_bearer_token_configured": config.observability.metrics_bearer_token.as_deref().is_some_and(|value| !value.trim().is_empty()),
+        },
+        "redaction": {
+            "sensitive_header_count": config.redaction.sensitive_headers.len(),
+            "store_header_hash": config.redaction.store_header_hash,
+            "body_redaction": body_redaction_label(config.redaction.body_redaction),
+        },
+        "plugins": {
+            "configured_count": config.plugins.len(),
+        },
+    })
+}
+
+fn local_admin_configured(config: &Config) -> bool {
+    config
+        .auth
+        .local_admin
+        .password
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        || config
+            .auth
+            .local_admin
+            .password_hash
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn body_redaction_label(value: BodyRedaction) -> &'static str {
+    match value {
+        BodyRedaction::Disabled => "disabled",
+        BodyRedaction::Drop => "drop",
+        BodyRedaction::JsonSecrets => "json_secrets",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::to_bytes;
+
+    use crate::config::{DeploymentMode, PluginConfig};
+    use crate::types::PluginHook;
 
     use super::*;
 
@@ -779,6 +881,110 @@ mod tests {
                     .unwrap()
                     .contains(&json!("started_at"))
         }));
+    }
+
+    #[test]
+    fn config_summary_reports_runtime_settings_without_secret_values() {
+        let config = Config {
+            server: crate::config::ServerConfig {
+                listen: "0.0.0.0:3000".to_string(),
+                public_url: "https://llmtrace.example.com".to_string(),
+                deployment: DeploymentMode::Production,
+                ui_enabled: true,
+            },
+            proxy: crate::config::ProxyConfig {
+                default_upstream: "https://api.openai.com".to_string(),
+                allow_upstreams: vec!["api.openai.com".to_string()],
+                upstream_header: "x-llmtrace-upstream".to_string(),
+                timeout_secs: 120,
+                max_body_capture_bytes: 4096,
+                max_request_body_bytes: 8192,
+                max_websocket_message_bytes: 16384,
+                max_websocket_session_bytes: 32768,
+            },
+            storage: crate::config::StorageConfig {
+                postgres_url: "postgres://db-user:db-pass@db.internal/llmtrace".to_string(),
+                retention_days: Some(30),
+                ..Default::default()
+            },
+            auth: crate::config::AuthConfig {
+                cookie_secure: true,
+                local_admin: crate::config::LocalAdminConfig {
+                    username: "admin-user".to_string(),
+                    password: Some("plain-secret".to_string()),
+                    password_hash: Some("hash-secret".to_string()),
+                },
+                oauth: crate::config::OAuthConfig {
+                    enabled: true,
+                    issuer_url: "https://issuer.example.com".to_string(),
+                    client_id: "client-id-secret-ish".to_string(),
+                    client_secret: "oauth-client-secret".to_string(),
+                    redirect_url: "https://llmtrace.example.com/api/auth/oauth/callback"
+                        .to_string(),
+                    allowed_emails: vec!["private-admin@secret-mail.test".to_string()],
+                    allowed_domains: vec!["sensitive-tenant.test".to_string()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            observability: crate::config::ObservabilityConfig {
+                metrics_bearer_token: Some("metrics-secret".to_string()),
+            },
+            redaction: crate::config::RedactionConfig {
+                body_redaction: BodyRedaction::JsonSecrets,
+                ..Default::default()
+            },
+            plugins: vec![PluginConfig {
+                name: "classifier".to_string(),
+                wasm_path: "/secret/plugin/classifier.wasm".into(),
+                hooks: vec![PluginHook::ResponseEnd],
+                timeout_ms: 100,
+            }],
+        };
+
+        let summary = config_summary(&config);
+
+        assert_eq!(summary["server"]["deployment"], "production");
+        assert_eq!(summary["proxy"]["allow_upstreams_count"], 1);
+        assert_eq!(summary["storage"]["retention_days"], 30);
+        assert_eq!(
+            summary["auth"]["local_admin"]["password_hash_configured"],
+            true
+        );
+        assert_eq!(
+            summary["auth"]["local_admin"]["plaintext_password_configured"],
+            true
+        );
+        assert_eq!(summary["auth"]["oauth"]["client_id_configured"], true);
+        assert_eq!(summary["auth"]["oauth"]["client_secret_configured"], true);
+        assert_eq!(summary["auth"]["oauth"]["allowed_email_count"], 1);
+        assert_eq!(summary["auth"]["oauth"]["allowed_domain_count"], 1);
+        assert_eq!(
+            summary["observability"]["metrics_bearer_token_configured"],
+            true
+        );
+        assert_eq!(summary["redaction"]["body_redaction"], "json_secrets");
+        assert_eq!(summary["plugins"]["configured_count"], 1);
+
+        let serialized = serde_json::to_string(&summary).unwrap();
+        for secret in [
+            "postgres://",
+            "db-pass",
+            "admin-user",
+            "plain-secret",
+            "hash-secret",
+            "client-id-secret-ish",
+            "oauth-client-secret",
+            "private-admin@secret-mail.test",
+            "sensitive-tenant.test",
+            "metrics-secret",
+            "/secret/plugin/classifier.wasm",
+        ] {
+            assert!(
+                !serialized.contains(secret),
+                "{secret} leaked in {serialized}"
+            );
+        }
     }
 
     #[tokio::test]
