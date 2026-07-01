@@ -158,6 +158,21 @@ const LIST_SESSION_REQUESTS_SQL: &str = r#"
         ORDER BY started_at DESC, id DESC
         LIMIT $2 OFFSET $3
         "#;
+const SESSION_REQUEST_STATS_SQL: &str = r#"
+        SELECT COUNT(*)::bigint AS request_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
+               COALESCE(SUM(bytes_in), 0)::bigint AS bytes_in,
+               COALESCE(SUM(bytes_out), 0)::bigint AS bytes_out,
+               COALESCE(SUM(request_body_bytes + response_body_bytes), 0)::bigint AS captured_bytes,
+               AVG(duration_ms)::bigint AS avg_duration_ms,
+               MAX(duration_ms)::bigint AS max_duration_ms,
+               AVG(ttft_ms)::bigint AS avg_ttft_ms,
+               MAX(ttft_ms)::bigint AS max_ttft_ms,
+               MIN(started_at) AS first_request_at,
+               MAX(started_at) AS last_request_at
+        FROM request_traces
+        WHERE session_id = $1
+        "#;
 const LIST_SESSIONS_SQL: &str = r#"
         WITH selected_sessions AS (
             SELECT id, session_key, first_seen, last_seen, user_id, user_name
@@ -1447,6 +1462,10 @@ pub async fn get_session(
     };
 
     let page = SessionMessagePage::from_query(messages_limit, messages_offset);
+    let request_stats = sqlx::query(SESSION_REQUEST_STATS_SQL)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
     let messages = sqlx::query(
         r#"
         SELECT id, request_id, role, content, created_at
@@ -1485,6 +1504,19 @@ pub async fn get_session(
         "user_id": session.try_get::<Option<String>, _>("user_id").ok().flatten(),
         "user_name": session.try_get::<Option<String>, _>("user_name").ok().flatten(),
         "summary": session.get::<Value, _>("summary"),
+        "request_stats": {
+            "request_count": request_stats.get::<i64, _>("request_count"),
+            "error_count": request_stats.get::<i64, _>("error_count"),
+            "bytes_in": request_stats.get::<i64, _>("bytes_in"),
+            "bytes_out": request_stats.get::<i64, _>("bytes_out"),
+            "captured_bytes": request_stats.get::<i64, _>("captured_bytes"),
+            "avg_duration_ms": request_stats.try_get::<Option<i64>, _>("avg_duration_ms").ok().flatten(),
+            "max_duration_ms": request_stats.try_get::<Option<i64>, _>("max_duration_ms").ok().flatten(),
+            "avg_ttft_ms": request_stats.try_get::<Option<i64>, _>("avg_ttft_ms").ok().flatten(),
+            "max_ttft_ms": request_stats.try_get::<Option<i64>, _>("max_ttft_ms").ok().flatten(),
+            "first_request_at": request_stats.try_get::<Option<DateTime<Utc>>, _>("first_request_at").ok().flatten(),
+            "last_request_at": request_stats.try_get::<Option<DateTime<Utc>>, _>("last_request_at").ok().flatten(),
+        },
         "messages": messages,
         "messages_page": {
             "limit": page.limit,
@@ -3266,6 +3298,24 @@ mod tests {
         assert!(request_order < request_limit);
         assert!(LIST_SESSION_REQUESTS_SQL.contains("FROM trace_requests"));
         assert!(LIST_SESSION_REQUESTS_SQL.contains("plugin_metadata, tags"));
+    }
+
+    #[test]
+    fn session_request_stats_query_uses_session_scope_and_error_metrics() {
+        assert!(SESSION_REQUEST_STATS_SQL.contains("FROM request_traces"));
+        assert!(SESSION_REQUEST_STATS_SQL.contains("WHERE session_id = $1"));
+        assert!(SESSION_REQUEST_STATS_SQL.contains(
+            "COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count"
+        ));
+        assert!(SESSION_REQUEST_STATS_SQL.contains(
+            "COALESCE(SUM(request_body_bytes + response_body_bytes), 0)::bigint AS captured_bytes"
+        ));
+        assert!(SESSION_REQUEST_STATS_SQL.contains("AVG(duration_ms)::bigint AS avg_duration_ms"));
+        assert!(SESSION_REQUEST_STATS_SQL.contains("MAX(duration_ms)::bigint AS max_duration_ms"));
+        assert!(SESSION_REQUEST_STATS_SQL.contains("AVG(ttft_ms)::bigint AS avg_ttft_ms"));
+        assert!(SESSION_REQUEST_STATS_SQL.contains("MAX(ttft_ms)::bigint AS max_ttft_ms"));
+        assert!(SESSION_REQUEST_STATS_SQL.contains("MIN(started_at) AS first_request_at"));
+        assert!(SESSION_REQUEST_STATS_SQL.contains("MAX(started_at) AS last_request_at"));
     }
 
     #[test]

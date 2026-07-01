@@ -167,7 +167,7 @@ Request list responses include `page.has_more` and `page.next_offset` so clients
 curl 'http://127.0.0.1:3000/api/sessions?q=alice&limit=100&offset=0'
 ```
 
-Session list responses include `page.has_more` and `page.next_offset` so clients can request the next page without assuming all matching sessions were returned. `GET /api/sessions/{id}` returns session metadata plus a bounded page of messages. `GET /api/sessions/{id}/requests?limit=100&offset=0` returns the same request summary shape as `GET /api/requests`, scoped to that session, with `page.has_more` and `page.next_offset`. Use `messages_limit` and `messages_offset` to page through long sessions:
+Session list responses include `page.has_more` and `page.next_offset` so clients can request the next page without assuming all matching sessions were returned. `GET /api/sessions/{id}` returns session metadata, `request_stats`, and a bounded page of messages. `request_stats` includes request/error counts, bytes in/out, captured body bytes, average and maximum duration/TTFT, and first/last request timestamps. `GET /api/sessions/{id}/requests?limit=100&offset=0` returns the same request summary shape as `GET /api/requests`, scoped to that session, with `page.has_more` and `page.next_offset`. Use `messages_limit` and `messages_offset` to page through long sessions:
 
 ```bash
 curl 'http://127.0.0.1:3000/api/sessions/<session-id>?messages_limit=100&messages_offset=0'
