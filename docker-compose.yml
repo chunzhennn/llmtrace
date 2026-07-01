@@ -6,7 +6,8 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      # Development database credentials are intentionally local-only.
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -25,7 +26,9 @@ services:
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/llmtrace
       LLMTRACE_LISTEN: 0.0.0.0:3000
     ports:
-      - "3000:3000"
+      # The mounted example config uses development credentials; expose it
+      # only on the Docker host loopback interface by default.
+      - "127.0.0.1:3000:3000"
     volumes:
       - ./llmtrace.example.toml:/etc/llmtrace/llmtrace.toml:ro
     healthcheck:

@@ -29,7 +29,7 @@ The service exposes unauthenticated probes for production schedulers and load ba
 - `GET /healthz` returns process liveness and does not touch external dependencies.
 - `GET /readyz` verifies PostgreSQL connectivity with a lightweight `SELECT 1`. The storage check is bounded to 2 seconds and returns `503 Service Unavailable` when storage is unavailable or too slow.
 
-The Docker image includes a `HEALTHCHECK` against `/readyz`, and `docker-compose.yml` waits for Postgres `pg_isready` before starting `llmtrace`. When running in a container, bind the service to `0.0.0.0:3000`; the compose file sets `LLMTRACE_LISTEN` for that.
+The Docker image includes a `HEALTHCHECK` against `/readyz`, and `docker-compose.yml` waits for Postgres `pg_isready` before starting `llmtrace`. When running in a container, bind the service to `0.0.0.0:3000`; the compose file sets `LLMTRACE_LISTEN` for that. The included compose file is a development stack: it mounts `llmtrace.example.toml` and uses local database credentials, so it publishes llmtrace and Postgres only on the Docker host loopback interface by default.
 
 The runtime image runs as the unprivileged `llmtrace` user with UID/GID `10001`.
 
