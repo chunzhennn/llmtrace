@@ -18,7 +18,12 @@ use crate::types::{BodyRedaction, PluginHook, RequestKind};
 const MAX_SESSION_MESSAGES_PER_TRACE: usize = 128;
 const MAX_SESSION_MESSAGE_ROLE_BYTES: usize = 64;
 const MAX_SESSION_MESSAGE_CONTENT_BYTES: usize = 16 * 1024;
+const MAX_TRACE_SESSION_KEY_BYTES: usize = 1024;
+const MAX_TRACE_IDENTITY_BYTES: usize = 1024;
+const MAX_TRACE_TAGS: usize = 64;
+const MAX_TRACE_TAG_BYTES: usize = 128;
 const SESSION_MESSAGES_TRUNCATED_TAG: &str = "session_messages_truncated";
+const TRACE_ENRICHMENT_TRUNCATED_TAG: &str = "trace_enrichment_truncated";
 
 #[derive(Debug)]
 pub struct TraceEvent {
@@ -342,13 +347,13 @@ fn build_trace(
             event.api_key_hash.as_deref(),
         )
     });
+    let (session_key, user_id, user_name, identity_truncated) =
+        bound_trace_identity_fields(session_key, user_id, user_name);
 
     let mut messages = event.messages;
     messages.extend(parsed.messages);
     let (messages, messages_truncated) = bound_session_messages(messages);
-    if messages_truncated {
-        tags.push(SESSION_MESSAGES_TRUNCATED_TAG.to_string());
-    }
+    let tags = bound_trace_tags(tags, messages_truncated, identity_truncated);
 
     let trace = TraceRecord {
         id: event.id,
@@ -389,6 +394,83 @@ fn build_trace(
     };
 
     Ok((trace, messages, user_id, user_name))
+}
+
+fn bound_trace_identity_fields(
+    session_key: Option<String>,
+    user_id: Option<String>,
+    user_name: Option<String>,
+) -> (Option<String>, Option<String>, Option<String>, bool) {
+    let (session_key, session_key_truncated) =
+        bound_optional_text(session_key, MAX_TRACE_SESSION_KEY_BYTES);
+    let (user_id, user_id_truncated) = bound_optional_text(user_id, MAX_TRACE_IDENTITY_BYTES);
+    let (user_name, user_name_truncated) = bound_optional_text(user_name, MAX_TRACE_IDENTITY_BYTES);
+
+    (
+        session_key,
+        user_id,
+        user_name,
+        session_key_truncated || user_id_truncated || user_name_truncated,
+    )
+}
+
+fn bound_optional_text(value: Option<String>, max_bytes: usize) -> (Option<String>, bool) {
+    let Some(value) = value else {
+        return (None, false);
+    };
+    if value.is_empty() {
+        return (None, false);
+    }
+    let (value, truncated) = truncate_utf8_owned(value, max_bytes);
+    (Some(value), truncated)
+}
+
+fn bound_trace_tags(
+    tags: Vec<String>,
+    messages_truncated: bool,
+    identity_truncated: bool,
+) -> Vec<String> {
+    let mut normalized = Vec::new();
+    let mut tags_truncated = false;
+
+    for tag in tags {
+        if tag.is_empty() {
+            continue;
+        }
+        let (tag, tag_truncated) = truncate_utf8_owned(tag, MAX_TRACE_TAG_BYTES);
+        tags_truncated |= tag_truncated;
+        if !normalized.contains(&tag) {
+            normalized.push(tag);
+        }
+    }
+
+    let mut required = Vec::new();
+    if messages_truncated {
+        required.push(SESSION_MESSAGES_TRUNCATED_TAG);
+    }
+    let user_capacity_without_enrichment = MAX_TRACE_TAGS.saturating_sub(required.len());
+    if identity_truncated || tags_truncated || normalized.len() > user_capacity_without_enrichment {
+        required.push(TRACE_ENRICHMENT_TRUNCATED_TAG);
+    }
+
+    let user_capacity = MAX_TRACE_TAGS.saturating_sub(required.len());
+    let mut bounded = Vec::with_capacity(MAX_TRACE_TAGS.min(normalized.len() + required.len()));
+    for tag in normalized {
+        if required.contains(&tag.as_str()) {
+            continue;
+        }
+        if bounded.len() >= user_capacity {
+            continue;
+        }
+        bounded.push(tag);
+    }
+    for tag in required {
+        if !bounded.iter().any(|existing| existing == tag) {
+            bounded.push(tag.to_string());
+        }
+    }
+
+    bounded
 }
 
 fn bound_session_messages(messages: Vec<ParsedMessage>) -> (Vec<ParsedMessage>, bool) {
@@ -486,6 +568,61 @@ mod tests {
             .unwrap();
 
         assert_eq!(recorder.queue_metrics(), TraceQueueMetrics::new(2, 1));
+    }
+
+    #[test]
+    fn bound_trace_identity_fields_drops_empty_and_truncates_values() {
+        let session_key = Some("s".repeat(MAX_TRACE_SESSION_KEY_BYTES + 1));
+        let user_id = Some(String::new());
+        let user_name = Some(format!("{}é", "u".repeat(MAX_TRACE_IDENTITY_BYTES - 1)));
+
+        let (session_key, user_id, user_name, truncated) =
+            bound_trace_identity_fields(session_key, user_id, user_name);
+
+        assert!(truncated);
+        assert_eq!(session_key.unwrap().len(), MAX_TRACE_SESSION_KEY_BYTES);
+        assert!(user_id.is_none());
+        let user_name = user_name.unwrap();
+        assert_eq!(user_name.len(), MAX_TRACE_IDENTITY_BYTES - 1);
+        assert!(user_name.is_char_boundary(user_name.len()));
+    }
+
+    #[test]
+    fn bound_trace_tags_caps_deduplicates_and_preserves_required_markers() {
+        let mut tags = (0..MAX_TRACE_TAGS)
+            .map(|index| format!("tag-{index}"))
+            .collect::<Vec<_>>();
+        tags.push("tag-1".to_string());
+
+        let bounded = bound_trace_tags(tags, true, false);
+
+        assert_eq!(bounded.len(), MAX_TRACE_TAGS);
+        assert_eq!(bounded.iter().filter(|tag| *tag == "tag-1").count(), 1);
+        assert!(
+            bounded
+                .iter()
+                .any(|tag| tag == SESSION_MESSAGES_TRUNCATED_TAG)
+        );
+        assert!(
+            bounded
+                .iter()
+                .any(|tag| tag == TRACE_ENRICHMENT_TRUNCATED_TAG)
+        );
+    }
+
+    #[test]
+    fn bound_trace_tags_truncates_long_tag_on_utf8_boundary() {
+        let tag = format!("{}é", "t".repeat(MAX_TRACE_TAG_BYTES - 1));
+
+        let bounded = bound_trace_tags(vec![tag], false, false);
+
+        assert_eq!(bounded[0].len(), MAX_TRACE_TAG_BYTES - 1);
+        assert!(bounded[0].is_char_boundary(bounded[0].len()));
+        assert!(
+            bounded
+                .iter()
+                .any(|tag| tag == TRACE_ENRICHMENT_TRUNCATED_TAG)
+        );
     }
 
     #[test]
