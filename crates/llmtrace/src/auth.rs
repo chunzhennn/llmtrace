@@ -30,6 +30,10 @@ const SESSION_COOKIE: &str = "llmtrace_session";
 const OAUTH_STATE_COOKIE: &str = "llmtrace_oauth_state";
 const OAUTH_STATE_TTL_SECS: i64 = 10 * 60;
 const OAUTH_JSON_BODY_LIMIT_BYTES: usize = 64 * 1024;
+const MAX_LOGIN_USERNAME_BYTES: usize = 320;
+const MAX_LOGIN_PASSWORD_BYTES: usize = 4096;
+const MAX_SESSION_IDENTITY_BYTES: usize = 1024;
+const MAX_AUDIT_TEXT_BYTES: usize = 1024;
 
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
@@ -119,6 +123,23 @@ async fn login(
         }
     }
 
+    if let Some(reason) = login_payload_size_error(&payload) {
+        let retry_after = state
+            .login_throttle
+            .record_failure(&payload.username, &remote_ip);
+        let _ = audit(
+            &state,
+            "login_failed",
+            Some(payload.username),
+            Some(remote_ip),
+            login_failure_detail(retry_after, Some(reason)),
+        )
+        .await;
+        return retry_after
+            .map(throttled_response)
+            .unwrap_or_else(invalid_login_response);
+    }
+
     let admin = &state.config.auth.local_admin;
     let valid_password =
         verify_local_admin_credentials(admin, &payload.username, &payload.password);
@@ -132,14 +153,7 @@ async fn login(
             "login_failed",
             Some(payload.username),
             Some(remote_ip),
-            retry_after
-                .map(|retry_after| {
-                    json!({
-                        "throttled": true,
-                        "retry_after_secs": retry_after_secs(retry_after),
-                    })
-                })
-                .unwrap_or_else(|| json!({})),
+            login_failure_detail(retry_after, None),
         )
         .await;
         return retry_after
@@ -397,6 +411,8 @@ async fn finish_oauth(state: &AppState, code: &str) -> anyhow::Result<MeResponse
         .and_then(Value::as_str)
         .unwrap_or(&email)
         .to_string();
+    validate_identity_field("oauth email", &email)?;
+    validate_identity_field("oauth display name", &display_name)?;
 
     Ok(MeResponse {
         user_id: email,
@@ -583,6 +599,8 @@ async fn create_session(
     display_name: &str,
     login_method: LoginMethod,
 ) -> anyhow::Result<String> {
+    validate_identity_field("session user_id", user_id)?;
+    validate_identity_field("session display_name", display_name)?;
     let session_id = random_token();
     let expires_at = Utc::now() + Duration::hours(state.config.auth.session_ttl_hours);
     sqlx::query(
@@ -608,6 +626,8 @@ async fn audit(
     remote_addr: Option<String>,
     detail: Value,
 ) -> anyhow::Result<()> {
+    let user_id = user_id.map(|value| truncate_utf8(&value, MAX_AUDIT_TEXT_BYTES));
+    let remote_addr = remote_addr.map(|value| truncate_utf8(&value, MAX_AUDIT_TEXT_BYTES));
     sqlx::query(
         r#"
         INSERT INTO ui_audit_events (event_type, user_id, remote_addr, detail)
@@ -621,6 +641,50 @@ async fn audit(
     .execute(&state.pool)
     .await?;
     Ok(())
+}
+
+fn login_payload_size_error(payload: &LoginRequest) -> Option<&'static str> {
+    if payload.username.len() > MAX_LOGIN_USERNAME_BYTES {
+        return Some("username_too_long");
+    }
+    if payload.password.len() > MAX_LOGIN_PASSWORD_BYTES {
+        return Some("password_too_long");
+    }
+    None
+}
+
+fn login_failure_detail(retry_after: Option<StdDuration>, invalid_payload: Option<&str>) -> Value {
+    let mut detail = serde_json::Map::new();
+    if let Some(reason) = invalid_payload {
+        detail.insert("invalid_payload".to_string(), json!(reason));
+    }
+    if let Some(retry_after) = retry_after {
+        detail.insert("throttled".to_string(), json!(true));
+        detail.insert(
+            "retry_after_secs".to_string(),
+            json!(retry_after_secs(retry_after)),
+        );
+    }
+    Value::Object(detail)
+}
+
+fn validate_identity_field(field: &str, value: &str) -> anyhow::Result<()> {
+    if value.len() > MAX_SESSION_IDENTITY_BYTES {
+        anyhow::bail!("{field} must be at most {MAX_SESSION_IDENTITY_BYTES} bytes");
+    }
+    Ok(())
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
 }
 
 fn session_cookie(headers: &HeaderMap) -> Option<String> {
@@ -926,6 +990,69 @@ mod tests {
             "admin",
             "wrong-password"
         ));
+    }
+
+    #[test]
+    fn login_payload_size_error_rejects_oversized_fields() {
+        let payload = LoginRequest {
+            username: "a".repeat(MAX_LOGIN_USERNAME_BYTES + 1),
+            password: "password".to_string(),
+        };
+
+        assert_eq!(
+            login_payload_size_error(&payload),
+            Some("username_too_long")
+        );
+
+        let payload = LoginRequest {
+            username: "admin".to_string(),
+            password: "a".repeat(MAX_LOGIN_PASSWORD_BYTES + 1),
+        };
+
+        assert_eq!(
+            login_payload_size_error(&payload),
+            Some("password_too_long")
+        );
+    }
+
+    #[test]
+    fn login_payload_size_error_accepts_boundary_lengths() {
+        let payload = LoginRequest {
+            username: "a".repeat(MAX_LOGIN_USERNAME_BYTES),
+            password: "a".repeat(MAX_LOGIN_PASSWORD_BYTES),
+        };
+
+        assert_eq!(login_payload_size_error(&payload), None);
+    }
+
+    #[test]
+    fn login_failure_detail_reports_invalid_payload_and_throttle() {
+        let detail =
+            login_failure_detail(Some(StdDuration::from_secs(12)), Some("password_too_long"));
+
+        assert_eq!(detail["invalid_payload"], json!("password_too_long"));
+        assert_eq!(detail["throttled"], json!(true));
+        assert_eq!(detail["retry_after_secs"], json!(12));
+    }
+
+    #[test]
+    fn identity_fields_are_bounded() {
+        assert!(validate_identity_field("user", &"a".repeat(MAX_SESSION_IDENTITY_BYTES)).is_ok());
+
+        let error = validate_identity_field("user", &"a".repeat(MAX_SESSION_IDENTITY_BYTES + 1))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("must be at most"));
+    }
+
+    #[test]
+    fn truncate_utf8_respects_char_boundaries() {
+        let value = format!("{}é", "a".repeat(MAX_AUDIT_TEXT_BYTES - 1));
+        let truncated = truncate_utf8(&value, MAX_AUDIT_TEXT_BYTES);
+
+        assert_eq!(truncated.len(), MAX_AUDIT_TEXT_BYTES - 1);
+        assert!(truncated.is_char_boundary(truncated.len()));
     }
 
     #[test]

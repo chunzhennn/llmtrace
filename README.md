@@ -89,6 +89,8 @@ body_redaction = "json_secrets"
 
 Local admin login failures are throttled in memory per username and source IP. The default allows 5 failures in 300 seconds, then returns `429 Too Many Requests` with `Retry-After` for 900 seconds. This protects a single process and records `login_throttled` audit events, but production deployments with multiple replicas or internet exposure should also enforce rate limits at the edge.
 
+Login usernames are capped at 320 bytes and passwords at 4096 bytes before local password verification. Oversized login payloads are treated as failed attempts and count toward the same throttle, while stored session and audit identity fields are capped at 1024 bytes.
+
 OAuth login state is stored server-side and bound to a short-lived HttpOnly `SameSite=Lax` browser cookie scoped to `/api/auth/oauth`. The callback requires both the query `state` and cookie state to match, which keeps OAuth callbacks tied to the browser that started the login flow.
 
 OAuth discovery, token, and userinfo JSON responses are capped at 64 KiB while streaming from the provider. Oversized or invalid provider responses fail the login attempt without exposing provider response details to the browser.

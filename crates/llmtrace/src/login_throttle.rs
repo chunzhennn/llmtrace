@@ -4,6 +4,8 @@ use std::time::{Duration, Instant};
 
 use crate::config::LoginRateLimitConfig;
 
+const MAX_LOGIN_THROTTLE_USERNAME_BYTES: usize = 320;
+
 #[derive(Debug, Clone)]
 pub struct LoginThrottle {
     config: LoginRateLimitConfig,
@@ -138,10 +140,25 @@ impl LoginThrottle {
 impl LoginThrottleKey {
     fn new(username: &str, remote_addr: &str) -> Self {
         Self {
-            username: username.trim().to_ascii_lowercase(),
+            username: truncate_utf8(
+                &username.trim().to_ascii_lowercase(),
+                MAX_LOGIN_THROTTLE_USERNAME_BYTES,
+            ),
             remote_addr: remote_addr.trim().to_string(),
         }
     }
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
 }
 
 fn limited_until(locked_until: Option<Instant>, now: Instant) -> Option<Duration> {
@@ -278,5 +295,21 @@ mod tests {
             throttle.check_at("admin", "127.0.0.1", now + Duration::from_secs(10)),
             LoginThrottleDecision::Allowed
         );
+    }
+
+    #[test]
+    fn throttle_key_bounds_username_length() {
+        let key = LoginThrottleKey::new(&"a".repeat(MAX_LOGIN_THROTTLE_USERNAME_BYTES + 1), "ip");
+
+        assert_eq!(key.username.len(), MAX_LOGIN_THROTTLE_USERNAME_BYTES);
+    }
+
+    #[test]
+    fn throttle_key_truncates_on_utf8_boundary() {
+        let username = format!("{}é", "a".repeat(MAX_LOGIN_THROTTLE_USERNAME_BYTES - 1));
+        let key = LoginThrottleKey::new(&username, "ip");
+
+        assert_eq!(key.username.len(), MAX_LOGIN_THROTTLE_USERNAME_BYTES - 1);
+        assert!(key.username.is_char_boundary(key.username.len()));
     }
 }
