@@ -167,6 +167,8 @@ curl http://127.0.0.1:3000/v1/messages \
 
 Persisted proxy outcomes include an `x-llmtrace-trace-id` response header so clients and operators can correlate a response with the stored `request_traces.id`. The header is added to completed HTTP proxy responses, request body limit rejections, upstream send failures, and accepted WebSocket upgrade responses; setup failures that are not persisted do not claim a trace ID.
 
+The proxy does not forward the inbound `Host` header or `x-llmtrace-*` control headers to upstreams. Upstream HTTP and WebSocket clients derive `Host` from the resolved upstream URL, which avoids leaking the llmtrace listener host or honoring user-supplied virtual-host overrides.
+
 ## Current v1 boundaries
 
 - UI authentication is login-only: local admin and optional OAuth/OIDC. There is no authorization or role model.

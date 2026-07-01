@@ -993,7 +993,9 @@ fn http_to_ws_url(mut url: Url) -> anyhow::Result<Url> {
 
 fn should_forward_header(name: &HeaderName) -> bool {
     let name = name.as_str().to_ascii_lowercase();
-    !HOP_BY_HOP_HEADERS.contains(&name.as_str()) && !name.starts_with("x-llmtrace-")
+    name != header::HOST.as_str()
+        && !HOP_BY_HOP_HEADERS.contains(&name.as_str())
+        && !name.starts_with("x-llmtrace-")
 }
 
 fn should_forward_response_header(name: &HeaderName) -> bool {
@@ -1095,6 +1097,27 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some(trace_id_string.as_str())
         );
+    }
+
+    #[test]
+    fn request_header_forwarding_strips_proxy_owned_headers() {
+        assert!(!should_forward_header(&header::HOST));
+        assert!(!should_forward_header(&header::CONNECTION));
+        assert!(!should_forward_header(&HeaderName::from_static(
+            "x-llmtrace-upstream"
+        )));
+        assert!(!should_forward_header(&HeaderName::from_static(
+            "x-llmtrace-trace-id"
+        )));
+    }
+
+    #[test]
+    fn request_header_forwarding_keeps_end_to_end_headers() {
+        assert!(should_forward_header(&header::AUTHORIZATION));
+        assert!(should_forward_header(&header::CONTENT_TYPE));
+        assert!(should_forward_header(&HeaderName::from_static(
+            "x-request-id"
+        )));
     }
 
     #[test]
