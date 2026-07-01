@@ -20,7 +20,7 @@ Validate configuration without connecting to Postgres or running migrations:
 cargo run -p llmtrace -- --config llmtrace.toml --check-config
 ```
 
-Proxy traffic is sent to any non-`/api` and non-`/ui` route. HTTP requests are proxied as HTTP, and requests that negotiate a WebSocket upgrade are proxied as WebSocket traffic on the original path. `/ui/*` currently returns a backend placeholder until a new frontend is provided.
+Proxy traffic is sent to any non-`/api` and non-`/ui` route. HTTP requests are proxied as HTTP, and requests that negotiate a WebSocket upgrade are proxied as WebSocket traffic on the original path. `/ui/*` currently returns a backend placeholder until a new frontend is provided. Set `server.ui_enabled = false` to make both `/` and `/ui/*` return `404`.
 
 ## Health and readiness probes
 
