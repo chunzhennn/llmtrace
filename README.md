@@ -122,7 +122,7 @@ allow_upstreams = [
 
 Host entries match the host across supported upstream schemes and paths. `host:port` entries also constrain the effective port, so `api.openai.com:443` matches `https://api.openai.com/...` but not `http://api.openai.com/...`. URL origins match only the same scheme, host, and effective port. URL path prefixes also require a path boundary, so `https://api.example.com/v1` matches `/v1` and `/v1/chat`, but not `/v10/chat`.
 
-Allowlist entries do not support wildcards. URL entries must not contain credentials, query strings, or fragments.
+Allowlist entries do not support wildcards. URL entries must not contain credentials, query strings, or fragments. Runtime upstream URLs from `proxy.default_upstream`, absolute-form request URIs, or the configured upstream override header must also omit embedded credentials. HTTP proxying accepts only `http` and `https` upstream URLs; WebSocket proxying accepts only `ws` and `wss` after HTTP(S) URLs are converted for the upgrade path.
 
 ## API pagination
 

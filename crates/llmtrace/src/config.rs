@@ -210,11 +210,11 @@ impl UpstreamAllowlist {
     }
 
     pub fn allows(&self, upstream_url: &Url) -> bool {
-        if self.entries.is_empty() {
-            return true;
-        }
         if !UPSTREAM_ALLOWLIST_SCHEMES.contains(&upstream_url.scheme()) {
             return false;
+        }
+        if self.entries.is_empty() {
+            return true;
         }
 
         self.entries.iter().any(|entry| entry.matches(upstream_url))
@@ -325,12 +325,18 @@ impl Config {
     }
 
     fn validate_proxy(&self, errors: &mut Vec<String>) {
-        if let Err(error) = parse_url(
+        match parse_url(
             "proxy.default_upstream",
             &self.proxy.default_upstream,
             &["http", "https"],
         ) {
-            errors.push(error);
+            Ok(default_upstream) => {
+                if !default_upstream.username().is_empty() || default_upstream.password().is_some()
+                {
+                    errors.push("proxy.default_upstream must not contain credentials".to_string());
+                }
+            }
+            Err(error) => errors.push(error),
         }
 
         if self.proxy.upstream_header.trim().is_empty()
@@ -1555,6 +1561,18 @@ mod tests {
     }
 
     #[test]
+    fn upstream_allowlist_empty_rejects_unsupported_schemes() {
+        let proxy = ProxyConfig {
+            allow_upstreams: Vec::new(),
+            ..ProxyConfig::default()
+        };
+        let allowlist = proxy.upstream_allowlist().unwrap();
+
+        assert!(allowlist.allows(&Url::parse("https://api.openai.com/v1/chat").unwrap()));
+        assert!(!allowlist.allows(&Url::parse("ftp://api.openai.com/v1/chat").unwrap()));
+    }
+
+    #[test]
     fn upstream_allowlist_host_port_constrains_effective_port() {
         let proxy = ProxyConfig {
             allow_upstreams: vec!["api.openai.com:443".to_string()],
@@ -1607,6 +1625,16 @@ mod tests {
         assert!(error.contains("must not contain credentials"));
         assert!(error.contains("must not contain a query string or fragment"));
         assert!(error.contains("host entries must be hostnames with an optional port"));
+    }
+
+    #[test]
+    fn validation_rejects_credentialed_default_upstream() {
+        let mut config = Config::default();
+        config.proxy.default_upstream = "https://user:secret@api.example.com".to_string();
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("proxy.default_upstream must not contain credentials"));
     }
 
     fn production_ready_config() -> Config {

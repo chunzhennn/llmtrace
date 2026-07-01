@@ -39,6 +39,8 @@ const HOP_BY_HOP_HEADERS: &[&str] = &[
 const REQUEST_BODY_LIMIT_ERROR: &str = "request body exceeds configured limit";
 const TRACE_ID_HEADER: &str = "x-llmtrace-trace-id";
 const MAX_WEBSOCKET_CAPTURED_FRAMES: usize = 200;
+const HTTP_UPSTREAM_SCHEMES: &[&str] = &["http", "https"];
+const WEBSOCKET_UPSTREAM_SCHEMES: &[&str] = &["ws", "wss"];
 
 pub async fn proxy(
     State(state): State<AppState>,
@@ -80,7 +82,7 @@ async fn proxy_http(
     let method = parts.method.clone();
     let original_uri = parts.uri.to_string();
     let upstream_url = resolve_upstream(&state, &parts.uri, &parts.headers)?;
-    enforce_upstream_allowlist(&state, &upstream_url)?;
+    enforce_upstream_policy(&state, &upstream_url, HTTP_UPSTREAM_SCHEMES)?;
     let upstream_host = upstream_url.host_str().map(str::to_string);
     let capture_limit = state.config.proxy.max_body_capture_bytes;
     let max_request_body_bytes = state.config.proxy.max_request_body_bytes;
@@ -397,7 +399,7 @@ async fn proxy_websocket(
     let upstream_url = match resolve_upstream(&state, &parts.uri, &parts.headers)
         .and_then(http_to_ws_url)
         .and_then(|url| {
-            enforce_upstream_allowlist(&state, &url)?;
+            enforce_upstream_policy(&state, &url, WEBSOCKET_UPSTREAM_SCHEMES)?;
             Ok(url)
         }) {
         Ok(url) => url,
@@ -934,11 +936,46 @@ fn resolve_upstream(state: &AppState, uri: &Uri, headers: &HeaderMap) -> anyhow:
     Ok(base)
 }
 
-fn enforce_upstream_allowlist(state: &AppState, upstream_url: &Url) -> anyhow::Result<()> {
+fn enforce_upstream_policy(
+    state: &AppState,
+    upstream_url: &Url,
+    allowed_schemes: &[&str],
+) -> anyhow::Result<()> {
+    validate_upstream_url(upstream_url, allowed_schemes)?;
     if state.upstream_allowlist.allows(upstream_url) {
         Ok(())
     } else {
-        anyhow::bail!("upstream {upstream_url} is not allowed")
+        anyhow::bail!(
+            "upstream {} is not allowed",
+            upstream_origin_label(upstream_url)
+        )
+    }
+}
+
+fn validate_upstream_url(upstream_url: &Url, allowed_schemes: &[&str]) -> anyhow::Result<()> {
+    if !upstream_url.username().is_empty() || upstream_url.password().is_some() {
+        anyhow::bail!("upstream URL must not contain credentials");
+    }
+    if upstream_url.host_str().is_none() {
+        anyhow::bail!("upstream URL must include a host");
+    }
+    if !allowed_schemes.contains(&upstream_url.scheme()) {
+        anyhow::bail!(
+            "upstream URL scheme {:?} is not allowed for this proxy path",
+            upstream_url.scheme()
+        );
+    }
+    Ok(())
+}
+
+fn upstream_origin_label(upstream_url: &Url) -> String {
+    let host = upstream_url
+        .host()
+        .map(|host| host.to_string())
+        .unwrap_or_else(|| "<missing-host>".to_string());
+    match upstream_url.port() {
+        Some(port) => format!("{}://{host}:{port}", upstream_url.scheme()),
+        None => format!("{}://{host}", upstream_url.scheme()),
     }
 }
 
@@ -1083,6 +1120,37 @@ mod tests {
         let total = add_ws_bytes("client", 4, 6, 10, 20).unwrap();
 
         assert_eq!(total, 10);
+    }
+
+    #[test]
+    fn validate_upstream_url_rejects_credentials() {
+        let upstream_url = Url::parse("https://user:secret@api.example.com/v1").unwrap();
+        let error = validate_upstream_url(&upstream_url, HTTP_UPSTREAM_SCHEMES)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("must not contain credentials"));
+    }
+
+    #[test]
+    fn validate_upstream_url_rejects_wrong_proxy_scheme() {
+        let upstream_url = Url::parse("ws://api.example.com/v1").unwrap();
+        let error = validate_upstream_url(&upstream_url, HTTP_UPSTREAM_SCHEMES)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("scheme \"ws\" is not allowed"));
+    }
+
+    #[test]
+    fn upstream_origin_label_omits_path_query_and_credentials() {
+        let upstream_url =
+            Url::parse("https://user:secret@api.example.com:8443/v1/chat?token=secret").unwrap();
+
+        assert_eq!(
+            upstream_origin_label(&upstream_url),
+            "https://api.example.com:8443"
+        );
     }
 
     #[test]
