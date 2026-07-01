@@ -168,6 +168,10 @@ pub fn router() -> Router<AppState> {
         .route("/requests/export.jsonl", get(export_requests_jsonl))
         .route("/requests/{id}", get(get_request))
         .route("/sessions", get(list_sessions))
+        .route(
+            "/sessions/{id}/requests/export.jsonl",
+            get(export_session_requests_jsonl),
+        )
         .route("/sessions/{id}/requests", get(list_session_requests))
         .route("/sessions/{id}", get(get_session))
         .route("/audit-events", get(list_audit_events))
@@ -368,6 +372,22 @@ async fn list_sessions(
 
     match storage::list_sessions(&state.pool, q, query.limit, query.offset).await {
         Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn export_session_requests_jsonl(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<SessionRequestListQuery>,
+) -> Response {
+    match storage::list_session_requests(&state.pool, id, query.limit, query.offset).await {
+        Ok(Some(value)) => request_list_jsonl_response(value),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "session not found"})),
+        )
+            .into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }
