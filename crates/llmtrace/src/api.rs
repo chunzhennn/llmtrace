@@ -10,6 +10,8 @@ use uuid::Uuid;
 use crate::state::AppState;
 use crate::storage;
 
+const MAX_REQUEST_SEARCH_BYTES: usize = 512;
+
 #[derive(Debug, Deserialize)]
 struct RequestListQuery {
     q: Option<String>,
@@ -58,14 +60,12 @@ async fn list_requests(
     State(state): State<AppState>,
     Query(query): Query<RequestListQuery>,
 ) -> Response {
-    match storage::list_requests(
-        &state.pool,
-        query.q,
-        query.status,
-        query.limit.unwrap_or(100),
-    )
-    .await
-    {
+    let q = match normalize_request_search(query.q) {
+        Ok(q) => q,
+        Err(message) => return bad_request(message),
+    };
+
+    match storage::list_requests(&state.pool, q, query.status, query.limit.unwrap_or(100)).await {
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
@@ -123,6 +123,14 @@ async fn plugins(State(state): State<AppState>) -> Response {
     Json(json!({ "items": state.plugins.statuses() })).into_response()
 }
 
+fn bad_request(message: impl Into<String>) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({"error": message.into()})),
+    )
+        .into_response()
+}
+
 fn api_error(status: StatusCode, error: anyhow::Error) -> Response {
     if status.is_server_error() {
         tracing::error!(%error, %status, "api request failed");
@@ -133,13 +141,27 @@ fn api_error(status: StatusCode, error: anyhow::Error) -> Response {
 
 fn structured_query_error(error: storage::StructuredQueryError) -> Response {
     match error {
-        storage::StructuredQueryError::Invalid(message) => {
-            (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response()
-        }
+        storage::StructuredQueryError::Invalid(message) => bad_request(message),
         storage::StructuredQueryError::Execution(error) => {
             api_error(StatusCode::INTERNAL_SERVER_ERROR, error)
         }
     }
+}
+
+fn normalize_request_search(q: Option<String>) -> Result<Option<String>, String> {
+    let Some(q) = q else {
+        return Ok(None);
+    };
+    let q = q.trim();
+    if q.is_empty() {
+        return Ok(None);
+    }
+    if q.len() > MAX_REQUEST_SEARCH_BYTES {
+        return Err(format!(
+            "q must be at most {MAX_REQUEST_SEARCH_BYTES} bytes"
+        ));
+    }
+    Ok(Some(q.to_string()))
 }
 
 #[cfg(test)]
@@ -170,6 +192,27 @@ mod tests {
         let body = response_body_json(response).await;
 
         assert_eq!(body, json!({"error": "internal server error"}));
+    }
+
+    #[test]
+    fn request_search_normalization_trims_empty_values() {
+        assert_eq!(normalize_request_search(None).unwrap(), None);
+        assert_eq!(
+            normalize_request_search(Some("   ".to_string())).unwrap(),
+            None
+        );
+        assert_eq!(
+            normalize_request_search(Some("  gpt-4o  ".to_string())).unwrap(),
+            Some("gpt-4o".to_string())
+        );
+    }
+
+    #[test]
+    fn request_search_normalization_rejects_oversized_values() {
+        let error =
+            normalize_request_search(Some("a".repeat(MAX_REQUEST_SEARCH_BYTES + 1))).unwrap_err();
+
+        assert!(error.contains("q must be at most"));
     }
 
     async fn response_body_json(response: Response) -> serde_json::Value {

@@ -139,7 +139,7 @@ Allowlist entries do not support wildcards. URL entries must not contain credent
 
 ## API pagination
 
-List endpoints clamp `limit` to the range `1..=500`. `GET /api/sessions/{id}` returns session metadata plus a bounded page of messages. Use `messages_limit` and `messages_offset` to page through long sessions:
+List endpoints clamp `limit` to the range `1..=500`. `GET /api/requests?q=...` trims empty search strings, rejects search terms over 512 bytes, and treats `%` and `_` as literal characters instead of SQL wildcard operators. `GET /api/sessions/{id}` returns session metadata plus a bounded page of messages. Use `messages_limit` and `messages_offset` to page through long sessions:
 
 ```bash
 curl 'http://127.0.0.1:3000/api/sessions/<session-id>?messages_limit=100&messages_offset=0'

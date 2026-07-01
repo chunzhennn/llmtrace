@@ -750,6 +750,7 @@ pub async fn list_requests(
     status: Option<i32>,
     limit: i64,
 ) -> anyhow::Result<Value> {
+    let q = q.map(|value| escape_like(&value));
     let mut tx = begin_api_read_tx(pool).await?;
     let rows = sqlx::query(
         r#"
@@ -758,7 +759,12 @@ pub async fn list_requests(
                duration_ms, bytes_in, bytes_out, request_body_truncated, response_body_truncated,
                plugin_metadata, tags
         FROM trace_requests
-        WHERE ($1::text IS NULL OR upstream_url ILIKE '%' || $1 || '%' OR model ILIKE '%' || $1 || '%' OR request_kind ILIKE '%' || $1 || '%')
+        WHERE (
+            $1::text IS NULL
+            OR upstream_url ILIKE '%' || $1 || '%' ESCAPE '\'
+            OR model ILIKE '%' || $1 || '%' ESCAPE '\'
+            OR request_kind ILIKE '%' || $1 || '%' ESCAPE '\'
+        )
           AND ($2::int IS NULL OR status = $2)
         ORDER BY started_at DESC
         LIMIT $3
@@ -1963,6 +1969,11 @@ mod tests {
         assert!(selected_sessions < session_limit);
         assert!(session_limit < lateral_stats);
         assert!(LIST_SESSIONS_SQL.contains("WHERE r.session_id = s.id"));
+    }
+
+    #[test]
+    fn request_search_escapes_like_wildcards() {
+        assert_eq!(escape_like(r#"100%\_match"#), r#"100\%\\\_match"#);
     }
 
     #[tokio::test]
