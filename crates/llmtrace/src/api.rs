@@ -59,6 +59,14 @@ struct RecentErrorRequestsQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct SlowRequestsQuery {
+    since_hours: Option<i64>,
+    min_duration_ms: Option<i64>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct SessionListQuery {
     q: Option<String>,
     limit: Option<i64>,
@@ -131,6 +139,7 @@ pub fn router() -> Router<AppState> {
         .route("/requests", get(list_requests))
         .route("/requests/facets", get(request_facets))
         .route("/requests/recent-errors", get(recent_error_requests))
+        .route("/requests/slow", get(slow_requests))
         .route("/requests/export.jsonl", get(export_requests_jsonl))
         .route("/requests/{id}", get(get_request))
         .route("/sessions", get(list_sessions))
@@ -248,6 +257,30 @@ async fn recent_error_requests(
     Query(query): Query<RecentErrorRequestsQuery>,
 ) -> Response {
     match storage::recent_error_requests(&state.pool, query.since_hours, query.limit).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn slow_requests(
+    State(state): State<AppState>,
+    Query(query): Query<SlowRequestsQuery>,
+) -> Response {
+    let min_duration_ms =
+        match normalize_optional_duration_filter("min_duration_ms", query.min_duration_ms) {
+            Ok(value) => value,
+            Err(message) => return bad_request(message),
+        };
+
+    match storage::slow_requests(
+        &state.pool,
+        query.since_hours,
+        min_duration_ms,
+        query.limit,
+        query.offset,
+    )
+    .await
+    {
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }

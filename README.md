@@ -165,6 +165,8 @@ Request list responses include `page.has_more` and `page.next_offset` so clients
 
 `GET /api/requests/recent-errors?since_hours=24&limit=50` returns the newest failed request summaries for incident queues and dashboards. A failed request is any trace with a stored proxy error or an HTTP status `>=500`. `since_hours` defaults to `24` and is capped at `2160`; `limit` defaults to `50` and is capped at `200`. The response includes `window`, `items`, and `page.has_more`.
 
+`GET /api/requests/slow?since_hours=24&min_duration_ms=1000&limit=50&offset=0` returns the slowest request summaries in the lookback window, ordered by `duration_ms` descending and then newest first. `since_hours` defaults to `24` and is capped at `2160`; `min_duration_ms` defaults to `1000` and must be non-negative; `limit` defaults to `50` and is capped at `500`; `offset` is capped at `1000000`. The response includes `window`, `items`, `page.has_more`, and `page.next_offset`.
+
 ```bash
 curl 'http://127.0.0.1:3000/api/sessions?q=alice&limit=100&offset=0'
 ```

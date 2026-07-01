@@ -25,6 +25,12 @@ const DEFAULT_RECENT_ERROR_SINCE_HOURS: i64 = 24;
 const MAX_RECENT_ERROR_SINCE_HOURS: i64 = 24 * 90;
 const DEFAULT_RECENT_ERROR_LIMIT: i64 = 50;
 const MAX_RECENT_ERROR_LIMIT: i64 = 200;
+const DEFAULT_SLOW_REQUEST_SINCE_HOURS: i64 = 24;
+const MAX_SLOW_REQUEST_SINCE_HOURS: i64 = 24 * 90;
+const DEFAULT_SLOW_REQUEST_MIN_DURATION_MS: i64 = 1000;
+const DEFAULT_SLOW_REQUEST_LIMIT: i64 = 50;
+const MAX_SLOW_REQUEST_LIMIT: i64 = 500;
+const MAX_SLOW_REQUEST_OFFSET: i64 = 1_000_000;
 const DEFAULT_SESSION_LIST_LIMIT: i64 = 100;
 const MAX_SESSION_LIST_LIMIT: i64 = 500;
 const MAX_SESSION_LIST_OFFSET: i64 = 1_000_000;
@@ -368,6 +374,17 @@ const RECENT_ERROR_REQUESTS_SQL: &str = r#"
         ORDER BY started_at DESC, id DESC
         LIMIT $2
         "#;
+const SLOW_REQUESTS_SQL: &str = r#"
+        SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
+               status, error, request_kind, model, api_key_hash, session_id, ttft_ms,
+               duration_ms, bytes_in, bytes_out, request_body_truncated, response_body_truncated,
+               plugin_metadata, tags
+        FROM trace_requests
+        WHERE started_at >= $1
+          AND duration_ms >= $2
+        ORDER BY duration_ms DESC, started_at DESC, id DESC
+        LIMIT $3 OFFSET $4
+        "#;
 const SESSION_REQUEST_STATS_SQL: &str = r#"
         SELECT COUNT(*)::bigint AS request_count,
                COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
@@ -653,6 +670,14 @@ struct RecentErrorWindow {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SlowRequestPage {
+    since_hours: i64,
+    min_duration_ms: i64,
+    limit: i64,
+    offset: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SessionListPage {
     limit: i64,
     offset: i64,
@@ -784,6 +809,40 @@ impl RecentErrorWindow {
 
     fn fetch_limit(self) -> i64 {
         self.limit + 1
+    }
+}
+
+impl SlowRequestPage {
+    fn from_query(
+        since_hours: Option<i64>,
+        min_duration_ms: Option<i64>,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Self {
+        Self {
+            since_hours: since_hours
+                .unwrap_or(DEFAULT_SLOW_REQUEST_SINCE_HOURS)
+                .clamp(1, MAX_SLOW_REQUEST_SINCE_HOURS),
+            min_duration_ms: min_duration_ms
+                .unwrap_or(DEFAULT_SLOW_REQUEST_MIN_DURATION_MS)
+                .max(0),
+            limit: limit
+                .unwrap_or(DEFAULT_SLOW_REQUEST_LIMIT)
+                .clamp(1, MAX_SLOW_REQUEST_LIMIT),
+            offset: offset.unwrap_or(0).clamp(0, MAX_SLOW_REQUEST_OFFSET),
+        }
+    }
+
+    fn cutoff(self, now: DateTime<Utc>) -> DateTime<Utc> {
+        now - ChronoDuration::hours(self.since_hours)
+    }
+
+    fn fetch_limit(self) -> i64 {
+        self.limit + 1
+    }
+
+    fn next_offset(self, has_more: bool) -> Option<i64> {
+        has_more.then_some(self.offset.saturating_add(self.limit))
     }
 }
 
@@ -1559,6 +1618,48 @@ pub async fn recent_error_requests(
         "page": {
             "limit": window.limit,
             "has_more": has_more,
+        },
+    }))
+}
+
+pub async fn slow_requests(
+    pool: &PgPool,
+    since_hours: Option<i64>,
+    min_duration_ms: Option<i64>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> anyhow::Result<Value> {
+    let page = SlowRequestPage::from_query(since_hours, min_duration_ms, limit, offset);
+    let cutoff = page.cutoff(Utc::now());
+    let mut tx = begin_api_read_tx(pool).await?;
+    let rows = sqlx::query(SLOW_REQUESTS_SQL)
+        .bind(cutoff)
+        .bind(page.min_duration_ms)
+        .bind(page.fetch_limit())
+        .bind(page.offset)
+        .fetch_all(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    let has_more = rows.len() > page.limit as usize;
+    let items: Vec<Value> = rows
+        .into_iter()
+        .take(page.limit as usize)
+        .map(request_summary_row)
+        .collect();
+
+    Ok(json!({
+        "window": {
+            "since_hours": page.since_hours,
+            "started_at_gte": cutoff,
+            "min_duration_ms": page.min_duration_ms,
+        },
+        "items": items,
+        "page": {
+            "limit": page.limit,
+            "offset": page.offset,
+            "has_more": has_more,
+            "next_offset": page.next_offset(has_more),
         },
     }))
 }
@@ -3527,6 +3628,60 @@ mod tests {
     }
 
     #[test]
+    fn slow_request_page_uses_safe_defaults() {
+        let page = SlowRequestPage::from_query(None, None, None, None);
+
+        assert_eq!(
+            page,
+            SlowRequestPage {
+                since_hours: DEFAULT_SLOW_REQUEST_SINCE_HOURS,
+                min_duration_ms: DEFAULT_SLOW_REQUEST_MIN_DURATION_MS,
+                limit: DEFAULT_SLOW_REQUEST_LIMIT,
+                offset: 0,
+            }
+        );
+        assert_eq!(page.fetch_limit(), DEFAULT_SLOW_REQUEST_LIMIT + 1);
+    }
+
+    #[test]
+    fn slow_request_page_clamps_bounds() {
+        let max = SlowRequestPage::from_query(
+            Some(i64::MAX),
+            Some(i64::MAX),
+            Some(i64::MAX),
+            Some(i64::MAX),
+        );
+        assert_eq!(max.since_hours, MAX_SLOW_REQUEST_SINCE_HOURS);
+        assert_eq!(max.min_duration_ms, i64::MAX);
+        assert_eq!(max.limit, MAX_SLOW_REQUEST_LIMIT);
+        assert_eq!(max.offset, MAX_SLOW_REQUEST_OFFSET);
+
+        let min = SlowRequestPage::from_query(Some(-10), Some(-10), Some(-10), Some(-10));
+        assert_eq!(min.since_hours, 1);
+        assert_eq!(min.min_duration_ms, 0);
+        assert_eq!(min.limit, 1);
+        assert_eq!(min.offset, 0);
+        assert_eq!(min.fetch_limit(), 2);
+    }
+
+    #[test]
+    fn slow_request_page_calculates_cutoff_and_next_offset() {
+        let now = DateTime::parse_from_rfc3339("2026-07-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let page = SlowRequestPage::from_query(Some(4), Some(2500), Some(50), Some(100));
+
+        assert_eq!(
+            page.cutoff(now),
+            DateTime::parse_from_rfc3339("2026-07-01T08:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+        assert_eq!(page.next_offset(true), Some(150));
+        assert_eq!(page.next_offset(false), None);
+    }
+
+    #[test]
     fn session_list_page_uses_safe_defaults() {
         let page = SessionListPage::from_query(None, None);
 
@@ -3926,6 +4081,24 @@ mod tests {
         assert!(request_order < request_limit);
         assert!(RECENT_ERROR_REQUESTS_SQL.contains("FROM trace_requests"));
         assert!(RECENT_ERROR_REQUESTS_SQL.contains("plugin_metadata, tags"));
+    }
+
+    #[test]
+    fn slow_requests_query_filters_duration_and_orders_slowest_first() {
+        let cutoff_filter = SLOW_REQUESTS_SQL.find("WHERE started_at >= $1").unwrap();
+        let duration_filter = SLOW_REQUESTS_SQL.find("AND duration_ms >= $2").unwrap();
+        let request_order = SLOW_REQUESTS_SQL
+            .find("ORDER BY duration_ms DESC, started_at DESC, id DESC")
+            .unwrap();
+        let request_limit = SLOW_REQUESTS_SQL.find("LIMIT $3 OFFSET $4").unwrap();
+
+        assert!(cutoff_filter < duration_filter);
+        assert!(duration_filter < request_order);
+        assert!(request_order < request_limit);
+        assert!(SLOW_REQUESTS_SQL.contains("FROM trace_requests"));
+        assert!(SLOW_REQUESTS_SQL.contains("plugin_metadata, tags"));
+        assert!(!SLOW_REQUESTS_SQL.contains("request_headers"));
+        assert!(!SLOW_REQUESTS_SQL.contains("response_headers"));
     }
 
     #[test]
