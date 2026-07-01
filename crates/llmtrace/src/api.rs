@@ -92,6 +92,12 @@ struct UsageSummaryQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct ErrorSummaryQuery {
+    since_hours: Option<i64>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct UsageTimeseriesQuery {
     since_hours: Option<i64>,
     bucket: Option<String>,
@@ -113,6 +119,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/stats", get(stats))
         .route("/usage/summary", get(usage_summary))
+        .route("/usage/errors", get(error_summary))
         .route("/usage/timeseries", get(usage_timeseries))
         .route("/requests", get(list_requests))
         .route("/requests/facets", get(request_facets))
@@ -149,6 +156,16 @@ async fn usage_summary(
     Query(query): Query<UsageSummaryQuery>,
 ) -> Response {
     match storage::usage_summary(&state.pool, query.since_hours, query.limit).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn error_summary(
+    State(state): State<AppState>,
+    Query(query): Query<ErrorSummaryQuery>,
+) -> Response {
+    match storage::error_summary(&state.pool, query.since_hours, query.limit).await {
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }

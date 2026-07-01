@@ -38,6 +38,10 @@ const DEFAULT_USAGE_SUMMARY_SINCE_HOURS: i64 = 24;
 const MAX_USAGE_SUMMARY_SINCE_HOURS: i64 = 24 * 90;
 const DEFAULT_USAGE_SUMMARY_LIMIT: i64 = 10;
 const MAX_USAGE_SUMMARY_LIMIT: i64 = 50;
+const DEFAULT_ERROR_SUMMARY_SINCE_HOURS: i64 = 24;
+const MAX_ERROR_SUMMARY_SINCE_HOURS: i64 = 24 * 90;
+const DEFAULT_ERROR_SUMMARY_LIMIT: i64 = 10;
+const MAX_ERROR_SUMMARY_LIMIT: i64 = 50;
 const DEFAULT_USAGE_TIMESERIES_SINCE_HOURS: i64 = 24;
 const MAX_USAGE_TIMESERIES_MINUTE_HOURS: i64 = 24;
 const MAX_USAGE_TIMESERIES_HOUR_HOURS: i64 = 24 * 90;
@@ -112,6 +116,102 @@ const REQUEST_FACET_ERROR_STATES_SQL: &str = r#"
         WHERE started_at >= $1
         GROUP BY 1
         ORDER BY value DESC
+        "#;
+const ERROR_SUMMARY_TOTALS_SQL: &str = r#"
+        SELECT COUNT(*)::bigint AS error_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL)::bigint AS proxy_error_count,
+               COUNT(*) FILTER (WHERE status >= 500)::bigint AS http_5xx_count,
+               COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::bigint AS affected_sessions,
+               AVG(duration_ms)::bigint AS avg_duration_ms,
+               MAX(duration_ms)::bigint AS max_duration_ms,
+               MIN(started_at) AS first_seen_at,
+               MAX(started_at) AS last_seen_at
+        FROM trace_requests
+        WHERE started_at >= $1
+          AND (error IS NOT NULL OR status >= 500)
+        "#;
+const ERROR_SUMMARY_SOURCES_SQL: &str = r#"
+        SELECT CASE
+                   WHEN error IS NOT NULL AND status >= 500 THEN 'proxy_error_and_http_5xx'
+                   WHEN error IS NOT NULL THEN 'proxy_error'
+                   WHEN status >= 500 THEN 'http_5xx'
+                   ELSE 'other'
+               END AS name,
+               COUNT(*)::bigint AS error_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL)::bigint AS proxy_error_count,
+               COUNT(*) FILTER (WHERE status >= 500)::bigint AS http_5xx_count,
+               AVG(duration_ms)::bigint AS avg_duration_ms,
+               MAX(duration_ms)::bigint AS max_duration_ms
+        FROM trace_requests
+        WHERE started_at >= $1
+          AND (error IS NOT NULL OR status >= 500)
+        GROUP BY 1
+        ORDER BY error_count DESC, name ASC
+        LIMIT $2
+        "#;
+const ERROR_SUMMARY_UPSTREAMS_SQL: &str = r#"
+        SELECT COALESCE(NULLIF(upstream_host, ''), 'unknown') AS name,
+               COUNT(*)::bigint AS error_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL)::bigint AS proxy_error_count,
+               COUNT(*) FILTER (WHERE status >= 500)::bigint AS http_5xx_count,
+               AVG(duration_ms)::bigint AS avg_duration_ms,
+               MAX(duration_ms)::bigint AS max_duration_ms
+        FROM trace_requests
+        WHERE started_at >= $1
+          AND (error IS NOT NULL OR status >= 500)
+        GROUP BY 1
+        ORDER BY error_count DESC, name ASC
+        LIMIT $2
+        "#;
+const ERROR_SUMMARY_MODELS_SQL: &str = r#"
+        SELECT COALESCE(NULLIF(model, ''), 'unknown') AS name,
+               COUNT(*)::bigint AS error_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL)::bigint AS proxy_error_count,
+               COUNT(*) FILTER (WHERE status >= 500)::bigint AS http_5xx_count,
+               AVG(duration_ms)::bigint AS avg_duration_ms,
+               MAX(duration_ms)::bigint AS max_duration_ms
+        FROM trace_requests
+        WHERE started_at >= $1
+          AND (error IS NOT NULL OR status >= 500)
+        GROUP BY 1
+        ORDER BY error_count DESC, name ASC
+        LIMIT $2
+        "#;
+const ERROR_SUMMARY_REQUEST_KINDS_SQL: &str = r#"
+        SELECT COALESCE(NULLIF(request_kind, ''), 'unknown') AS name,
+               COUNT(*)::bigint AS error_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL)::bigint AS proxy_error_count,
+               COUNT(*) FILTER (WHERE status >= 500)::bigint AS http_5xx_count,
+               AVG(duration_ms)::bigint AS avg_duration_ms,
+               MAX(duration_ms)::bigint AS max_duration_ms
+        FROM trace_requests
+        WHERE started_at >= $1
+          AND (error IS NOT NULL OR status >= 500)
+        GROUP BY 1
+        ORDER BY error_count DESC, name ASC
+        LIMIT $2
+        "#;
+const ERROR_SUMMARY_STATUS_CLASSES_SQL: &str = r#"
+        SELECT CASE
+                   WHEN status IS NULL THEN 'no_status'
+                   WHEN status BETWEEN 100 AND 199 THEN '1xx'
+                   WHEN status BETWEEN 200 AND 299 THEN '2xx'
+                   WHEN status BETWEEN 300 AND 399 THEN '3xx'
+                   WHEN status BETWEEN 400 AND 499 THEN '4xx'
+                   WHEN status BETWEEN 500 AND 599 THEN '5xx'
+                   ELSE 'other'
+               END AS name,
+               COUNT(*)::bigint AS error_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL)::bigint AS proxy_error_count,
+               COUNT(*) FILTER (WHERE status >= 500)::bigint AS http_5xx_count,
+               AVG(duration_ms)::bigint AS avg_duration_ms,
+               MAX(duration_ms)::bigint AS max_duration_ms
+        FROM trace_requests
+        WHERE started_at >= $1
+          AND (error IS NOT NULL OR status >= 500)
+        GROUP BY 1
+        ORDER BY error_count DESC, name ASC
+        LIMIT $2
         "#;
 const LIST_REQUESTS_SQL: &str = r#"
         SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
@@ -482,6 +582,12 @@ struct UsageSummaryWindow {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ErrorSummaryWindow {
+    since_hours: i64,
+    limit: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UsageTimeseriesBucket {
     Minute,
     Hour,
@@ -646,6 +752,23 @@ impl UsageSummaryWindow {
             limit: limit
                 .unwrap_or(DEFAULT_USAGE_SUMMARY_LIMIT)
                 .clamp(1, MAX_USAGE_SUMMARY_LIMIT),
+        }
+    }
+
+    fn cutoff(self, now: DateTime<Utc>) -> DateTime<Utc> {
+        now - ChronoDuration::hours(self.since_hours)
+    }
+}
+
+impl ErrorSummaryWindow {
+    fn from_query(since_hours: Option<i64>, limit: Option<i64>) -> Self {
+        Self {
+            since_hours: since_hours
+                .unwrap_or(DEFAULT_ERROR_SUMMARY_SINCE_HOURS)
+                .clamp(1, MAX_ERROR_SUMMARY_SINCE_HOURS),
+            limit: limit
+                .unwrap_or(DEFAULT_ERROR_SUMMARY_LIMIT)
+                .clamp(1, MAX_ERROR_SUMMARY_LIMIT),
         }
     }
 
@@ -1788,6 +1911,72 @@ pub async fn usage_summary(
     }))
 }
 
+pub async fn error_summary(
+    pool: &PgPool,
+    since_hours: Option<i64>,
+    limit: Option<i64>,
+) -> anyhow::Result<Value> {
+    let window = ErrorSummaryWindow::from_query(since_hours, limit);
+    let cutoff = window.cutoff(Utc::now());
+    let mut tx = begin_api_read_tx(pool).await?;
+
+    let totals = sqlx::query(ERROR_SUMMARY_TOTALS_SQL)
+        .bind(cutoff)
+        .fetch_one(&mut *tx)
+        .await?;
+
+    let sources = sqlx::query(ERROR_SUMMARY_SOURCES_SQL)
+        .bind(cutoff)
+        .bind(window.limit)
+        .fetch_all(&mut *tx)
+        .await?;
+    let top_upstreams = sqlx::query(ERROR_SUMMARY_UPSTREAMS_SQL)
+        .bind(cutoff)
+        .bind(window.limit)
+        .fetch_all(&mut *tx)
+        .await?;
+    let top_models = sqlx::query(ERROR_SUMMARY_MODELS_SQL)
+        .bind(cutoff)
+        .bind(window.limit)
+        .fetch_all(&mut *tx)
+        .await?;
+    let status_classes = sqlx::query(ERROR_SUMMARY_STATUS_CLASSES_SQL)
+        .bind(cutoff)
+        .bind(window.limit)
+        .fetch_all(&mut *tx)
+        .await?;
+    let request_kinds = sqlx::query(ERROR_SUMMARY_REQUEST_KINDS_SQL)
+        .bind(cutoff)
+        .bind(window.limit)
+        .fetch_all(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+
+    Ok(json!({
+        "window": {
+            "since_hours": window.since_hours,
+            "started_at_gte": cutoff,
+            "limit": window.limit,
+        },
+        "totals": {
+            "error_count": totals.get::<i64, _>("error_count"),
+            "proxy_error_count": totals.get::<i64, _>("proxy_error_count"),
+            "http_5xx_count": totals.get::<i64, _>("http_5xx_count"),
+            "affected_sessions": totals.get::<i64, _>("affected_sessions"),
+            "avg_duration_ms": totals.try_get::<Option<i64>, _>("avg_duration_ms").ok().flatten(),
+            "max_duration_ms": totals.try_get::<Option<i64>, _>("max_duration_ms").ok().flatten(),
+            "first_seen_at": totals.try_get::<Option<DateTime<Utc>>, _>("first_seen_at").ok().flatten(),
+            "last_seen_at": totals.try_get::<Option<DateTime<Utc>>, _>("last_seen_at").ok().flatten(),
+        },
+        "sources": error_metric_rows(sources),
+        "top_upstreams": error_metric_rows(top_upstreams),
+        "top_models": error_metric_rows(top_models),
+        "status_classes": error_metric_rows(status_classes),
+        "request_kinds": error_metric_rows(request_kinds),
+    }))
+}
+
 pub async fn usage_timeseries(
     pool: &PgPool,
     since_hours: Option<i64>,
@@ -1885,6 +2074,21 @@ fn named_metric_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
                 "error_count": row.get::<i64, _>("error_count"),
                 "avg_duration_ms": row.try_get::<Option<i64>, _>("avg_duration_ms").ok().flatten(),
                 "avg_ttft_ms": row.try_get::<Option<i64>, _>("avg_ttft_ms").ok().flatten(),
+            })
+        })
+        .collect()
+}
+
+fn error_metric_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
+    rows.into_iter()
+        .map(|row| {
+            json!({
+                "name": row.get::<String, _>("name"),
+                "error_count": row.get::<i64, _>("error_count"),
+                "proxy_error_count": row.get::<i64, _>("proxy_error_count"),
+                "http_5xx_count": row.get::<i64, _>("http_5xx_count"),
+                "avg_duration_ms": row.try_get::<Option<i64>, _>("avg_duration_ms").ok().flatten(),
+                "max_duration_ms": row.try_get::<Option<i64>, _>("max_duration_ms").ok().flatten(),
             })
         })
         .collect()
@@ -3269,6 +3473,45 @@ mod tests {
     }
 
     #[test]
+    fn error_summary_window_uses_safe_defaults() {
+        let window = ErrorSummaryWindow::from_query(None, None);
+
+        assert_eq!(
+            window,
+            ErrorSummaryWindow {
+                since_hours: DEFAULT_ERROR_SUMMARY_SINCE_HOURS,
+                limit: DEFAULT_ERROR_SUMMARY_LIMIT,
+            }
+        );
+    }
+
+    #[test]
+    fn error_summary_window_clamps_bounds() {
+        let max = ErrorSummaryWindow::from_query(Some(i64::MAX), Some(i64::MAX));
+        assert_eq!(max.since_hours, MAX_ERROR_SUMMARY_SINCE_HOURS);
+        assert_eq!(max.limit, MAX_ERROR_SUMMARY_LIMIT);
+
+        let min = ErrorSummaryWindow::from_query(Some(-10), Some(-10));
+        assert_eq!(min.since_hours, 1);
+        assert_eq!(min.limit, 1);
+    }
+
+    #[test]
+    fn error_summary_window_calculates_cutoff() {
+        let now = DateTime::parse_from_rfc3339("2026-07-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let window = ErrorSummaryWindow::from_query(Some(3), Some(10));
+
+        assert_eq!(
+            window.cutoff(now),
+            DateTime::parse_from_rfc3339("2026-07-01T09:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+    }
+
+    #[test]
     fn usage_timeseries_window_uses_safe_defaults() {
         let window = UsageTimeseriesWindow::from_query(None, None).unwrap();
 
@@ -3455,6 +3698,50 @@ mod tests {
         assert!(SESSION_REQUEST_STATS_SQL.contains("MAX(ttft_ms)::bigint AS max_ttft_ms"));
         assert!(SESSION_REQUEST_STATS_SQL.contains("MIN(started_at) AS first_request_at"));
         assert!(SESSION_REQUEST_STATS_SQL.contains("MAX(started_at) AS last_request_at"));
+    }
+
+    #[test]
+    fn error_summary_queries_scope_to_failed_requests() {
+        assert!(ERROR_SUMMARY_TOTALS_SQL.contains("FROM trace_requests"));
+        assert!(ERROR_SUMMARY_TOTALS_SQL.contains("WHERE started_at >= $1"));
+        assert!(ERROR_SUMMARY_TOTALS_SQL.contains("AND (error IS NOT NULL OR status >= 500)"));
+        assert!(ERROR_SUMMARY_TOTALS_SQL.contains(
+            "COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::bigint AS affected_sessions"
+        ));
+        assert!(!ERROR_SUMMARY_TOTALS_SQL.contains("original_uri"));
+
+        for query in [
+            ERROR_SUMMARY_SOURCES_SQL,
+            ERROR_SUMMARY_UPSTREAMS_SQL,
+            ERROR_SUMMARY_MODELS_SQL,
+            ERROR_SUMMARY_REQUEST_KINDS_SQL,
+            ERROR_SUMMARY_STATUS_CLASSES_SQL,
+        ] {
+            assert!(query.contains("FROM trace_requests"));
+            assert!(query.contains("WHERE started_at >= $1"));
+            assert!(query.contains("AND (error IS NOT NULL OR status >= 500)"));
+            assert!(query.contains("GROUP BY 1"));
+            assert!(query.contains("ORDER BY error_count DESC, name ASC"));
+            assert!(query.contains("LIMIT $2"));
+            assert!(query.contains("COUNT(*)::bigint AS error_count"));
+            assert!(query.contains(
+                "COUNT(*) FILTER (WHERE error IS NOT NULL)::bigint AS proxy_error_count"
+            ));
+            assert!(
+                query.contains("COUNT(*) FILTER (WHERE status >= 500)::bigint AS http_5xx_count")
+            );
+            assert!(!query.contains("original_uri"));
+            assert!(!query.contains("request_headers"));
+            assert!(!query.contains("response_headers"));
+        }
+
+        assert!(ERROR_SUMMARY_SOURCES_SQL.contains("'proxy_error_and_http_5xx'"));
+        assert!(ERROR_SUMMARY_SOURCES_SQL.contains("'proxy_error'"));
+        assert!(ERROR_SUMMARY_SOURCES_SQL.contains("'http_5xx'"));
+        assert!(ERROR_SUMMARY_STATUS_CLASSES_SQL.contains("WHEN status IS NULL THEN 'no_status'"));
+        assert!(
+            ERROR_SUMMARY_STATUS_CLASSES_SQL.contains("WHEN status BETWEEN 500 AND 599 THEN '5xx'")
+        );
     }
 
     #[test]
