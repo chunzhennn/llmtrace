@@ -25,7 +25,9 @@ struct RequestListQuery {
 
 #[derive(Debug, Deserialize)]
 struct SessionListQuery {
+    q: Option<String>,
     limit: Option<i64>,
+    offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -141,7 +143,12 @@ async fn list_sessions(
     State(state): State<AppState>,
     Query(query): Query<SessionListQuery>,
 ) -> Response {
-    match storage::list_sessions(&state.pool, query.limit.unwrap_or(100)).await {
+    let q = match normalize_request_search(query.q) {
+        Ok(q) => q,
+        Err(message) => return bad_request(message),
+    };
+
+    match storage::list_sessions(&state.pool, q, query.limit, query.offset).await {
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }

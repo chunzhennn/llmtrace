@@ -14,6 +14,9 @@ use crate::config::StorageConfig;
 use crate::metrics::RuntimeMetrics;
 use crate::types::RequestKind;
 
+const DEFAULT_SESSION_LIST_LIMIT: i64 = 100;
+const MAX_SESSION_LIST_LIMIT: i64 = 500;
+const MAX_SESSION_LIST_OFFSET: i64 = 1_000_000;
 const DEFAULT_SESSION_MESSAGE_LIMIT: i64 = 100;
 const MAX_SESSION_MESSAGE_LIMIT: i64 = 500;
 const MAX_SESSION_MESSAGE_OFFSET: i64 = 1_000_000;
@@ -39,8 +42,14 @@ const LIST_SESSIONS_SQL: &str = r#"
         WITH selected_sessions AS (
             SELECT id, session_key, first_seen, last_seen, user_id, user_name
             FROM trace_sessions
-            ORDER BY last_seen DESC
-            LIMIT $1
+            WHERE (
+                $1::text IS NULL
+                OR session_key ILIKE '%' || $1 || '%' ESCAPE '\'
+                OR user_id ILIKE '%' || $1 || '%' ESCAPE '\'
+                OR user_name ILIKE '%' || $1 || '%' ESCAPE '\'
+            )
+            ORDER BY last_seen DESC, id DESC
+            LIMIT $2 OFFSET $3
         )
         SELECT s.id, s.session_key, s.first_seen, s.last_seen, s.user_id, s.user_name,
                COALESCE(stats.request_count, 0)::bigint AS request_count,
@@ -52,7 +61,7 @@ const LIST_SESSIONS_SQL: &str = r#"
             FROM request_traces r
             WHERE r.session_id = s.id
         ) stats ON true
-        ORDER BY s.last_seen DESC
+        ORDER BY s.last_seen DESC, s.id DESC
         "#;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -263,6 +272,12 @@ impl FilterKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionListPage {
+    limit: i64,
+    offset: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SessionMessagePage {
     limit: i64,
     offset: i64,
@@ -319,6 +334,25 @@ impl QueryField {
                 builder.push(")");
             }
         }
+    }
+}
+
+impl SessionListPage {
+    fn from_query(limit: Option<i64>, offset: Option<i64>) -> Self {
+        Self {
+            limit: limit
+                .unwrap_or(DEFAULT_SESSION_LIST_LIMIT)
+                .clamp(1, MAX_SESSION_LIST_LIMIT),
+            offset: offset.unwrap_or(0).clamp(0, MAX_SESSION_LIST_OFFSET),
+        }
+    }
+
+    fn fetch_limit(self) -> i64 {
+        self.limit + 1
+    }
+
+    fn next_offset(self, has_more: bool) -> Option<i64> {
+        has_more.then_some(self.offset.saturating_add(self.limit))
     }
 }
 
@@ -1055,16 +1089,27 @@ pub async fn get_request(
     })))
 }
 
-pub async fn list_sessions(pool: &PgPool, limit: i64) -> anyhow::Result<Value> {
+pub async fn list_sessions(
+    pool: &PgPool,
+    q: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> anyhow::Result<Value> {
+    let q = q.map(|value| escape_like(&value));
+    let page = SessionListPage::from_query(limit, offset);
     let mut tx = begin_api_read_tx(pool).await?;
     let rows = sqlx::query(LIST_SESSIONS_SQL)
-        .bind(limit.clamp(1, 500))
+        .bind(q)
+        .bind(page.fetch_limit())
+        .bind(page.offset)
         .fetch_all(&mut *tx)
         .await?;
     tx.commit().await?;
 
+    let has_more = rows.len() > page.limit as usize;
     let items: Vec<Value> = rows
         .into_iter()
+        .take(page.limit as usize)
         .map(|row| {
             json!({
                 "id": row.get::<Uuid, _>("id"),
@@ -1078,7 +1123,15 @@ pub async fn list_sessions(pool: &PgPool, limit: i64) -> anyhow::Result<Value> {
             })
         })
         .collect();
-    Ok(json!({ "items": items }))
+    Ok(json!({
+        "items": items,
+        "page": {
+            "limit": page.limit,
+            "offset": page.offset,
+            "has_more": has_more,
+            "next_offset": page.next_offset(has_more),
+        },
+    }))
 }
 
 pub async fn get_session(
@@ -2512,6 +2565,44 @@ mod tests {
     }
 
     #[test]
+    fn session_list_page_uses_safe_defaults() {
+        let page = SessionListPage::from_query(None, None);
+
+        assert_eq!(
+            page,
+            SessionListPage {
+                limit: DEFAULT_SESSION_LIST_LIMIT,
+                offset: 0,
+            }
+        );
+        assert_eq!(page.fetch_limit(), DEFAULT_SESSION_LIST_LIMIT + 1);
+    }
+
+    #[test]
+    fn session_list_page_clamps_limit_and_offset() {
+        let page = SessionListPage::from_query(Some(i64::MAX), Some(i64::MAX));
+
+        assert_eq!(page.limit, MAX_SESSION_LIST_LIMIT);
+        assert_eq!(page.offset, MAX_SESSION_LIST_OFFSET);
+    }
+
+    #[test]
+    fn session_list_page_clamps_negative_values() {
+        let page = SessionListPage::from_query(Some(-10), Some(-10));
+
+        assert_eq!(page.limit, 1);
+        assert_eq!(page.offset, 0);
+    }
+
+    #[test]
+    fn session_list_page_reports_next_offset_only_when_more_rows_exist() {
+        let page = SessionListPage::from_query(Some(50), Some(100));
+
+        assert_eq!(page.next_offset(true), Some(150));
+        assert_eq!(page.next_offset(false), None);
+    }
+
+    #[test]
     fn session_message_page_uses_safe_defaults() {
         let page = SessionMessagePage::from_query(None, None);
 
@@ -2710,11 +2801,15 @@ mod tests {
     #[test]
     fn list_sessions_query_limits_sessions_before_request_stats() {
         let selected_sessions = LIST_SESSIONS_SQL.find("WITH selected_sessions").unwrap();
-        let session_limit = LIST_SESSIONS_SQL.find("LIMIT $1").unwrap();
+        let session_limit = LIST_SESSIONS_SQL.find("LIMIT $2 OFFSET $3").unwrap();
         let lateral_stats = LIST_SESSIONS_SQL.find("LEFT JOIN LATERAL").unwrap();
 
         assert!(selected_sessions < session_limit);
         assert!(session_limit < lateral_stats);
+        assert!(LIST_SESSIONS_SQL.contains("$1::text IS NULL"));
+        assert!(LIST_SESSIONS_SQL.contains("session_key ILIKE '%' || $1 || '%' ESCAPE '\\'"));
+        assert!(LIST_SESSIONS_SQL.contains("user_id ILIKE '%' || $1 || '%' ESCAPE '\\'"));
+        assert!(LIST_SESSIONS_SQL.contains("user_name ILIKE '%' || $1 || '%' ESCAPE '\\'"));
         assert!(LIST_SESSIONS_SQL.contains("WHERE r.session_id = s.id"));
     }
 
