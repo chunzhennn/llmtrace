@@ -158,6 +158,15 @@ pub enum SortDirection {
     Desc,
 }
 
+impl SortDirection {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Asc => "asc",
+            Self::Desc => "desc",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct DatasetSpec {
     name: &'static str,
@@ -196,6 +205,50 @@ enum FilterKind {
     Json,
     JsonPath,
     TextArray,
+}
+
+impl FilterKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Int => "int",
+            Self::Bool => "bool",
+            Self::Timestamp => "timestamp",
+            Self::Uuid => "uuid",
+            Self::Json => "json",
+            Self::JsonPath => "json_path",
+            Self::TextArray => "text_array",
+        }
+    }
+
+    fn operators(self) -> &'static [&'static str] {
+        match self {
+            Self::Text => &[
+                "eq",
+                "ne",
+                "contains",
+                "gt",
+                "gte",
+                "lt",
+                "lte",
+                "is_null",
+                "is_not_null",
+            ],
+            Self::Int | Self::Timestamp => &[
+                "eq",
+                "ne",
+                "gt",
+                "gte",
+                "lt",
+                "lte",
+                "is_null",
+                "is_not_null",
+            ],
+            Self::Bool | Self::Uuid => &["eq", "ne", "is_null", "is_not_null"],
+            Self::Json | Self::JsonPath => &["eq", "ne", "contains", "is_null", "is_not_null"],
+            Self::TextArray => &["contains", "is_null", "is_not_null"],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1013,6 +1066,68 @@ pub async fn stats(pool: &PgPool) -> anyhow::Result<Value> {
         "avg_duration_ms": avg_duration_ms,
         "avg_ttft_ms": avg_ttft_ms,
     }))
+}
+
+pub fn structured_query_schema() -> Value {
+    json!({
+        "limits": {
+            "max_fields": MAX_STRUCTURED_QUERY_FIELDS,
+            "max_filters": MAX_STRUCTURED_QUERY_FILTERS,
+            "max_order_by": MAX_STRUCTURED_QUERY_ORDER_BY,
+            "max_limit": 500,
+            "max_string_value_bytes": MAX_STRUCTURED_QUERY_STRING_VALUE_BYTES,
+            "max_json_value_bytes": MAX_STRUCTURED_QUERY_JSON_VALUE_BYTES,
+        },
+        "sort_directions": ["asc", "desc"],
+        "plugin_metadata": {
+            "dataset": "requests",
+            "field_prefix": PLUGIN_METADATA_FIELD_PREFIX,
+            "filter_kind": FilterKind::JsonPath.as_str(),
+            "operators": FilterKind::JsonPath.operators(),
+            "max_segments": MAX_PLUGIN_METADATA_PATH_SEGMENTS,
+            "max_segment_bytes": MAX_PLUGIN_METADATA_PATH_SEGMENT_LEN,
+            "segment_pattern": "[A-Za-z0-9_-]+",
+        },
+        "datasets": DATASETS
+            .iter()
+            .map(dataset_schema)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn dataset_schema(dataset: &DatasetSpec) -> Value {
+    json!({
+        "name": dataset.name,
+        "default_fields": dataset.default_fields,
+        "default_order": dataset
+            .default_order
+            .iter()
+            .map(default_order_schema)
+            .collect::<Vec<_>>(),
+        "fields": dataset
+            .fields
+            .iter()
+            .map(field_schema)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn field_schema(field: &FieldSpec) -> Value {
+    json!({
+        "name": field.name,
+        "filter_kind": field.filter.map(|kind| kind.as_str()),
+        "operators": field
+            .filter
+            .map(|kind| kind.operators())
+            .unwrap_or_default(),
+    })
+}
+
+fn default_order_schema(order: &DefaultOrder) -> Value {
+    json!({
+        "field": order.field,
+        "direction": order.direction.as_str(),
+    })
 }
 
 static REQUEST_FIELDS: &[FieldSpec] = &[
@@ -1867,6 +1982,85 @@ mod tests {
         let error = dataset_spec("ui_sessions").unwrap_err().to_string();
 
         assert!(error.contains("unknown query dataset"));
+    }
+
+    #[test]
+    fn structured_query_schema_describes_datasets_fields_and_limits() {
+        let schema = structured_query_schema();
+
+        assert_eq!(schema["limits"]["max_fields"], MAX_STRUCTURED_QUERY_FIELDS);
+        assert_eq!(
+            schema["limits"]["max_filters"],
+            MAX_STRUCTURED_QUERY_FILTERS
+        );
+        assert_eq!(
+            schema["limits"]["max_order_by"],
+            MAX_STRUCTURED_QUERY_ORDER_BY
+        );
+        assert_eq!(
+            schema["limits"]["max_string_value_bytes"],
+            MAX_STRUCTURED_QUERY_STRING_VALUE_BYTES
+        );
+        assert_eq!(
+            schema["limits"]["max_json_value_bytes"],
+            MAX_STRUCTURED_QUERY_JSON_VALUE_BYTES
+        );
+        assert_eq!(schema["sort_directions"], json!(["asc", "desc"]));
+        assert_eq!(
+            schema["plugin_metadata"],
+            json!({
+                "dataset": "requests",
+                "field_prefix": PLUGIN_METADATA_FIELD_PREFIX,
+                "filter_kind": "json_path",
+                "operators": ["eq", "ne", "contains", "is_null", "is_not_null"],
+                "max_segments": MAX_PLUGIN_METADATA_PATH_SEGMENTS,
+                "max_segment_bytes": MAX_PLUGIN_METADATA_PATH_SEGMENT_LEN,
+                "segment_pattern": "[A-Za-z0-9_-]+",
+            })
+        );
+
+        let datasets = schema["datasets"].as_array().unwrap();
+        let requests = datasets
+            .iter()
+            .find(|dataset| dataset["name"] == "requests")
+            .unwrap();
+        assert!(
+            requests["default_fields"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("started_at"))
+        );
+        assert_eq!(
+            requests["default_order"],
+            json!([{"field": "started_at", "direction": "desc"}])
+        );
+
+        let fields = requests["fields"].as_array().unwrap();
+        let status = fields
+            .iter()
+            .find(|field| field["name"] == "status")
+            .unwrap();
+        assert_eq!(status["filter_kind"], "int");
+        assert_eq!(
+            status["operators"],
+            json!([
+                "eq",
+                "ne",
+                "gt",
+                "gte",
+                "lt",
+                "lte",
+                "is_null",
+                "is_not_null"
+            ])
+        );
+
+        let tags = fields.iter().find(|field| field["name"] == "tags").unwrap();
+        assert_eq!(tags["filter_kind"], "text_array");
+        assert_eq!(
+            tags["operators"],
+            json!(["contains", "is_null", "is_not_null"])
+        );
     }
 
     #[test]

@@ -40,6 +40,7 @@ pub fn router() -> Router<AppState> {
         .route("/sessions", get(list_sessions))
         .route("/sessions/{id}", get(get_session))
         .route("/query", post(run_query))
+        .route("/query/schema", get(query_schema))
         .route("/query/export.jsonl", post(export_query_jsonl))
         .route("/plugins", get(plugins))
 }
@@ -120,6 +121,10 @@ async fn run_query(
         Ok(value) => Json(value).into_response(),
         Err(error) => structured_query_error(error),
     }
+}
+
+async fn query_schema() -> Response {
+    Json(storage::structured_query_schema()).into_response()
 }
 
 async fn export_query_jsonl(
@@ -251,6 +256,23 @@ mod tests {
         let body = response_body_json(response).await;
 
         assert_eq!(body, json!({"error": "internal server error"}));
+    }
+
+    #[tokio::test]
+    async fn query_schema_returns_structured_query_schema() {
+        let response = query_schema().await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response_body_json(response).await;
+
+        assert_eq!(body["limits"]["max_limit"], 500);
+        assert!(body["datasets"].as_array().unwrap().iter().any(|dataset| {
+            dataset["name"] == "requests"
+                && dataset["default_fields"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("started_at"))
+        }));
     }
 
     #[tokio::test]

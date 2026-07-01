@@ -157,6 +157,8 @@ Authenticated read APIs run inside read-only database transactions with a local 
 
 Structured `/api/query` requests are also bounded before SQL construction: at most 64 selected fields, 32 filters, 8 sort keys, 4 KiB per string filter value, and 16 KiB per JSON filter value.
 
+`GET /api/query/schema` returns the structured query catalog for clients and UI builders: datasets, default fields, default sort order, field filter kinds, supported operators, sort directions, query limits, and plugin metadata path constraints. Treat this response as the source of truth for generated query builders instead of hard-coding field lists from the README.
+
 Use `POST /api/query/export.jsonl` with the same structured query payload to download the selected rows as newline-delimited JSON. The export reuses the same dataset, field, filter, sort, limit, read-only transaction, and statement-timeout rules as `/api/query`; responses use `application/x-ndjson`, include `Content-Disposition: attachment`, and expose the row count in `x-llmtrace-export-rows`.
 
 ```bash
