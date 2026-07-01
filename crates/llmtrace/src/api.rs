@@ -214,7 +214,10 @@ pub fn router() -> Router<AppState> {
         .route("/requests/recent-errors", get(recent_error_requests))
         .route("/requests/slow", get(slow_requests))
         .route("/requests/export.jsonl", get(export_requests_jsonl))
-        .route("/requests/{id}", get(get_request))
+        .route(
+            "/requests/{id}",
+            get(get_request).delete(delete_request_trace),
+        )
         .route("/sessions", get(list_sessions))
         .route(
             "/sessions/{id}/requests/export.jsonl",
@@ -463,6 +466,39 @@ async fn slow_requests(
 async fn get_request(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
     match storage::get_request(&state.pool, id, state.config.proxy.max_body_capture_bytes).await {
         Ok(Some(value)) => Json(value).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "request not found"})),
+        )
+            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn delete_request_trace(
+    State(state): State<AppState>,
+    Extension(user): Extension<MeResponse>,
+    Path(id): Path<Uuid>,
+) -> Response {
+    match storage::delete_request_trace(&state.pool, id).await {
+        Ok(Some(request)) => {
+            let audit_result = storage::record_ui_audit_event(
+                &state.pool,
+                "request_trace_deleted",
+                Some(&user.user_id),
+                json!({"request_id": id}),
+            )
+            .await;
+            if let Err(error) = audit_result {
+                tracing::warn!(%error, %id, "failed to record request trace deletion audit event");
+            }
+
+            Json(json!({
+                "deleted": true,
+                "request": request,
+            }))
+            .into_response()
+        }
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(json!({"error": "request not found"})),
