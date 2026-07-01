@@ -42,6 +42,56 @@ const MAX_WEBSOCKET_CAPTURED_FRAMES: usize = 200;
 const HTTP_UPSTREAM_SCHEMES: &[&str] = &["http", "https"];
 const WEBSOCKET_UPSTREAM_SCHEMES: &[&str] = &["ws", "wss"];
 
+#[derive(Debug, thiserror::Error)]
+enum ProxySetupError {
+    #[error("{0}")]
+    BadRequest(anyhow::Error),
+    #[error("{0}")]
+    Forbidden(anyhow::Error),
+    #[error("{0}")]
+    Upstream(anyhow::Error),
+}
+
+impl ProxySetupError {
+    fn bad_request(error: impl Into<anyhow::Error>) -> Self {
+        Self::BadRequest(error.into())
+    }
+
+    fn forbidden(error: impl Into<anyhow::Error>) -> Self {
+        Self::Forbidden(error.into())
+    }
+
+    fn upstream(error: impl Into<anyhow::Error>) -> Self {
+        Self::Upstream(error.into())
+    }
+
+    fn status(&self) -> StatusCode {
+        match self {
+            Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::Forbidden(_) => StatusCode::FORBIDDEN,
+            Self::Upstream(_) => StatusCode::BAD_GATEWAY,
+        }
+    }
+
+    fn public_message(&self) -> &'static str {
+        match self {
+            Self::BadRequest(_) => "invalid proxy request",
+            Self::Forbidden(_) => "upstream is not allowed",
+            Self::Upstream(_) => "upstream request failed",
+        }
+    }
+}
+
+impl IntoResponse for ProxySetupError {
+    fn into_response(self) -> axum::response::Response {
+        (
+            self.status(),
+            axum::Json(json!({"error": self.public_message()})),
+        )
+            .into_response()
+    }
+}
+
 pub async fn proxy(
     State(state): State<AppState>,
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
@@ -61,12 +111,8 @@ pub async fn proxy(
     match proxy_http(state, request).await {
         Ok(response) => response,
         Err(error) => {
-            tracing::warn!(%error, "proxy request failed");
-            (
-                StatusCode::BAD_GATEWAY,
-                axum::Json(json!({"error": "upstream request failed"})),
-            )
-                .into_response()
+            tracing::warn!(%error, status = %error.status(), "proxy request failed");
+            error.into_response()
         }
     }
 }
@@ -74,14 +120,15 @@ pub async fn proxy(
 async fn proxy_http(
     state: AppState,
     request: Request<Body>,
-) -> anyhow::Result<axum::response::Response> {
+) -> Result<axum::response::Response, ProxySetupError> {
     let trace_id = Uuid::new_v4();
     let started_at = chrono::Utc::now();
     let started = Instant::now();
     let (parts, body) = request.into_parts();
     let method = parts.method.clone();
     let original_uri = parts.uri.to_string();
-    let upstream_url = resolve_upstream(&state, &parts.uri, &parts.headers)?;
+    let upstream_url = resolve_upstream(&state, &parts.uri, &parts.headers)
+        .map_err(ProxySetupError::bad_request)?;
     enforce_upstream_policy(&state, &upstream_url, HTTP_UPSTREAM_SCHEMES)?;
     let upstream_host = upstream_url.host_str().map(str::to_string);
     let capture_limit = state.config.proxy.max_body_capture_bytes;
@@ -122,7 +169,8 @@ async fn proxy_http(
     let mut upstream_request = state
         .http
         .request(
-            reqwest::Method::from_bytes(method.as_str().as_bytes())?,
+            reqwest::Method::from_bytes(method.as_str().as_bytes())
+                .map_err(ProxySetupError::bad_request)?,
             upstream_url.clone(),
         )
         .body(reqwest::Body::wrap_stream(request_body));
@@ -208,7 +256,9 @@ async fn proxy_http(
         started,
         capture_limit,
     );
-    let mut response = response_builder.body(Body::from_stream(response_body))?;
+    let mut response = response_builder
+        .body(Body::from_stream(response_body))
+        .map_err(ProxySetupError::upstream)?;
     set_trace_id_header(response.headers_mut(), trace_id);
     Ok(response)
 }
@@ -389,19 +439,16 @@ async fn proxy_websocket(
     let (parts, _) = request.into_parts();
     let original_uri = parts.uri.to_string();
     let upstream_url = match resolve_upstream(&state, &parts.uri, &parts.headers)
-        .and_then(http_to_ws_url)
+        .map_err(ProxySetupError::bad_request)
+        .and_then(|url| http_to_ws_url(url).map_err(ProxySetupError::bad_request))
         .and_then(|url| {
             enforce_upstream_policy(&state, &url, WEBSOCKET_UPSTREAM_SCHEMES)?;
             Ok(url)
         }) {
         Ok(url) => url,
         Err(error) => {
-            tracing::warn!(%error, "websocket upstream resolution failed");
-            return (
-                StatusCode::BAD_GATEWAY,
-                axum::Json(json!({"error": "failed to resolve websocket upstream"})),
-            )
-                .into_response();
+            tracing::warn!(%error, status = %error.status(), "websocket upstream resolution failed");
+            return error.into_response();
         }
     };
     let redacted_headers = redact_headers(&parts.headers, &state.config.redaction);
@@ -951,15 +998,15 @@ fn enforce_upstream_policy(
     state: &AppState,
     upstream_url: &Url,
     allowed_schemes: &[&str],
-) -> anyhow::Result<()> {
-    validate_upstream_url(upstream_url, allowed_schemes)?;
+) -> Result<(), ProxySetupError> {
+    validate_upstream_url(upstream_url, allowed_schemes).map_err(ProxySetupError::bad_request)?;
     if state.upstream_allowlist.allows(upstream_url) {
         Ok(())
     } else {
-        anyhow::bail!(
+        Err(ProxySetupError::forbidden(anyhow::anyhow!(
             "upstream {} is not allowed",
             upstream_origin_label(upstream_url)
-        )
+        )))
     }
 }
 
@@ -1330,6 +1377,21 @@ mod tests {
             .to_string();
 
         assert!(error.contains("multiple upstream override headers"));
+    }
+
+    #[test]
+    fn proxy_setup_errors_have_client_and_upstream_statuses() {
+        let bad_request = ProxySetupError::bad_request(anyhow::anyhow!("bad url"));
+        assert_eq!(bad_request.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(bad_request.public_message(), "invalid proxy request");
+
+        let forbidden = ProxySetupError::forbidden(anyhow::anyhow!("not allowed"));
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+        assert_eq!(forbidden.public_message(), "upstream is not allowed");
+
+        let upstream = ProxySetupError::upstream(anyhow::anyhow!("send failed"));
+        assert_eq!(upstream.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(upstream.public_message(), "upstream request failed");
     }
 
     #[test]
