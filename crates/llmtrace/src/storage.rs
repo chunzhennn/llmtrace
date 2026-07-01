@@ -60,6 +60,8 @@ const DEFAULT_USAGE_TIMESERIES_SINCE_HOURS: i64 = 24;
 const MAX_USAGE_TIMESERIES_MINUTE_HOURS: i64 = 24;
 const MAX_USAGE_TIMESERIES_HOUR_HOURS: i64 = 24 * 90;
 const MAX_USAGE_TIMESERIES_DAY_HOURS: i64 = 24 * 365;
+const DEFAULT_DATA_OVERVIEW_SINCE_HOURS: i64 = 24;
+const MAX_DATA_OVERVIEW_SINCE_HOURS: i64 = 24 * 90;
 const MAX_STRUCTURED_QUERY_FIELDS: usize = 64;
 const MAX_STRUCTURED_QUERY_FILTERS: usize = 32;
 const MAX_STRUCTURED_QUERY_ORDER_BY: usize = 8;
@@ -548,6 +550,72 @@ const SLOW_REQUESTS_SQL: &str = r#"
         ORDER BY duration_ms DESC, started_at DESC, id DESC
         LIMIT $3 OFFSET $4
         "#;
+const DATA_OVERVIEW_ROLLUPS_SQL: &str = r#"
+        SELECT COALESCE(SUM(total), 0)::bigint AS request_count,
+               COALESCE(SUM(errors), 0)::bigint AS error_count,
+               COALESCE(SUM(captured_bytes), 0)::bigint AS captured_bytes,
+               MIN(bucket) AS first_bucket_at,
+               MAX(bucket) AS last_bucket_at,
+               MAX(last_seen) AS last_seen_at
+        FROM trace_rollups_minute
+        "#;
+const DATA_OVERVIEW_RECENT_REQUESTS_SQL: &str = r#"
+        SELECT COUNT(*)::bigint AS request_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL)::bigint AS proxy_error_count,
+               COUNT(*) FILTER (WHERE status >= 500)::bigint AS http_5xx_count,
+               COUNT(DISTINCT upstream_host) FILTER (WHERE upstream_host IS NOT NULL AND upstream_host <> '')::bigint AS upstream_count,
+               COUNT(DISTINCT model) FILTER (WHERE model IS NOT NULL AND model <> '')::bigint AS model_count,
+               COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::bigint AS session_count,
+               COALESCE(SUM(bytes_in), 0)::bigint AS bytes_in,
+               COALESCE(SUM(bytes_out), 0)::bigint AS bytes_out,
+               COALESCE(SUM(request_body_bytes + response_body_bytes), 0)::bigint AS captured_bytes,
+               AVG(duration_ms)::bigint AS avg_duration_ms,
+               MAX(duration_ms)::bigint AS max_duration_ms,
+               AVG(ttft_ms)::bigint AS avg_ttft_ms,
+               MAX(ttft_ms)::bigint AS max_ttft_ms,
+               MIN(started_at) AS first_seen_at,
+               MAX(started_at) AS last_seen_at
+        FROM trace_requests
+        WHERE started_at >= $1
+        "#;
+const DATA_OVERVIEW_SESSIONS_SQL: &str = r#"
+        SELECT COUNT(*)::bigint AS session_count,
+               COUNT(*) FILTER (WHERE last_seen >= $1)::bigint AS active_session_count,
+               MIN(first_seen) AS first_seen_at,
+               MAX(last_seen) AS last_seen_at
+        FROM trace_sessions
+        "#;
+const DATA_OVERVIEW_AUDIT_SQL: &str = r#"
+        SELECT COUNT(*)::bigint AS event_count,
+               COUNT(*) FILTER (WHERE created_at >= $1)::bigint AS recent_event_count,
+               COUNT(DISTINCT event_type) FILTER (WHERE event_type IS NOT NULL AND event_type <> '')::bigint AS event_type_count,
+               MIN(created_at) AS first_seen_at,
+               MAX(created_at) AS last_seen_at
+        FROM ui_audit_events
+        "#;
+const DATA_OVERVIEW_AUTH_STATE_SQL: &str = r#"
+        SELECT (
+                   SELECT COUNT(*)::bigint
+                   FROM ui_sessions
+                   WHERE expires_at >= $1
+               ) AS active_ui_sessions,
+               (
+                   SELECT COUNT(*)::bigint
+                   FROM ui_sessions
+                   WHERE expires_at < $1
+               ) AS expired_ui_sessions,
+               (
+                   SELECT COUNT(*)::bigint
+                   FROM oauth_states
+                   WHERE expires_at >= $1
+               ) AS pending_oauth_states,
+               (
+                   SELECT COUNT(*)::bigint
+                   FROM oauth_states
+                   WHERE expires_at < $1
+               ) AS expired_oauth_states
+        "#;
 const SESSION_REQUEST_STATS_SQL: &str = r#"
         SELECT COUNT(*)::bigint AS request_count,
                COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
@@ -945,6 +1013,11 @@ struct UsageTimeseriesWindow {
     bucket: UsageTimeseriesBucket,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DataOverviewWindow {
+    since_hours: i64,
+}
+
 impl QueryField {
     fn name(&self) -> &str {
         match self {
@@ -1238,6 +1311,20 @@ impl UsageTimeseriesWindow {
                 .clamp(1, bucket.max_since_hours()),
             bucket,
         })
+    }
+
+    fn cutoff(self, now: DateTime<Utc>) -> DateTime<Utc> {
+        now - ChronoDuration::hours(self.since_hours)
+    }
+}
+
+impl DataOverviewWindow {
+    fn from_query(since_hours: Option<i64>) -> Self {
+        Self {
+            since_hours: since_hours
+                .unwrap_or(DEFAULT_DATA_OVERVIEW_SINCE_HOURS)
+                .clamp(1, MAX_DATA_OVERVIEW_SINCE_HOURS),
+        }
     }
 
     fn cutoff(self, now: DateTime<Utc>) -> DateTime<Utc> {
@@ -2770,6 +2857,127 @@ pub async fn usage_timeseries(
         },
         "points": points,
     }))
+}
+
+pub async fn data_overview(pool: &PgPool, since_hours: Option<i64>) -> anyhow::Result<Value> {
+    let window = DataOverviewWindow::from_query(since_hours);
+    let now = Utc::now();
+    let cutoff = window.cutoff(now);
+    let mut tx = begin_api_read_tx(pool).await?;
+
+    let rollups = sqlx::query(DATA_OVERVIEW_ROLLUPS_SQL)
+        .fetch_one(&mut *tx)
+        .await?;
+    let recent = sqlx::query(DATA_OVERVIEW_RECENT_REQUESTS_SQL)
+        .bind(cutoff)
+        .fetch_one(&mut *tx)
+        .await?;
+    let sessions = sqlx::query(DATA_OVERVIEW_SESSIONS_SQL)
+        .bind(cutoff)
+        .fetch_one(&mut *tx)
+        .await?;
+    let audit = sqlx::query(DATA_OVERVIEW_AUDIT_SQL)
+        .bind(cutoff)
+        .fetch_one(&mut *tx)
+        .await?;
+    let auth_state = sqlx::query(DATA_OVERVIEW_AUTH_STATE_SQL)
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+
+    let request_last_seen_at = rollups
+        .try_get::<Option<DateTime<Utc>>, _>("last_seen_at")
+        .ok()
+        .flatten();
+    let session_last_seen_at = sessions
+        .try_get::<Option<DateTime<Utc>>, _>("last_seen_at")
+        .ok()
+        .flatten();
+    let audit_last_seen_at = audit
+        .try_get::<Option<DateTime<Utc>>, _>("last_seen_at")
+        .ok()
+        .flatten();
+    let recent_request_count = recent.get::<i64, _>("request_count");
+    let recent_error_count = recent.get::<i64, _>("error_count");
+
+    Ok(json!({
+        "checked_at": now,
+        "window": {
+            "since_hours": window.since_hours,
+            "started_at_gte": cutoff,
+        },
+        "freshness": {
+            "request_last_seen_at": request_last_seen_at,
+            "request_last_seen_lag_secs": seconds_since(now, request_last_seen_at),
+            "session_last_seen_at": session_last_seen_at,
+            "session_last_seen_lag_secs": seconds_since(now, session_last_seen_at),
+            "audit_last_seen_at": audit_last_seen_at,
+            "audit_last_seen_lag_secs": seconds_since(now, audit_last_seen_at),
+        },
+        "requests": {
+            "totals": {
+                "source": "trace_rollups_minute",
+                "request_count": rollups.get::<i64, _>("request_count"),
+                "error_count": rollups.get::<i64, _>("error_count"),
+                "captured_bytes": rollups.get::<i64, _>("captured_bytes"),
+                "first_bucket_at": rollups.try_get::<Option<DateTime<Utc>>, _>("first_bucket_at").ok().flatten(),
+                "last_bucket_at": rollups.try_get::<Option<DateTime<Utc>>, _>("last_bucket_at").ok().flatten(),
+                "last_seen_at": request_last_seen_at,
+            },
+            "recent": {
+                "request_count": recent_request_count,
+                "error_count": recent_error_count,
+                "error_rate": rate(recent_error_count, recent_request_count),
+                "proxy_error_count": recent.get::<i64, _>("proxy_error_count"),
+                "http_5xx_count": recent.get::<i64, _>("http_5xx_count"),
+                "upstream_count": recent.get::<i64, _>("upstream_count"),
+                "model_count": recent.get::<i64, _>("model_count"),
+                "session_count": recent.get::<i64, _>("session_count"),
+                "bytes_in": recent.get::<i64, _>("bytes_in"),
+                "bytes_out": recent.get::<i64, _>("bytes_out"),
+                "captured_bytes": recent.get::<i64, _>("captured_bytes"),
+                "avg_duration_ms": recent.try_get::<Option<i64>, _>("avg_duration_ms").ok().flatten(),
+                "max_duration_ms": recent.try_get::<Option<i64>, _>("max_duration_ms").ok().flatten(),
+                "avg_ttft_ms": recent.try_get::<Option<i64>, _>("avg_ttft_ms").ok().flatten(),
+                "max_ttft_ms": recent.try_get::<Option<i64>, _>("max_ttft_ms").ok().flatten(),
+                "first_seen_at": recent.try_get::<Option<DateTime<Utc>>, _>("first_seen_at").ok().flatten(),
+                "last_seen_at": recent.try_get::<Option<DateTime<Utc>>, _>("last_seen_at").ok().flatten(),
+            },
+        },
+        "sessions": {
+            "session_count": sessions.get::<i64, _>("session_count"),
+            "active_session_count": sessions.get::<i64, _>("active_session_count"),
+            "first_seen_at": sessions.try_get::<Option<DateTime<Utc>>, _>("first_seen_at").ok().flatten(),
+            "last_seen_at": session_last_seen_at,
+        },
+        "audit": {
+            "event_count": audit.get::<i64, _>("event_count"),
+            "recent_event_count": audit.get::<i64, _>("recent_event_count"),
+            "event_type_count": audit.get::<i64, _>("event_type_count"),
+            "first_seen_at": audit.try_get::<Option<DateTime<Utc>>, _>("first_seen_at").ok().flatten(),
+            "last_seen_at": audit_last_seen_at,
+        },
+        "auth_state": {
+            "active_ui_sessions": auth_state.get::<i64, _>("active_ui_sessions"),
+            "expired_ui_sessions": auth_state.get::<i64, _>("expired_ui_sessions"),
+            "pending_oauth_states": auth_state.get::<i64, _>("pending_oauth_states"),
+            "expired_oauth_states": auth_state.get::<i64, _>("expired_oauth_states"),
+        },
+    }))
+}
+
+fn seconds_since(now: DateTime<Utc>, value: Option<DateTime<Utc>>) -> Option<i64> {
+    value.map(|value| now.signed_duration_since(value).num_seconds().max(0))
+}
+
+fn rate(numerator: i64, denominator: i64) -> f64 {
+    if denominator <= 0 {
+        0.0
+    } else {
+        numerator.max(0) as f64 / denominator as f64
+    }
 }
 
 fn named_metric_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
@@ -4606,6 +4814,66 @@ mod tests {
     }
 
     #[test]
+    fn data_overview_window_uses_safe_defaults() {
+        let window = DataOverviewWindow::from_query(None);
+
+        assert_eq!(
+            window,
+            DataOverviewWindow {
+                since_hours: DEFAULT_DATA_OVERVIEW_SINCE_HOURS,
+            }
+        );
+    }
+
+    #[test]
+    fn data_overview_window_clamps_bounds() {
+        let max = DataOverviewWindow::from_query(Some(i64::MAX));
+        assert_eq!(max.since_hours, MAX_DATA_OVERVIEW_SINCE_HOURS);
+
+        let min = DataOverviewWindow::from_query(Some(-10));
+        assert_eq!(min.since_hours, 1);
+    }
+
+    #[test]
+    fn data_overview_window_calculates_cutoff() {
+        let now = DateTime::parse_from_rfc3339("2026-07-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let window = DataOverviewWindow::from_query(Some(18));
+
+        assert_eq!(
+            window.cutoff(now),
+            DateTime::parse_from_rfc3339("2026-06-30T18:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+    }
+
+    #[test]
+    fn seconds_since_reports_nonnegative_lag() {
+        let now = DateTime::parse_from_rfc3339("2026-07-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let earlier = DateTime::parse_from_rfc3339("2026-07-01T11:59:30Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let later = DateTime::parse_from_rfc3339("2026-07-01T12:00:30Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        assert_eq!(seconds_since(now, Some(earlier)), Some(30));
+        assert_eq!(seconds_since(now, Some(later)), Some(0));
+        assert_eq!(seconds_since(now, None), None);
+    }
+
+    #[test]
+    fn rate_handles_empty_and_negative_counts() {
+        assert_eq!(rate(5, 10), 0.5);
+        assert_eq!(rate(5, 0), 0.0);
+        assert_eq!(rate(-5, 10), 0.0);
+    }
+
+    #[test]
     fn retention_cutoff_subtracts_retention_days() {
         let now = DateTime::parse_from_rfc3339("2026-06-29T12:00:00Z")
             .unwrap()
@@ -4661,6 +4929,51 @@ mod tests {
         assert!(!RETENTION_STATUS_SQL.contains("request_body_compressed"));
         assert!(!RETENTION_STATUS_SQL.contains("response_body_compressed"));
         assert!(!RETENTION_STATUS_SQL.contains("detail"));
+    }
+
+    #[test]
+    fn data_overview_queries_are_aggregate_and_low_sensitivity() {
+        assert!(DATA_OVERVIEW_ROLLUPS_SQL.contains("FROM trace_rollups_minute"));
+        assert!(DATA_OVERVIEW_ROLLUPS_SQL.contains("SUM(total)"));
+        assert!(DATA_OVERVIEW_RECENT_REQUESTS_SQL.contains("FROM trace_requests"));
+        assert!(DATA_OVERVIEW_RECENT_REQUESTS_SQL.contains("WHERE started_at >= $1"));
+        assert!(DATA_OVERVIEW_RECENT_REQUESTS_SQL.contains(
+            "COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count"
+        ));
+        assert!(DATA_OVERVIEW_RECENT_REQUESTS_SQL.contains(
+            "COUNT(DISTINCT upstream_host) FILTER (WHERE upstream_host IS NOT NULL AND upstream_host <> '')::bigint AS upstream_count"
+        ));
+        assert!(DATA_OVERVIEW_SESSIONS_SQL.contains("FROM trace_sessions"));
+        assert!(DATA_OVERVIEW_SESSIONS_SQL.contains("WHERE last_seen >= $1"));
+        assert!(DATA_OVERVIEW_AUDIT_SQL.contains("FROM ui_audit_events"));
+        assert!(DATA_OVERVIEW_AUDIT_SQL.contains("COUNT(DISTINCT event_type)"));
+        assert!(DATA_OVERVIEW_AUTH_STATE_SQL.contains("FROM ui_sessions"));
+        assert!(DATA_OVERVIEW_AUTH_STATE_SQL.contains("FROM oauth_states"));
+
+        for query in [
+            DATA_OVERVIEW_ROLLUPS_SQL,
+            DATA_OVERVIEW_RECENT_REQUESTS_SQL,
+            DATA_OVERVIEW_SESSIONS_SQL,
+            DATA_OVERVIEW_AUDIT_SQL,
+            DATA_OVERVIEW_AUTH_STATE_SQL,
+        ] {
+            assert!(!query.contains("DELETE"));
+            assert!(!query.contains("original_uri"));
+            assert!(!query.contains("upstream_url"));
+            assert!(!query.contains("api_key_hash"));
+            assert!(!query.contains("session_key"));
+            assert!(!query.contains("user_id"));
+            assert!(!query.contains("user_name"));
+            assert!(!query.contains("display_name"));
+            assert!(!query.contains("remote_addr"));
+            assert!(!query.contains("request_headers"));
+            assert!(!query.contains("response_headers"));
+            assert!(!query.contains("request_body_compressed"));
+            assert!(!query.contains("response_body_compressed"));
+            assert!(!query.contains("plugin_metadata"));
+            assert!(!query.contains("tags"));
+            assert!(!query.contains("detail"));
+        }
     }
 
     #[test]

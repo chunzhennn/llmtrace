@@ -151,6 +151,11 @@ struct UsageTimeseriesQuery {
     bucket: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct DataOverviewQuery {
+    since_hours: Option<i64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RequestTimeRange {
     since: Option<DateTime<Utc>>,
@@ -177,6 +182,7 @@ pub fn router() -> Router<AppState> {
         .route("/usage/errors", get(error_summary))
         .route("/usage/latency", get(latency_summary))
         .route("/usage/timeseries", get(usage_timeseries))
+        .route("/data/overview", get(data_overview))
         .route("/requests", get(list_requests))
         .route("/requests/facets", get(request_facets))
         .route("/requests/recent-errors", get(recent_error_requests))
@@ -320,6 +326,16 @@ async fn usage_timeseries(
     };
 
     match storage::usage_timeseries(&state.pool, query.since_hours, bucket.as_deref()).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn data_overview(
+    State(state): State<AppState>,
+    Query(query): Query<DataOverviewQuery>,
+) -> Response {
+    match storage::data_overview(&state.pool, query.since_hours).await {
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
