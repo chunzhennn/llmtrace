@@ -189,6 +189,7 @@ pub fn router() -> Router<AppState> {
         .route("/config", get(runtime_config))
         .route("/security/posture", get(security_posture_report))
         .route("/retention/status", get(retention_status))
+        .route("/storage/summary", get(storage_summary))
         .route("/redaction/preview", post(redaction_preview))
         .route("/usage/summary", get(usage_summary))
         .route("/usage/api-keys", get(api_key_usage))
@@ -257,6 +258,13 @@ async fn retention_status(State(state): State<AppState>) -> Response {
     )
     .await
     {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn storage_summary(State(state): State<AppState>) -> Response {
+    match storage::storage_summary(&state.pool).await {
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }

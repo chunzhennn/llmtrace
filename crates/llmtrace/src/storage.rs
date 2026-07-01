@@ -705,6 +705,49 @@ const RETENTION_STATUS_SQL: &str = r#"
                    WHERE expires_at < $2
                ) AS oauth_states
         "#;
+const STORAGE_SUMMARY_SQL: &str = r#"
+        WITH tracked_relations(display_order, name) AS (
+            VALUES
+                (1, 'request_traces'),
+                (2, 'trace_rollups_minute'),
+                (3, 'trace_sessions'),
+                (4, 'session_messages'),
+                (5, 'ui_audit_events'),
+                (6, 'ui_sessions'),
+                (7, 'oauth_states')
+        ),
+        current_schema_oid AS (
+            SELECT oid
+            FROM pg_namespace
+            WHERE nspname = current_schema()
+        )
+        SELECT t.name,
+               c.oid IS NOT NULL AS present,
+               GREATEST(COALESCE(c.reltuples, 0)::bigint, 0)::bigint AS estimated_rows,
+               COALESCE(s.n_live_tup, 0)::bigint AS live_rows_estimate,
+               COALESCE(s.n_dead_tup, 0)::bigint AS dead_rows_estimate,
+               COALESCE(pg_total_relation_size(c.oid), 0)::bigint AS total_bytes,
+               COALESCE(pg_relation_size(c.oid), 0)::bigint AS table_bytes,
+               COALESCE(pg_indexes_size(c.oid), 0)::bigint AS index_bytes,
+               GREATEST(
+                   COALESCE(pg_total_relation_size(c.oid), 0)
+                   - COALESCE(pg_relation_size(c.oid), 0)
+                   - COALESCE(pg_indexes_size(c.oid), 0),
+                   0
+               )::bigint AS auxiliary_bytes,
+               s.last_vacuum AS last_vacuum_at,
+               s.last_autovacuum AS last_autovacuum_at,
+               s.last_analyze AS last_analyze_at,
+               s.last_autoanalyze AS last_autoanalyze_at
+        FROM tracked_relations t
+        CROSS JOIN current_schema_oid n
+        LEFT JOIN pg_class c
+          ON c.relnamespace = n.oid
+         AND c.relname = t.name
+         AND c.relkind IN ('r', 'p')
+        LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+        ORDER BY t.display_order
+        "#;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RetentionPruneResult {
@@ -1518,8 +1561,77 @@ pub async fn retention_status(
     }))
 }
 
+pub async fn storage_summary(pool: &PgPool) -> anyhow::Result<Value> {
+    let checked_at = Utc::now();
+    let mut tx = begin_api_read_tx(pool).await?;
+    let rows = sqlx::query(STORAGE_SUMMARY_SQL).fetch_all(&mut *tx).await?;
+    tx.commit().await?;
+
+    let mut total_bytes = 0;
+    let mut table_bytes = 0;
+    let mut index_bytes = 0;
+    let mut auxiliary_bytes = 0;
+    let mut relation_count = 0;
+    let mut present_relation_count = 0;
+    let mut relations = Vec::with_capacity(rows.len());
+
+    for row in rows {
+        relation_count += 1;
+        let present = row.get::<bool, _>("present");
+        if present {
+            present_relation_count += 1;
+        }
+        let row_total_bytes = nonnegative_i64(row.get::<i64, _>("total_bytes"));
+        let row_table_bytes = nonnegative_i64(row.get::<i64, _>("table_bytes"));
+        let row_index_bytes = nonnegative_i64(row.get::<i64, _>("index_bytes"));
+        let row_auxiliary_bytes = nonnegative_i64(row.get::<i64, _>("auxiliary_bytes"));
+
+        total_bytes = saturating_add_i64(total_bytes, row_total_bytes);
+        table_bytes = saturating_add_i64(table_bytes, row_table_bytes);
+        index_bytes = saturating_add_i64(index_bytes, row_index_bytes);
+        auxiliary_bytes = saturating_add_i64(auxiliary_bytes, row_auxiliary_bytes);
+
+        relations.push(json!({
+            "name": row.get::<String, _>("name"),
+            "present": present,
+            "estimated_rows": nonnegative_i64(row.get::<i64, _>("estimated_rows")),
+            "live_rows_estimate": nonnegative_i64(row.get::<i64, _>("live_rows_estimate")),
+            "dead_rows_estimate": nonnegative_i64(row.get::<i64, _>("dead_rows_estimate")),
+            "total_bytes": row_total_bytes,
+            "table_bytes": row_table_bytes,
+            "index_bytes": row_index_bytes,
+            "auxiliary_bytes": row_auxiliary_bytes,
+            "last_vacuum_at": row.try_get::<Option<DateTime<Utc>>, _>("last_vacuum_at").ok().flatten(),
+            "last_autovacuum_at": row.try_get::<Option<DateTime<Utc>>, _>("last_autovacuum_at").ok().flatten(),
+            "last_analyze_at": row.try_get::<Option<DateTime<Utc>>, _>("last_analyze_at").ok().flatten(),
+            "last_autoanalyze_at": row.try_get::<Option<DateTime<Utc>>, _>("last_autoanalyze_at").ok().flatten(),
+        }));
+    }
+
+    Ok(json!({
+        "checked_at": checked_at,
+        "totals": {
+            "relation_count": relation_count,
+            "present_relation_count": present_relation_count,
+            "total_bytes": total_bytes,
+            "table_bytes": table_bytes,
+            "index_bytes": index_bytes,
+            "auxiliary_bytes": auxiliary_bytes,
+        },
+        "relations": relations,
+    }))
+}
+
 fn retention_expired_total(counts: [i64; 6]) -> i64 {
     counts.into_iter().map(|count| count.max(0)).sum()
+}
+
+fn nonnegative_i64(value: i64) -> i64 {
+    value.max(0)
+}
+
+fn saturating_add_i64(left: i64, right: i64) -> i64 {
+    left.saturating_add(nonnegative_i64(right))
 }
 
 fn retention_cutoff(now: DateTime<Utc>, retention_days: i64) -> DateTime<Utc> {
@@ -4908,6 +5020,15 @@ mod tests {
     }
 
     #[test]
+    fn storage_summary_totals_use_nonnegative_saturating_addition() {
+        assert_eq!(nonnegative_i64(10), 10);
+        assert_eq!(nonnegative_i64(-10), 0);
+        assert_eq!(saturating_add_i64(5, 7), 12);
+        assert_eq!(saturating_add_i64(5, -7), 5);
+        assert_eq!(saturating_add_i64(i64::MAX, 1), i64::MAX);
+    }
+
+    #[test]
     fn retention_status_query_counts_pruner_targets_without_deleting() {
         assert!(RETENTION_STATUS_SQL.contains("FROM request_traces"));
         assert!(RETENTION_STATUS_SQL.contains("WHERE started_at < $1"));
@@ -4929,6 +5050,59 @@ mod tests {
         assert!(!RETENTION_STATUS_SQL.contains("request_body_compressed"));
         assert!(!RETENTION_STATUS_SQL.contains("response_body_compressed"));
         assert!(!RETENTION_STATUS_SQL.contains("detail"));
+    }
+
+    #[test]
+    fn storage_summary_query_uses_fixed_catalog_allowlist_without_sensitive_columns() {
+        for relation in [
+            "request_traces",
+            "trace_rollups_minute",
+            "trace_sessions",
+            "session_messages",
+            "ui_audit_events",
+            "ui_sessions",
+            "oauth_states",
+        ] {
+            assert!(STORAGE_SUMMARY_SQL.contains(relation));
+        }
+
+        assert!(STORAGE_SUMMARY_SQL.contains("WITH tracked_relations"));
+        assert!(STORAGE_SUMMARY_SQL.contains("FROM pg_namespace"));
+        assert!(STORAGE_SUMMARY_SQL.contains("LEFT JOIN pg_class"));
+        assert!(STORAGE_SUMMARY_SQL.contains("LEFT JOIN pg_stat_user_tables"));
+        assert!(STORAGE_SUMMARY_SQL.contains("pg_total_relation_size(c.oid)"));
+        assert!(STORAGE_SUMMARY_SQL.contains("pg_relation_size(c.oid)"));
+        assert!(STORAGE_SUMMARY_SQL.contains("pg_indexes_size(c.oid)"));
+        assert!(STORAGE_SUMMARY_SQL.contains("current_schema()"));
+        assert!(STORAGE_SUMMARY_SQL.contains("ORDER BY t.display_order"));
+
+        for disallowed in [
+            "DELETE",
+            "INSERT",
+            "UPDATE",
+            "original_uri",
+            "upstream_url",
+            "api_key_hash",
+            "session_key",
+            "user_id",
+            "user_name",
+            "display_name",
+            "remote_addr",
+            "request_headers",
+            "response_headers",
+            "request_body_compressed",
+            "response_body_compressed",
+            "plugin_metadata",
+            "tags",
+            "detail",
+            "summary",
+            "content",
+        ] {
+            assert!(
+                !STORAGE_SUMMARY_SQL.contains(disallowed),
+                "{disallowed} appeared in storage summary SQL"
+            );
+        }
     }
 
     #[test]
