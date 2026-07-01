@@ -100,10 +100,12 @@ Local password hash verification runs on Tokio's blocking worker pool so Argon2 
 
 Auth/session database operations use a 5 second application-level timeout, so slow login, logout, OAuth state, session lookup, and audit writes fail without tying up request handlers indefinitely.
 
-`GET /api/audit-events` returns authenticated UI/auth audit events for operational review. Results are ordered newest-first and paged with `limit` and `offset`, both clamped to safe ranges; `event_type` and `user_id` filters match exact values. The response includes `page.has_more` and `page.next_offset` for follow-up requests:
+`GET /api/audit-events` returns authenticated UI/auth audit events for operational review. Results are ordered newest-first and paged with `limit` and `offset`, both clamped to safe ranges; `event_type` and `user_id` filters match exact values. The response includes `page.has_more` and `page.next_offset` for follow-up requests. `GET /api/audit-events/export.jsonl` accepts the same filters and page bounds, returns the current audit-event page as newline-delimited JSON, and exposes the exported row count in `x-llmtrace-export-rows`:
 
 ```bash
 curl 'http://127.0.0.1:3000/api/audit-events?event_type=login_failed&limit=100&offset=0'
+curl 'http://127.0.0.1:3000/api/audit-events/export.jsonl?event_type=login_failed&limit=100&offset=0' \
+  -o llmtrace-audit-events.jsonl
 ```
 
 OAuth login state is stored server-side and bound to a short-lived HttpOnly `SameSite=Lax` browser cookie scoped to `/api/auth/oauth`. The callback requires both the query `state` and cookie state to match, which keeps OAuth callbacks tied to the browser that started the login flow.

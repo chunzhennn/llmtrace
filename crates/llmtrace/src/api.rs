@@ -174,6 +174,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/sessions/{id}/requests", get(list_session_requests))
         .route("/sessions/{id}", get(get_session))
+        .route("/audit-events/export.jsonl", get(export_audit_events_jsonl))
         .route("/audit-events", get(list_audit_events))
         .route("/query", post(run_query))
         .route("/query/schema", get(query_schema))
@@ -428,12 +429,8 @@ async fn list_audit_events(
     State(state): State<AppState>,
     Query(query): Query<AuditEventListQuery>,
 ) -> Response {
-    let event_type = match normalize_optional_filter("event_type", query.event_type) {
-        Ok(value) => value,
-        Err(message) => return bad_request(message),
-    };
-    let user_id = match normalize_optional_filter("user_id", query.user_id) {
-        Ok(value) => value,
+    let (event_type, user_id) = match audit_event_filters(query.event_type, query.user_id) {
+        Ok(filters) => filters,
         Err(message) => return bad_request(message),
     };
 
@@ -441,6 +438,23 @@ async fn list_audit_events(
         .await
     {
         Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn export_audit_events_jsonl(
+    State(state): State<AppState>,
+    Query(query): Query<AuditEventListQuery>,
+) -> Response {
+    let (event_type, user_id) = match audit_event_filters(query.event_type, query.user_id) {
+        Ok(filters) => filters,
+        Err(message) => return bad_request(message),
+    };
+
+    match storage::list_audit_events(&state.pool, event_type, user_id, query.limit, query.offset)
+        .await
+    {
+        Ok(value) => audit_event_jsonl_response(value),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }
@@ -528,6 +542,21 @@ fn request_list_jsonl_response(value: Value) -> Response {
     jsonl_response(rows, "llmtrace-requests.jsonl", "llmtrace-requests.jsonl")
 }
 
+fn audit_event_jsonl_response(value: Value) -> Response {
+    let Some(rows) = value.get("items").and_then(Value::as_array) else {
+        return api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            anyhow::anyhow!("audit event list result did not contain an item array"),
+        );
+    };
+
+    jsonl_response(
+        rows,
+        "llmtrace-audit-events.jsonl",
+        "llmtrace-audit-events.jsonl",
+    )
+}
+
 fn jsonl_response(rows: &[Value], filename: &str, fallback_filename: &'static str) -> Response {
     let mut body = String::new();
     for row in rows {
@@ -591,6 +620,16 @@ fn request_list_filters(query: RequestListQuery) -> Result<storage::RequestListF
         limit: query.limit,
         offset: query.offset,
     })
+}
+
+fn audit_event_filters(
+    event_type: Option<String>,
+    user_id: Option<String>,
+) -> Result<(Option<String>, Option<String>), String> {
+    Ok((
+        normalize_optional_filter("event_type", event_type)?,
+        normalize_optional_filter("user_id", user_id)?,
+    ))
 }
 
 fn normalize_request_search(q: Option<String>) -> Result<Option<String>, String> {
@@ -1099,6 +1138,55 @@ mod tests {
     #[tokio::test]
     async fn request_list_jsonl_response_allows_empty_exports() {
         let response = request_list_jsonl_response(json!({
+            "items": [],
+            "page": {"limit": 100, "offset": 0, "has_more": false, "next_offset": null}
+        }));
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get(EXPORT_ROWS_HEADER).unwrap(), "0");
+
+        let body = response_body_string(response).await;
+
+        assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn audit_event_jsonl_response_serializes_items_and_headers() {
+        let response = audit_event_jsonl_response(json!({
+            "items": [
+                {"id": 1, "event_type": "login_failed", "user_id": "admin"},
+                {"id": 2, "event_type": "logout", "user_id": null}
+            ],
+            "page": {"limit": 100, "offset": 0, "has_more": false, "next_offset": null}
+        }));
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            JSONL_CONTENT_TYPE
+        );
+        assert_eq!(
+            response.headers().get(header::CONTENT_DISPOSITION).unwrap(),
+            "attachment; filename=\"llmtrace-audit-events.jsonl\""
+        );
+        assert_eq!(response.headers().get(EXPORT_ROWS_HEADER).unwrap(), "2");
+
+        let body = response_body_string(response).await;
+        let lines = body
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            lines,
+            vec![
+                json!({"id": 1, "event_type": "login_failed", "user_id": "admin"}),
+                json!({"id": 2, "event_type": "logout", "user_id": null})
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_event_jsonl_response_allows_empty_exports() {
+        let response = audit_event_jsonl_response(json!({
             "items": [],
             "page": {"limit": 100, "offset": 0, "has_more": false, "next_offset": null}
         }));
