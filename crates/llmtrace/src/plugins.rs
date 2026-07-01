@@ -13,6 +13,7 @@ use crate::types::PluginHook;
 
 /// Wall-clock granularity of the epoch ticker that enforces plugin timeouts.
 const EPOCH_TICK: Duration = Duration::from_millis(10);
+const MAX_PLUGIN_OUTPUT_BYTES: i32 = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookInput {
@@ -206,11 +207,9 @@ impl WasmPlugin {
             let _ = dealloc.call(&mut store, (input_ptr, input_bytes.len() as i32));
         }
 
-        let output_ptr = (packed >> 32) as i32;
-        let output_len = (packed & 0xffff_ffff) as i32;
-        if output_ptr == 0 || output_len <= 0 {
+        let Some((output_ptr, output_len)) = unpack_plugin_output(packed)? else {
             return Ok(None);
-        }
+        };
 
         let mut output_bytes = vec![0_u8; output_len as usize];
         memory.read(&store, output_ptr as usize, &mut output_bytes)?;
@@ -220,6 +219,24 @@ impl WasmPlugin {
 
         Ok(Some(serde_json::from_slice(&output_bytes)?))
     }
+}
+
+fn unpack_plugin_output(packed: i64) -> anyhow::Result<Option<(i32, i32)>> {
+    let output_ptr = (packed >> 32) as i32;
+    let output_len = (packed & 0xffff_ffff) as i32;
+    if output_ptr == 0 || output_len == 0 {
+        return Ok(None);
+    }
+    if output_ptr < 0 {
+        anyhow::bail!("plugin returned an invalid output pointer");
+    }
+    if output_len < 0 {
+        anyhow::bail!("plugin returned an invalid output length");
+    }
+    if output_len > MAX_PLUGIN_OUTPUT_BYTES {
+        anyhow::bail!("plugin output exceeds configured limit of {MAX_PLUGIN_OUTPUT_BYTES} bytes");
+    }
+    Ok(Some((output_ptr, output_len)))
 }
 
 /// Number of epoch ticks a plugin invocation may run before it is trapped.
@@ -256,5 +273,52 @@ impl Drop for EpochTicker {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unpack_plugin_output_treats_zero_pointer_or_length_as_no_output() {
+        assert!(unpack_plugin_output(pack_output(0, 16)).unwrap().is_none());
+        assert!(unpack_plugin_output(pack_output(16, 0)).unwrap().is_none());
+    }
+
+    #[test]
+    fn unpack_plugin_output_accepts_output_within_limit() {
+        assert_eq!(
+            unpack_plugin_output(pack_output(16, MAX_PLUGIN_OUTPUT_BYTES))
+                .unwrap()
+                .unwrap(),
+            (16, MAX_PLUGIN_OUTPUT_BYTES)
+        );
+    }
+
+    #[test]
+    fn unpack_plugin_output_rejects_output_over_limit() {
+        let error = unpack_plugin_output(pack_output(16, MAX_PLUGIN_OUTPUT_BYTES + 1))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("plugin output exceeds configured limit"));
+    }
+
+    #[test]
+    fn unpack_plugin_output_rejects_invalid_pointer_or_length() {
+        let error = unpack_plugin_output(pack_output(-1, 16))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("invalid output pointer"));
+
+        let error = unpack_plugin_output(pack_output(16, -1))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("invalid output length"));
+    }
+
+    fn pack_output(ptr: i32, len: i32) -> i64 {
+        ((ptr as i64) << 32) | (len as u32 as i64)
     }
 }
