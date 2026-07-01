@@ -31,6 +31,7 @@ const SESSION_COOKIE: &str = "llmtrace_session";
 const OAUTH_STATE_COOKIE: &str = "llmtrace_oauth_state";
 const OAUTH_STATE_TTL_SECS: i64 = 10 * 60;
 const OAUTH_JSON_BODY_LIMIT_BYTES: usize = 64 * 1024;
+const MAX_OAUTH_CODE_BYTES: usize = 4096;
 const MAX_LOGIN_USERNAME_BYTES: usize = 320;
 const MAX_LOGIN_PASSWORD_BYTES: usize = 4096;
 const MAX_SESSION_IDENTITY_BYTES: usize = 1024;
@@ -306,10 +307,21 @@ async fn oauth_callback(
     headers: HeaderMap,
     Query(callback): Query<OAuthCallback>,
 ) -> Response {
-    if oauth_state_cookie(&headers).as_deref() != Some(callback.state.as_str()) {
+    if !valid_auth_token(&callback.state)
+        || oauth_state_cookie(&headers).as_deref() != Some(callback.state.as_str())
+    {
         let mut response = (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "invalid oauth state"})),
+        )
+            .into_response();
+        clear_oauth_state_cookie(response.headers_mut(), &state);
+        return response;
+    }
+    if !valid_oauth_code(&callback.code) {
+        let mut response = (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid oauth code"})),
         )
             .into_response();
         clear_oauth_state_cookie(response.headers_mut(), &state);
@@ -785,6 +797,10 @@ fn valid_auth_token(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn valid_oauth_code(value: &str) -> bool {
+    !value.is_empty() && value.len() <= MAX_OAUTH_CODE_BYTES
 }
 
 fn cross_site_request_response(method: &Method) -> Response {
@@ -1421,6 +1437,13 @@ mod tests {
 
         assert_eq!(session_cookie(&headers), None);
         assert_eq!(oauth_state_cookie(&headers), None);
+    }
+
+    #[test]
+    fn oauth_code_validation_bounds_callback_code() {
+        assert!(!valid_oauth_code(""));
+        assert!(valid_oauth_code(&"a".repeat(MAX_OAUTH_CODE_BYTES)));
+        assert!(!valid_oauth_code(&"a".repeat(MAX_OAUTH_CODE_BYTES + 1)));
     }
 
     #[test]
