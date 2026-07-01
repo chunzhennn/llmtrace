@@ -1356,9 +1356,11 @@ mod tests {
     }
 
     #[test]
-    fn production_config_allows_http_public_url() {
+    fn production_config_allows_http_reverse_proxy_endpoints() {
         let mut config = production_ready_config();
         config.server.public_url = "http://llmtrace.internal".to_string();
+        config.proxy.default_upstream = "http://llm-upstream.internal/v1".to_string();
+        config.proxy.allow_upstreams = vec!["http://llm-upstream.internal/v1".to_string()];
         config.auth.cookie_secure = false;
 
         config.validate().unwrap();

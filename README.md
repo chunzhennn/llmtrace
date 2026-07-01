@@ -37,7 +37,7 @@ Docker image builds use the committed `Cargo.lock` with `cargo build --locked` s
 
 ## Production mode
 
-Set `server.deployment = "production"` to make startup fail fast on insecure or ambiguous settings. Production mode allows `http` or `https` service URLs so deployments can run behind TLS-terminating reverse proxies or on private HTTP endpoints. It currently requires:
+Set `server.deployment = "production"` to make startup fail fast on insecure or ambiguous settings. Production mode allows `http` or `https` for `server.public_url`, proxy upstream URLs, allowlist URL entries, and OAuth endpoints so deployments can run behind TLS-terminating reverse proxies or on private HTTP endpoints. It currently requires:
 
 - `proxy.allow_upstreams` is non-empty, so the service cannot run as an unrestricted open proxy.
 - `storage.retention_days` is set, so trace and audit storage growth is bounded.
