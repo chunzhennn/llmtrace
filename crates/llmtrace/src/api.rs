@@ -45,6 +45,12 @@ struct RequestListQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct RequestFacetQuery {
+    since_hours: Option<i64>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct SessionListQuery {
     q: Option<String>,
     limit: Option<i64>,
@@ -95,6 +101,7 @@ pub fn router() -> Router<AppState> {
         .route("/usage/summary", get(usage_summary))
         .route("/usage/timeseries", get(usage_timeseries))
         .route("/requests", get(list_requests))
+        .route("/requests/facets", get(request_facets))
         .route("/requests/{id}", get(get_request))
         .route("/sessions", get(list_sessions))
         .route("/sessions/{id}", get(get_session))
@@ -199,6 +206,16 @@ async fn list_requests(
     )
     .await
     {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn request_facets(
+    State(state): State<AppState>,
+    Query(query): Query<RequestFacetQuery>,
+) -> Response {
+    match storage::request_facets(&state.pool, query.since_hours, query.limit).await {
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }

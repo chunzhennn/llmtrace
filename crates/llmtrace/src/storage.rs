@@ -17,6 +17,10 @@ use crate::types::RequestKind;
 const DEFAULT_REQUEST_LIST_LIMIT: i64 = 100;
 const MAX_REQUEST_LIST_LIMIT: i64 = 500;
 const MAX_REQUEST_LIST_OFFSET: i64 = 1_000_000;
+const DEFAULT_REQUEST_FACET_SINCE_HOURS: i64 = 24;
+const MAX_REQUEST_FACET_SINCE_HOURS: i64 = 24 * 90;
+const DEFAULT_REQUEST_FACET_LIMIT: i64 = 25;
+const MAX_REQUEST_FACET_LIMIT: i64 = 100;
 const DEFAULT_SESSION_LIST_LIMIT: i64 = 100;
 const MAX_SESSION_LIST_LIMIT: i64 = 500;
 const MAX_SESSION_LIST_OFFSET: i64 = 1_000_000;
@@ -41,6 +45,53 @@ const MAX_STRUCTURED_QUERY_STRING_VALUE_BYTES: usize = 4 * 1024;
 const MAX_STRUCTURED_QUERY_JSON_VALUE_BYTES: usize = 16 * 1024;
 const API_READ_STATEMENT_TIMEOUT_SQL: &str = "SET LOCAL statement_timeout = '5s'";
 const READINESS_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
+const REQUEST_FACET_MODELS_SQL: &str = r#"
+        SELECT model AS value, COUNT(*)::bigint AS request_count
+        FROM trace_requests
+        WHERE started_at >= $1
+          AND model IS NOT NULL
+          AND model <> ''
+        GROUP BY model
+        ORDER BY request_count DESC, value ASC
+        LIMIT $2
+        "#;
+const REQUEST_FACET_UPSTREAM_HOSTS_SQL: &str = r#"
+        SELECT upstream_host AS value, COUNT(*)::bigint AS request_count
+        FROM trace_requests
+        WHERE started_at >= $1
+          AND upstream_host IS NOT NULL
+          AND upstream_host <> ''
+        GROUP BY upstream_host
+        ORDER BY request_count DESC, value ASC
+        LIMIT $2
+        "#;
+const REQUEST_FACET_REQUEST_KINDS_SQL: &str = r#"
+        SELECT request_kind AS value, COUNT(*)::bigint AS request_count
+        FROM trace_requests
+        WHERE started_at >= $1
+          AND request_kind IS NOT NULL
+          AND request_kind <> ''
+        GROUP BY request_kind
+        ORDER BY request_count DESC, value ASC
+        LIMIT $2
+        "#;
+const REQUEST_FACET_STATUSES_SQL: &str = r#"
+        SELECT status AS value, COUNT(*)::bigint AS request_count
+        FROM trace_requests
+        WHERE started_at >= $1
+          AND status IS NOT NULL
+        GROUP BY status
+        ORDER BY request_count DESC, value ASC
+        LIMIT $2
+        "#;
+const REQUEST_FACET_ERROR_STATES_SQL: &str = r#"
+        SELECT (error IS NOT NULL OR COALESCE(status >= 500, false)) AS value,
+               COUNT(*)::bigint AS request_count
+        FROM trace_requests
+        WHERE started_at >= $1
+        GROUP BY 1
+        ORDER BY value DESC
+        "#;
 const LIST_REQUESTS_SQL: &str = r#"
         SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
                status, error, request_kind, model, api_key_hash, session_id, ttft_ms,
@@ -327,6 +378,12 @@ struct RequestListPage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RequestFacetWindow {
+    since_hours: i64,
+    limit: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SessionListPage {
     limit: i64,
     offset: i64,
@@ -408,6 +465,23 @@ impl RequestListPage {
 
     fn next_offset(self, has_more: bool) -> Option<i64> {
         has_more.then_some(self.offset.saturating_add(self.limit))
+    }
+}
+
+impl RequestFacetWindow {
+    fn from_query(since_hours: Option<i64>, limit: Option<i64>) -> Self {
+        Self {
+            since_hours: since_hours
+                .unwrap_or(DEFAULT_REQUEST_FACET_SINCE_HOURS)
+                .clamp(1, MAX_REQUEST_FACET_SINCE_HOURS),
+            limit: limit
+                .unwrap_or(DEFAULT_REQUEST_FACET_LIMIT)
+                .clamp(1, MAX_REQUEST_FACET_LIMIT),
+        }
+    }
+
+    fn cutoff(self, now: DateTime<Utc>) -> DateTime<Utc> {
+        now - ChronoDuration::hours(self.since_hours)
     }
 }
 
@@ -1095,6 +1169,57 @@ pub async fn list_requests(pool: &PgPool, filters: RequestListFilters) -> anyhow
     }))
 }
 
+pub async fn request_facets(
+    pool: &PgPool,
+    since_hours: Option<i64>,
+    limit: Option<i64>,
+) -> anyhow::Result<Value> {
+    let window = RequestFacetWindow::from_query(since_hours, limit);
+    let cutoff = window.cutoff(Utc::now());
+    let mut tx = begin_api_read_tx(pool).await?;
+
+    let models = sqlx::query(REQUEST_FACET_MODELS_SQL)
+        .bind(cutoff)
+        .bind(window.limit)
+        .fetch_all(&mut *tx)
+        .await?;
+    let upstream_hosts = sqlx::query(REQUEST_FACET_UPSTREAM_HOSTS_SQL)
+        .bind(cutoff)
+        .bind(window.limit)
+        .fetch_all(&mut *tx)
+        .await?;
+    let request_kinds = sqlx::query(REQUEST_FACET_REQUEST_KINDS_SQL)
+        .bind(cutoff)
+        .bind(window.limit)
+        .fetch_all(&mut *tx)
+        .await?;
+    let statuses = sqlx::query(REQUEST_FACET_STATUSES_SQL)
+        .bind(cutoff)
+        .bind(window.limit)
+        .fetch_all(&mut *tx)
+        .await?;
+    let error_states = sqlx::query(REQUEST_FACET_ERROR_STATES_SQL)
+        .bind(cutoff)
+        .fetch_all(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    Ok(json!({
+        "window": {
+            "since_hours": window.since_hours,
+            "started_at_gte": cutoff,
+            "limit": window.limit,
+        },
+        "facets": {
+            "models": text_facet_rows(models),
+            "upstream_hosts": text_facet_rows(upstream_hosts),
+            "request_kinds": text_facet_rows(request_kinds),
+            "statuses": int_facet_rows(statuses),
+            "error_states": bool_facet_rows(error_states),
+        },
+    }))
+}
+
 pub async fn get_request(
     pool: &PgPool,
     id: Uuid,
@@ -1558,6 +1683,39 @@ fn named_metric_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
                 "error_count": row.get::<i64, _>("error_count"),
                 "avg_duration_ms": row.try_get::<Option<i64>, _>("avg_duration_ms").ok().flatten(),
                 "avg_ttft_ms": row.try_get::<Option<i64>, _>("avg_ttft_ms").ok().flatten(),
+            })
+        })
+        .collect()
+}
+
+fn text_facet_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
+    rows.into_iter()
+        .map(|row| {
+            json!({
+                "value": row.get::<String, _>("value"),
+                "request_count": row.get::<i64, _>("request_count"),
+            })
+        })
+        .collect()
+}
+
+fn int_facet_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
+    rows.into_iter()
+        .map(|row| {
+            json!({
+                "value": row.get::<i32, _>("value"),
+                "request_count": row.get::<i64, _>("request_count"),
+            })
+        })
+        .collect()
+}
+
+fn bool_facet_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
+    rows.into_iter()
+        .map(|row| {
+            json!({
+                "value": row.get::<bool, _>("value"),
+                "request_count": row.get::<i64, _>("request_count"),
             })
         })
         .collect()
@@ -2676,6 +2834,45 @@ mod tests {
     }
 
     #[test]
+    fn request_facet_window_uses_safe_defaults() {
+        let window = RequestFacetWindow::from_query(None, None);
+
+        assert_eq!(
+            window,
+            RequestFacetWindow {
+                since_hours: DEFAULT_REQUEST_FACET_SINCE_HOURS,
+                limit: DEFAULT_REQUEST_FACET_LIMIT,
+            }
+        );
+    }
+
+    #[test]
+    fn request_facet_window_clamps_bounds() {
+        let max = RequestFacetWindow::from_query(Some(i64::MAX), Some(i64::MAX));
+        assert_eq!(max.since_hours, MAX_REQUEST_FACET_SINCE_HOURS);
+        assert_eq!(max.limit, MAX_REQUEST_FACET_LIMIT);
+
+        let min = RequestFacetWindow::from_query(Some(-10), Some(-10));
+        assert_eq!(min.since_hours, 1);
+        assert_eq!(min.limit, 1);
+    }
+
+    #[test]
+    fn request_facet_window_calculates_cutoff() {
+        let now = DateTime::parse_from_rfc3339("2026-07-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let window = RequestFacetWindow::from_query(Some(6), Some(10));
+
+        assert_eq!(
+            window.cutoff(now),
+            DateTime::parse_from_rfc3339("2026-07-01T06:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+    }
+
+    #[test]
     fn session_list_page_uses_safe_defaults() {
         let page = SessionListPage::from_query(None, None);
 
@@ -2953,6 +3150,31 @@ mod tests {
             )
         );
         assert!(LIST_REQUESTS_SQL.contains("ORDER BY started_at DESC, id DESC"));
+    }
+
+    #[test]
+    fn request_facet_queries_are_bounded_and_filter_empty_values() {
+        for query in [
+            REQUEST_FACET_MODELS_SQL,
+            REQUEST_FACET_UPSTREAM_HOSTS_SQL,
+            REQUEST_FACET_REQUEST_KINDS_SQL,
+        ] {
+            assert!(query.contains("WHERE started_at >= $1"));
+            assert!(query.contains("IS NOT NULL"));
+            assert!(query.contains("<> ''"));
+            assert!(query.contains("ORDER BY request_count DESC, value ASC"));
+            assert!(query.contains("LIMIT $2"));
+        }
+
+        assert!(REQUEST_FACET_STATUSES_SQL.contains("WHERE started_at >= $1"));
+        assert!(REQUEST_FACET_STATUSES_SQL.contains("status IS NOT NULL"));
+        assert!(REQUEST_FACET_STATUSES_SQL.contains("LIMIT $2"));
+        assert!(REQUEST_FACET_ERROR_STATES_SQL.contains("WHERE started_at >= $1"));
+        assert!(
+            REQUEST_FACET_ERROR_STATES_SQL
+                .contains("error IS NOT NULL OR COALESCE(status >= 500, false)")
+        );
+        assert!(REQUEST_FACET_ERROR_STATES_SQL.contains("GROUP BY 1"));
     }
 
     #[test]

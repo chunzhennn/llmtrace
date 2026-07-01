@@ -159,6 +159,8 @@ curl 'http://127.0.0.1:3000/api/requests?upstream_host=api.openai.com&model=gpt-
 
 Request list responses include `page.has_more` and `page.next_offset` so clients can request the next page without assuming all matching requests were returned. Invalid timestamps, a `since` value later than `until`, negative duration bounds, `min_duration_ms > max_duration_ms`, an unknown `request_kind`, or a malformed `session_id` return `400 Bad Request`. Session list search matches `session_key`, `user_id`, and `user_name`; use `limit` and `offset` to page through long session lists:
 
+`GET /api/requests/facets?since_hours=24&limit=25` returns bounded filter choices for request-list UIs: models, upstream hosts, request kinds, statuses, and error states with request counts. `since_hours` defaults to `24` and is capped at `2160`; `limit` defaults to `25` and is capped at `100` for each facet collection.
+
 ```bash
 curl 'http://127.0.0.1:3000/api/sessions?q=alice&limit=100&offset=0'
 ```
