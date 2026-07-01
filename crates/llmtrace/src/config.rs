@@ -30,6 +30,7 @@ const MAX_LOGIN_RATE_LIMIT_FAILURES: u32 = 1000;
 const MAX_LOGIN_RATE_LIMIT_WINDOW_SECS: u64 = 24 * 60 * 60;
 const MAX_LOGIN_RATE_LIMIT_LOCKOUT_SECS: u64 = 24 * 60 * 60;
 const MAX_LOGIN_RATE_LIMIT_TRACKED_ENTRIES: usize = 1_000_000;
+const MAX_OAUTH_TIMEOUT_SECS: u64 = 300;
 const MAX_PLUGIN_TIMEOUT_MS: u64 = 30_000;
 const UPSTREAM_ALLOWLIST_SCHEMES: &[&str] = &["http", "https", "ws", "wss"];
 
@@ -116,6 +117,7 @@ pub struct OAuthConfig {
     pub client_id: String,
     pub client_secret: String,
     pub redirect_url: String,
+    pub timeout_secs: u64,
     pub require_email_verified: bool,
     pub allowed_emails: Vec<String>,
     pub allowed_domains: Vec<String>,
@@ -624,6 +626,12 @@ impl Config {
 
     fn validate_oauth(&self, errors: &mut Vec<String>) {
         let oauth = &self.auth.oauth;
+        validate_u64_range(
+            errors,
+            "auth.oauth.timeout_secs",
+            oauth.timeout_secs,
+            MAX_OAUTH_TIMEOUT_SECS,
+        );
         if !oauth.enabled {
             return;
         }
@@ -852,6 +860,9 @@ fn apply_env_overrides(
     }
     if let Some(value) = env("LLMTRACE_OAUTH_REDIRECT_URL") {
         config.auth.oauth.redirect_url = value;
+    }
+    if let Some(value) = env("LLMTRACE_OAUTH_TIMEOUT_SECS") {
+        config.auth.oauth.timeout_secs = parse_u64_env("LLMTRACE_OAUTH_TIMEOUT_SECS", &value)?;
     }
     if let Some(value) = env("LLMTRACE_OAUTH_REQUIRE_EMAIL_VERIFIED") {
         config.auth.oauth.require_email_verified =
@@ -1208,6 +1219,7 @@ impl Default for OAuthConfig {
             client_id: String::new(),
             client_secret: String::new(),
             redirect_url: String::new(),
+            timeout_secs: 15,
             require_email_verified: true,
             allowed_emails: Vec::new(),
             allowed_domains: Vec::new(),
@@ -1508,6 +1520,7 @@ mod tests {
                 "LLMTRACE_OAUTH_REDIRECT_URL" => {
                     Some("https://llmtrace.example.com/api/auth/oauth/callback")
                 }
+                "LLMTRACE_OAUTH_TIMEOUT_SECS" => Some("12"),
                 "LLMTRACE_OAUTH_REQUIRE_EMAIL_VERIFIED" => Some("false"),
                 "LLMTRACE_OAUTH_ALLOWED_EMAILS" => Some("admin@example.com, ops@example.com"),
                 "LLMTRACE_OAUTH_ALLOWED_DOMAINS" => Some("example.com, internal.example"),
@@ -1532,6 +1545,7 @@ mod tests {
             config.auth.oauth.redirect_url,
             "https://llmtrace.example.com/api/auth/oauth/callback"
         );
+        assert_eq!(config.auth.oauth.timeout_secs, 12);
         assert!(!config.auth.oauth.require_email_verified);
         assert_eq!(
             config.auth.oauth.allowed_emails,
@@ -1643,6 +1657,7 @@ mod tests {
         config.storage.retention_prune_interval_secs = 0;
         config.storage.retention_prune_batch_size = 0;
         config.auth.session_ttl_hours = 0;
+        config.auth.oauth.timeout_secs = 0;
 
         let error = config.validate().unwrap_err().to_string();
 
@@ -1659,6 +1674,7 @@ mod tests {
         assert!(error.contains("storage.retention_prune_interval_secs must be greater than 0"));
         assert!(error.contains("storage.retention_prune_batch_size must be greater than 0"));
         assert!(error.contains("auth.session_ttl_hours must be greater than 0"));
+        assert!(error.contains("auth.oauth.timeout_secs must be greater than 0"));
     }
 
     #[test]
@@ -1677,6 +1693,7 @@ mod tests {
         config.storage.retention_prune_interval_secs = MAX_RETENTION_PRUNE_INTERVAL_SECS + 1;
         config.storage.retention_prune_batch_size = MAX_RETENTION_PRUNE_BATCH_SIZE + 1;
         config.auth.session_ttl_hours = MAX_SESSION_TTL_HOURS + 1;
+        config.auth.oauth.timeout_secs = MAX_OAUTH_TIMEOUT_SECS + 1;
 
         let error = config.validate().unwrap_err().to_string();
 
@@ -1693,6 +1710,7 @@ mod tests {
         assert!(error.contains("storage.retention_prune_interval_secs must be at most"));
         assert!(error.contains("storage.retention_prune_batch_size must be at most"));
         assert!(error.contains("auth.session_ttl_hours must be at most"));
+        assert!(error.contains("auth.oauth.timeout_secs must be at most"));
     }
 
     #[test]

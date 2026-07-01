@@ -399,6 +399,7 @@ async fn oauth_callback(
 async fn finish_oauth(state: &AppState, code: &str) -> anyhow::Result<MeResponse> {
     let oauth = &state.config.auth.oauth;
     let metadata = oauth_metadata(state).await?;
+    let timeout_secs = oauth.timeout_secs;
     let token_endpoint = metadata
         .token_endpoint
         .ok_or_else(|| anyhow::anyhow!("oauth provider has no token endpoint"))?;
@@ -407,33 +408,45 @@ async fn finish_oauth(state: &AppState, code: &str) -> anyhow::Result<MeResponse
         .ok_or_else(|| anyhow::anyhow!("oauth provider has no userinfo endpoint"))?;
     let redirect_url = oauth_redirect_url(state);
 
-    let token_response = state
-        .http
-        .post(token_endpoint)
-        .form(&[
-            ("grant_type", "authorization_code"),
-            ("code", code),
-            ("redirect_uri", &redirect_url),
-            ("client_id", &oauth.client_id),
-            ("client_secret", &oauth.client_secret),
-        ])
-        .send()
-        .await?
-        .error_for_status()?;
-    let token_response: Value = read_oauth_json(token_response, "oauth token response").await?;
+    let token_response = oauth_timeout("oauth token request", timeout_secs, async {
+        Ok(state
+            .http
+            .post(token_endpoint)
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", code),
+                ("redirect_uri", &redirect_url),
+                ("client_id", &oauth.client_id),
+                ("client_secret", &oauth.client_secret),
+            ])
+            .send()
+            .await?
+            .error_for_status()?)
+    })
+    .await?;
+    let token_response: Value = oauth_timeout("oauth token response", timeout_secs, async {
+        read_oauth_json(token_response, "oauth token response").await
+    })
+    .await?;
     let access_token = token_response
         .get("access_token")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("oauth token response missing access_token"))?;
 
-    let userinfo = state
-        .http
-        .get(userinfo_endpoint)
-        .bearer_auth(access_token)
-        .send()
-        .await?
-        .error_for_status()?;
-    let userinfo: Value = read_oauth_json(userinfo, "oauth userinfo response").await?;
+    let userinfo = oauth_timeout("oauth userinfo request", timeout_secs, async {
+        Ok(state
+            .http
+            .get(userinfo_endpoint)
+            .bearer_auth(access_token)
+            .send()
+            .await?
+            .error_for_status()?)
+    })
+    .await?;
+    let userinfo: Value = oauth_timeout("oauth userinfo response", timeout_secs, async {
+        read_oauth_json(userinfo, "oauth userinfo response").await
+    })
+    .await?;
 
     let email = userinfo
         .get("email")
@@ -459,10 +472,18 @@ async fn finish_oauth(state: &AppState, code: &str) -> anyhow::Result<MeResponse
 
 async fn oauth_metadata(state: &AppState) -> anyhow::Result<OidcMetadata> {
     let issuer = state.config.auth.oauth.issuer_url.trim_end_matches('/');
+    let timeout_secs = state.config.auth.oauth.timeout_secs;
     let discovery = format!("{issuer}/.well-known/openid-configuration");
-    let metadata = match state.http.get(discovery).send().await {
+    let discovery_response = oauth_timeout("oauth discovery request", timeout_secs, async {
+        Ok(state.http.get(discovery).send().await?)
+    })
+    .await;
+    let metadata = match discovery_response {
         Ok(response) if response.status().is_success() => {
-            read_oauth_json(response, "oauth discovery metadata").await?
+            oauth_timeout("oauth discovery metadata", timeout_secs, async {
+                read_oauth_json(response, "oauth discovery metadata").await
+            })
+            .await?
         }
         _ => OidcMetadata {
             authorization_endpoint: Some(format!("{issuer}/authorize")),
@@ -708,6 +729,30 @@ where
     F: Future<Output = anyhow::Result<T>>,
 {
     auth_db_timeout_with_duration(operation, future, AUTH_DB_TIMEOUT).await
+}
+
+async fn oauth_timeout<T, F>(operation: &str, timeout_secs: u64, future: F) -> anyhow::Result<T>
+where
+    F: Future<Output = anyhow::Result<T>>,
+{
+    oauth_timeout_with_duration(operation, future, StdDuration::from_secs(timeout_secs)).await
+}
+
+async fn oauth_timeout_with_duration<T, F>(
+    operation: &str,
+    future: F,
+    timeout_duration: StdDuration,
+) -> anyhow::Result<T>
+where
+    F: Future<Output = anyhow::Result<T>>,
+{
+    match tokio::time::timeout(timeout_duration, future).await {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!(
+            "{operation} timed out after {} ms",
+            timeout_duration.as_millis()
+        ),
+    }
 }
 
 async fn auth_db_timeout_with_duration<T, F>(
@@ -1208,6 +1253,33 @@ mod tests {
         .to_string();
 
         assert!(error.contains("test op timed out"));
+    }
+
+    #[tokio::test]
+    async fn oauth_timeout_allows_fast_future() {
+        let value = oauth_timeout_with_duration(
+            "oauth test op",
+            async { Ok::<_, anyhow::Error>(42) },
+            StdDuration::from_millis(1),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(value, 42);
+    }
+
+    #[tokio::test]
+    async fn oauth_timeout_rejects_slow_future() {
+        let error = oauth_timeout_with_duration(
+            "oauth test op",
+            async { std::future::pending::<anyhow::Result<()>>().await },
+            StdDuration::from_millis(1),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("oauth test op timed out"));
     }
 
     #[test]

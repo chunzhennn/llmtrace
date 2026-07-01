@@ -69,6 +69,7 @@ issuer_url = ""
 client_id = ""
 client_secret = ""
 redirect_url = ""
+timeout_secs = 15
 # Production mode requires this to stay true before email/domain allowlists are applied.
 require_email_verified = true
 # Exact email addresses only, for example ["admin@example.com"].
