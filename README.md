@@ -116,6 +116,8 @@ Useful environment overrides include:
 - Observability: `LLMTRACE_METRICS_BEARER_TOKEN`, which requires `Authorization: Bearer <token>` on `GET /metrics` when set.
 - Redaction: `LLMTRACE_SENSITIVE_HEADERS`, `LLMTRACE_STORE_HEADER_HASH`, and `LLMTRACE_BODY_REDACTION`, with `LLMTRACE_BODY_REDACTION` set to one of `disabled`, `drop`, or `json_secrets`.
 
+Startup validation rejects obviously dangerous resource limits before the service binds a port. Proxy timeout is capped at 3600 seconds; stored body capture at 64 MiB; live HTTP request bodies at 1 GiB; WebSocket messages at 64 MiB and sessions at 2 GiB. Storage pools are capped at 1024 connections, trace queues at 1000000 entries, trace workers at 128, DB acquire timeout at 300 seconds, and retention prune intervals at 86400 seconds. Login throttling is capped at 1000 failures, 86400 second windows/lockouts, and 1000000 tracked entries.
+
 ## Upstream allowlist
 
 `proxy.allow_upstreams` accepts exact host entries, host entries with a port, URL origins, and URL path prefixes:

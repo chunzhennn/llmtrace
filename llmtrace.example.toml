@@ -13,7 +13,8 @@ default_upstream = "https://api.openai.com"
 allow_upstreams = []
 upstream_header = "x-llmtrace-upstream"
 timeout_secs = 300
-# Stored request/response samples are capped by this value.
+# Stored request/response samples are capped by this value. Startup validation
+# rejects resource limits that exceed documented production safety ceilings.
 max_body_capture_bytes = 1048576
 # Live proxy traffic limits. Oversized HTTP request bodies are rejected with 413.
 max_request_body_bytes = 67108864

@@ -16,6 +16,20 @@ const DEFAULT_LOCAL_ADMIN_PASSWORD: &str = "admin";
 const MAX_SESSION_TTL_HOURS: i64 = 24 * 30;
 const MAX_RETENTION_DAYS: i64 = 36500;
 const MAX_RETENTION_PRUNE_BATCH_SIZE: i64 = 100_000;
+const MAX_PROXY_TIMEOUT_SECS: u64 = 60 * 60;
+const MAX_BODY_CAPTURE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024 * 1024;
+const MAX_WEBSOCKET_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_WEBSOCKET_SESSION_BYTES: usize = 2 * 1024 * 1024 * 1024;
+const MAX_STORAGE_CONNECTIONS: u32 = 1024;
+const MAX_STORAGE_ACQUIRE_TIMEOUT_SECS: u64 = 300;
+const MAX_TRACE_QUEUE_CAPACITY: usize = 1_000_000;
+const MAX_TRACE_WORKER_COUNT: usize = 128;
+const MAX_RETENTION_PRUNE_INTERVAL_SECS: u64 = 24 * 60 * 60;
+const MAX_LOGIN_RATE_LIMIT_FAILURES: u32 = 1000;
+const MAX_LOGIN_RATE_LIMIT_WINDOW_SECS: u64 = 24 * 60 * 60;
+const MAX_LOGIN_RATE_LIMIT_LOCKOUT_SECS: u64 = 24 * 60 * 60;
+const MAX_LOGIN_RATE_LIMIT_TRACKED_ENTRIES: usize = 1_000_000;
 const MAX_PLUGIN_TIMEOUT_MS: u64 = 30_000;
 const UPSTREAM_ALLOWLIST_SCHEMES: &[&str] = &["http", "https", "ws", "wss"];
 
@@ -341,21 +355,36 @@ impl Config {
             ));
         }
 
-        if self.proxy.timeout_secs == 0 {
-            errors.push("proxy.timeout_secs must be greater than 0".to_string());
-        }
-        if self.proxy.max_body_capture_bytes == 0 {
-            errors.push("proxy.max_body_capture_bytes must be greater than 0".to_string());
-        }
-        if self.proxy.max_request_body_bytes == 0 {
-            errors.push("proxy.max_request_body_bytes must be greater than 0".to_string());
-        }
-        if self.proxy.max_websocket_message_bytes == 0 {
-            errors.push("proxy.max_websocket_message_bytes must be greater than 0".to_string());
-        }
-        if self.proxy.max_websocket_session_bytes == 0 {
-            errors.push("proxy.max_websocket_session_bytes must be greater than 0".to_string());
-        }
+        validate_u64_range(
+            errors,
+            "proxy.timeout_secs",
+            self.proxy.timeout_secs,
+            MAX_PROXY_TIMEOUT_SECS,
+        );
+        validate_usize_range(
+            errors,
+            "proxy.max_body_capture_bytes",
+            self.proxy.max_body_capture_bytes,
+            MAX_BODY_CAPTURE_BYTES,
+        );
+        validate_usize_range(
+            errors,
+            "proxy.max_request_body_bytes",
+            self.proxy.max_request_body_bytes,
+            MAX_REQUEST_BODY_BYTES,
+        );
+        validate_usize_range(
+            errors,
+            "proxy.max_websocket_message_bytes",
+            self.proxy.max_websocket_message_bytes,
+            MAX_WEBSOCKET_MESSAGE_BYTES,
+        );
+        validate_usize_range(
+            errors,
+            "proxy.max_websocket_session_bytes",
+            self.proxy.max_websocket_session_bytes,
+            MAX_WEBSOCKET_SESSION_BYTES,
+        );
 
         if self.server.deployment.is_production() && self.proxy.allow_upstreams.is_empty() {
             errors.push(
@@ -381,18 +410,30 @@ impl Config {
         ) {
             errors.push(error);
         }
-        if self.storage.max_connections == 0 {
-            errors.push("storage.max_connections must be greater than 0".to_string());
-        }
-        if self.storage.acquire_timeout_secs == 0 {
-            errors.push("storage.acquire_timeout_secs must be greater than 0".to_string());
-        }
-        if self.storage.trace_queue_capacity == 0 {
-            errors.push("storage.trace_queue_capacity must be greater than 0".to_string());
-        }
-        if self.storage.trace_worker_count == 0 {
-            errors.push("storage.trace_worker_count must be greater than 0".to_string());
-        }
+        validate_u32_range(
+            errors,
+            "storage.max_connections",
+            self.storage.max_connections,
+            MAX_STORAGE_CONNECTIONS,
+        );
+        validate_u64_range(
+            errors,
+            "storage.acquire_timeout_secs",
+            self.storage.acquire_timeout_secs,
+            MAX_STORAGE_ACQUIRE_TIMEOUT_SECS,
+        );
+        validate_usize_range(
+            errors,
+            "storage.trace_queue_capacity",
+            self.storage.trace_queue_capacity,
+            MAX_TRACE_QUEUE_CAPACITY,
+        );
+        validate_usize_range(
+            errors,
+            "storage.trace_worker_count",
+            self.storage.trace_worker_count,
+            MAX_TRACE_WORKER_COUNT,
+        );
         match self.storage.retention_days {
             Some(days) if days <= 0 => {
                 errors.push("storage.retention_days must be greater than 0 when set".to_string());
@@ -411,9 +452,12 @@ impl Config {
             }
             None => {}
         }
-        if self.storage.retention_prune_interval_secs == 0 {
-            errors.push("storage.retention_prune_interval_secs must be greater than 0".to_string());
-        }
+        validate_u64_range(
+            errors,
+            "storage.retention_prune_interval_secs",
+            self.storage.retention_prune_interval_secs,
+            MAX_RETENTION_PRUNE_INTERVAL_SECS,
+        );
         if self.storage.retention_prune_batch_size <= 0 {
             errors.push("storage.retention_prune_batch_size must be greater than 0".to_string());
         } else if self.storage.retention_prune_batch_size > MAX_RETENTION_PRUNE_BATCH_SIZE {
@@ -525,23 +569,39 @@ impl Config {
                 "auth.login_rate_limit.max_failures must be greater than 0 when enabled"
                     .to_string(),
             );
+        } else if rate_limit.max_failures > MAX_LOGIN_RATE_LIMIT_FAILURES {
+            errors.push(format!(
+                "auth.login_rate_limit.max_failures must be at most {MAX_LOGIN_RATE_LIMIT_FAILURES}"
+            ));
         }
         if rate_limit.window_secs == 0 {
             errors.push(
                 "auth.login_rate_limit.window_secs must be greater than 0 when enabled".to_string(),
             );
+        } else if rate_limit.window_secs > MAX_LOGIN_RATE_LIMIT_WINDOW_SECS {
+            errors.push(format!(
+                "auth.login_rate_limit.window_secs must be at most {MAX_LOGIN_RATE_LIMIT_WINDOW_SECS}"
+            ));
         }
         if rate_limit.lockout_secs == 0 {
             errors.push(
                 "auth.login_rate_limit.lockout_secs must be greater than 0 when enabled"
                     .to_string(),
             );
+        } else if rate_limit.lockout_secs > MAX_LOGIN_RATE_LIMIT_LOCKOUT_SECS {
+            errors.push(format!(
+                "auth.login_rate_limit.lockout_secs must be at most {MAX_LOGIN_RATE_LIMIT_LOCKOUT_SECS}"
+            ));
         }
         if rate_limit.max_tracked_entries == 0 {
             errors.push(
                 "auth.login_rate_limit.max_tracked_entries must be greater than 0 when enabled"
                     .to_string(),
             );
+        } else if rate_limit.max_tracked_entries > MAX_LOGIN_RATE_LIMIT_TRACKED_ENTRIES {
+            errors.push(format!(
+                "auth.login_rate_limit.max_tracked_entries must be at most {MAX_LOGIN_RATE_LIMIT_TRACKED_ENTRIES}"
+            ));
         }
     }
 
@@ -801,6 +861,30 @@ fn apply_env_overrides(
             parse_body_redaction_env("LLMTRACE_BODY_REDACTION", &value)?;
     }
     Ok(())
+}
+
+fn validate_u32_range(errors: &mut Vec<String>, field: &str, value: u32, max: u32) {
+    if value == 0 {
+        errors.push(format!("{field} must be greater than 0"));
+    } else if value > max {
+        errors.push(format!("{field} must be at most {max}"));
+    }
+}
+
+fn validate_u64_range(errors: &mut Vec<String>, field: &str, value: u64, max: u64) {
+    if value == 0 {
+        errors.push(format!("{field} must be greater than 0"));
+    } else if value > max {
+        errors.push(format!("{field} must be at most {max}"));
+    }
+}
+
+fn validate_usize_range(errors: &mut Vec<String>, field: &str, value: usize, max: usize) {
+    if value == 0 {
+        errors.push(format!("{field} must be greater than 0"));
+    } else if value > max {
+        errors.push(format!("{field} must be at most {max}"));
+    }
 }
 
 fn parse_url(field: &str, value: &str, allowed_schemes: &[&str]) -> Result<Url, String> {
@@ -1375,6 +1459,22 @@ mod tests {
     }
 
     #[test]
+    fn validation_rejects_excessive_login_rate_limit_bounds() {
+        let mut config = Config::default();
+        config.auth.login_rate_limit.max_failures = MAX_LOGIN_RATE_LIMIT_FAILURES + 1;
+        config.auth.login_rate_limit.window_secs = MAX_LOGIN_RATE_LIMIT_WINDOW_SECS + 1;
+        config.auth.login_rate_limit.lockout_secs = MAX_LOGIN_RATE_LIMIT_LOCKOUT_SECS + 1;
+        config.auth.login_rate_limit.max_tracked_entries = MAX_LOGIN_RATE_LIMIT_TRACKED_ENTRIES + 1;
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("auth.login_rate_limit.max_failures must be at most"));
+        assert!(error.contains("auth.login_rate_limit.window_secs must be at most"));
+        assert!(error.contains("auth.login_rate_limit.lockout_secs must be at most"));
+        assert!(error.contains("auth.login_rate_limit.max_tracked_entries must be at most"));
+    }
+
+    #[test]
     fn env_overrides_cover_oauth_and_security_settings() {
         let mut config = Config::default();
 
@@ -1541,6 +1641,40 @@ mod tests {
         assert!(error.contains("storage.retention_prune_interval_secs must be greater than 0"));
         assert!(error.contains("storage.retention_prune_batch_size must be greater than 0"));
         assert!(error.contains("auth.session_ttl_hours must be greater than 0"));
+    }
+
+    #[test]
+    fn validation_rejects_excessive_operational_bounds() {
+        let mut config = Config::default();
+        config.proxy.timeout_secs = MAX_PROXY_TIMEOUT_SECS + 1;
+        config.proxy.max_body_capture_bytes = MAX_BODY_CAPTURE_BYTES + 1;
+        config.proxy.max_request_body_bytes = MAX_REQUEST_BODY_BYTES + 1;
+        config.proxy.max_websocket_message_bytes = MAX_WEBSOCKET_MESSAGE_BYTES + 1;
+        config.proxy.max_websocket_session_bytes = MAX_WEBSOCKET_SESSION_BYTES + 1;
+        config.storage.max_connections = MAX_STORAGE_CONNECTIONS + 1;
+        config.storage.acquire_timeout_secs = MAX_STORAGE_ACQUIRE_TIMEOUT_SECS + 1;
+        config.storage.trace_queue_capacity = MAX_TRACE_QUEUE_CAPACITY + 1;
+        config.storage.trace_worker_count = MAX_TRACE_WORKER_COUNT + 1;
+        config.storage.retention_days = Some(MAX_RETENTION_DAYS + 1);
+        config.storage.retention_prune_interval_secs = MAX_RETENTION_PRUNE_INTERVAL_SECS + 1;
+        config.storage.retention_prune_batch_size = MAX_RETENTION_PRUNE_BATCH_SIZE + 1;
+        config.auth.session_ttl_hours = MAX_SESSION_TTL_HOURS + 1;
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("proxy.timeout_secs must be at most"));
+        assert!(error.contains("proxy.max_body_capture_bytes must be at most"));
+        assert!(error.contains("proxy.max_request_body_bytes must be at most"));
+        assert!(error.contains("proxy.max_websocket_message_bytes must be at most"));
+        assert!(error.contains("proxy.max_websocket_session_bytes must be at most"));
+        assert!(error.contains("storage.max_connections must be at most"));
+        assert!(error.contains("storage.acquire_timeout_secs must be at most"));
+        assert!(error.contains("storage.trace_queue_capacity must be at most"));
+        assert!(error.contains("storage.trace_worker_count must be at most"));
+        assert!(error.contains("storage.retention_days must be at most"));
+        assert!(error.contains("storage.retention_prune_interval_secs must be at most"));
+        assert!(error.contains("storage.retention_prune_batch_size must be at most"));
+        assert!(error.contains("auth.session_ttl_hours must be at most"));
     }
 
     #[test]
