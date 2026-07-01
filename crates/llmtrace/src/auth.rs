@@ -246,13 +246,22 @@ async fn oauth_start(State(state): State<AppState>) -> Response {
     }
 
     let redirect_url = oauth_redirect_url(&state);
-    let location = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}&scope=openid%20email%20profile&state={}",
-        auth_url,
-        urlencoding(&oauth.client_id),
-        urlencoding(&redirect_url),
-        urlencoding(&state_value),
-    );
+    let location = match oauth_authorization_location(
+        &auth_url,
+        &oauth.client_id,
+        &redirect_url,
+        &state_value,
+    ) {
+        Ok(location) => location,
+        Err(error) => {
+            tracing::warn!(%error, "failed to build oauth authorization URL");
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "oauth provider has an invalid authorization endpoint"})),
+            )
+                .into_response();
+        }
+    };
     let mut response = Redirect::temporary(&location).into_response();
     set_oauth_state_cookie(response.headers_mut(), &state, &state_value);
     response
@@ -752,8 +761,20 @@ fn oauth_redirect_url(state: &AppState) -> String {
     )
 }
 
-fn urlencoding(value: &str) -> String {
-    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+fn oauth_authorization_location(
+    authorization_endpoint: &str,
+    client_id: &str,
+    redirect_url: &str,
+    state_value: &str,
+) -> anyhow::Result<String> {
+    let mut url = Url::parse(authorization_endpoint)?;
+    url.query_pairs_mut()
+        .append_pair("response_type", "code")
+        .append_pair("client_id", client_id)
+        .append_pair("redirect_uri", redirect_url)
+        .append_pair("scope", "openid email profile")
+        .append_pair("state", state_value);
+    Ok(url.to_string())
 }
 
 fn invalid_login_response() -> Response {
@@ -975,6 +996,48 @@ mod tests {
 
         assert!(error.contains("oauth JSON response exceeds configured limit"));
         assert_eq!(body.len(), OAUTH_JSON_BODY_LIMIT_BYTES);
+    }
+
+    #[test]
+    fn oauth_authorization_location_preserves_query_and_encodes_parameters() {
+        let location = oauth_authorization_location(
+            "https://issuer.example.com/authorize?prompt=login",
+            "client id",
+            "https://llmtrace.example.com/api/auth/oauth/callback?next=/ui/",
+            "state with space",
+        )
+        .unwrap();
+        let url = Url::parse(&location).unwrap();
+        let pairs: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+
+        assert_eq!(
+            url.origin().ascii_serialization(),
+            "https://issuer.example.com"
+        );
+        assert_eq!(url.path(), "/authorize");
+        assert!(pairs.contains(&("prompt".to_string(), "login".to_string())));
+        assert!(pairs.contains(&("response_type".to_string(), "code".to_string())));
+        assert!(pairs.contains(&("client_id".to_string(), "client id".to_string())));
+        assert!(pairs.contains(&(
+            "redirect_uri".to_string(),
+            "https://llmtrace.example.com/api/auth/oauth/callback?next=/ui/".to_string(),
+        )));
+        assert!(pairs.contains(&("scope".to_string(), "openid email profile".to_string())));
+        assert!(pairs.contains(&("state".to_string(), "state with space".to_string())));
+    }
+
+    #[test]
+    fn oauth_authorization_location_rejects_invalid_endpoint() {
+        let error = oauth_authorization_location(
+            "/authorize",
+            "client",
+            "https://llmtrace.example.com/api/auth/oauth/callback",
+            "state",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("relative URL without a base"));
     }
 
     #[test]
