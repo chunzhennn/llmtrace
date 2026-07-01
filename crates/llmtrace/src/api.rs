@@ -31,12 +31,15 @@ const USAGE_TIMESERIES_BUCKETS: &[&str] = &["minute", "hour", "day"];
 struct RequestListQuery {
     q: Option<String>,
     status: Option<i32>,
+    has_error: Option<bool>,
     upstream_host: Option<String>,
     model: Option<String>,
     request_kind: Option<String>,
     session_id: Option<String>,
     since: Option<String>,
     until: Option<String>,
+    min_duration_ms: Option<i64>,
+    max_duration_ms: Option<i64>,
     limit: Option<i64>,
     offset: Option<i64>,
 }
@@ -78,6 +81,12 @@ struct UsageTimeseriesQuery {
 struct RequestTimeRange {
     since: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RequestDurationRange {
+    min_duration_ms: Option<i64>,
+    max_duration_ms: Option<i64>,
 }
 
 pub fn router() -> Router<AppState> {
@@ -148,6 +157,11 @@ async fn list_requests(
         Ok(range) => range,
         Err(message) => return bad_request(message),
     };
+    let duration_range =
+        match normalize_request_duration_range(query.min_duration_ms, query.max_duration_ms) {
+            Ok(range) => range,
+            Err(message) => return bad_request(message),
+        };
     let upstream_host = match normalize_request_filter("upstream_host", query.upstream_host) {
         Ok(value) => value,
         Err(message) => return bad_request(message),
@@ -170,12 +184,15 @@ async fn list_requests(
         storage::RequestListFilters {
             q,
             status: query.status,
+            has_error: query.has_error,
             upstream_host,
             model,
             request_kind,
             session_id,
             since: time_range.since,
             until: time_range.until,
+            min_duration_ms: duration_range.min_duration_ms,
+            max_duration_ms: duration_range.max_duration_ms,
             limit: query.limit,
             offset: query.offset,
         },
@@ -417,6 +434,37 @@ fn normalize_request_time_range(
         return Err("since must be earlier than or equal to until".to_string());
     }
     Ok(RequestTimeRange { since, until })
+}
+
+fn normalize_request_duration_range(
+    min_duration_ms: Option<i64>,
+    max_duration_ms: Option<i64>,
+) -> Result<RequestDurationRange, String> {
+    let min_duration_ms = normalize_optional_duration_filter("min_duration_ms", min_duration_ms)?;
+    let max_duration_ms = normalize_optional_duration_filter("max_duration_ms", max_duration_ms)?;
+    if min_duration_ms
+        .zip(max_duration_ms)
+        .is_some_and(|(min, max)| min > max)
+    {
+        return Err("min_duration_ms must be less than or equal to max_duration_ms".to_string());
+    }
+    Ok(RequestDurationRange {
+        min_duration_ms,
+        max_duration_ms,
+    })
+}
+
+fn normalize_optional_duration_filter(
+    field: &str,
+    value: Option<i64>,
+) -> Result<Option<i64>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value < 0 {
+        return Err(format!("{field} must be greater than or equal to 0"));
+    }
+    Ok(Some(value))
 }
 
 fn normalize_optional_timestamp_filter(
@@ -708,6 +756,46 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("since must be earlier than or equal to until"));
+    }
+
+    #[test]
+    fn request_duration_range_normalization_accepts_bounds() {
+        let range = normalize_request_duration_range(Some(250), Some(1_000)).unwrap();
+
+        assert_eq!(
+            range,
+            RequestDurationRange {
+                min_duration_ms: Some(250),
+                max_duration_ms: Some(1_000),
+            }
+        );
+    }
+
+    #[test]
+    fn request_duration_range_normalization_accepts_empty_bounds() {
+        let range = normalize_request_duration_range(None, None).unwrap();
+
+        assert_eq!(
+            range,
+            RequestDurationRange {
+                min_duration_ms: None,
+                max_duration_ms: None,
+            }
+        );
+    }
+
+    #[test]
+    fn request_duration_range_normalization_rejects_negative_values() {
+        let error = normalize_request_duration_range(Some(-1), None).unwrap_err();
+
+        assert!(error.contains("min_duration_ms must be greater than or equal to 0"));
+    }
+
+    #[test]
+    fn request_duration_range_normalization_rejects_reversed_bounds() {
+        let error = normalize_request_duration_range(Some(1_000), Some(250)).unwrap_err();
+
+        assert!(error.contains("min_duration_ms must be less than or equal to max_duration_ms"));
     }
 
     #[test]

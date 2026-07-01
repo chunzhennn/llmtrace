@@ -60,8 +60,15 @@ const LIST_REQUESTS_SQL: &str = r#"
           AND ($6::uuid IS NULL OR session_id = $6)
           AND ($7::timestamptz IS NULL OR started_at >= $7)
           AND ($8::timestamptz IS NULL OR started_at <= $8)
+          AND ($9::bigint IS NULL OR duration_ms >= $9)
+          AND ($10::bigint IS NULL OR duration_ms <= $10)
+          AND (
+              $11::boolean IS NULL
+              OR ($11 = true AND (error IS NOT NULL OR status >= 500))
+              OR ($11 = false AND error IS NULL AND (status IS NULL OR status < 500))
+          )
         ORDER BY started_at DESC, id DESC
-        LIMIT $9 OFFSET $10
+        LIMIT $12 OFFSET $13
         "#;
 const LIST_SESSIONS_SQL: &str = r#"
         WITH selected_sessions AS (
@@ -136,12 +143,15 @@ pub struct TraceRecord {
 pub struct RequestListFilters {
     pub q: Option<String>,
     pub status: Option<i32>,
+    pub has_error: Option<bool>,
     pub upstream_host: Option<String>,
     pub model: Option<String>,
     pub request_kind: Option<String>,
     pub session_id: Option<Uuid>,
     pub since: Option<DateTime<Utc>>,
     pub until: Option<DateTime<Utc>>,
+    pub min_duration_ms: Option<i64>,
+    pub max_duration_ms: Option<i64>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -1035,6 +1045,9 @@ pub async fn list_requests(pool: &PgPool, filters: RequestListFilters) -> anyhow
         .bind(filters.session_id)
         .bind(filters.since)
         .bind(filters.until)
+        .bind(filters.min_duration_ms)
+        .bind(filters.max_duration_ms)
+        .bind(filters.has_error)
         .bind(page.fetch_limit())
         .bind(page.offset)
         .fetch_all(&mut *tx)
@@ -2914,7 +2927,7 @@ mod tests {
     #[test]
     fn list_requests_query_filters_then_pages_requests() {
         let where_clause = LIST_REQUESTS_SQL.find("WHERE (").unwrap();
-        let request_limit = LIST_REQUESTS_SQL.find("LIMIT $9 OFFSET $10").unwrap();
+        let request_limit = LIST_REQUESTS_SQL.find("LIMIT $12 OFFSET $13").unwrap();
 
         assert!(where_clause < request_limit);
         assert!(LIST_REQUESTS_SQL.contains("$1::text IS NULL"));
@@ -2928,6 +2941,17 @@ mod tests {
         assert!(LIST_REQUESTS_SQL.contains("AND ($6::uuid IS NULL OR session_id = $6)"));
         assert!(LIST_REQUESTS_SQL.contains("AND ($7::timestamptz IS NULL OR started_at >= $7)"));
         assert!(LIST_REQUESTS_SQL.contains("AND ($8::timestamptz IS NULL OR started_at <= $8)"));
+        assert!(LIST_REQUESTS_SQL.contains("AND ($9::bigint IS NULL OR duration_ms >= $9)"));
+        assert!(LIST_REQUESTS_SQL.contains("AND ($10::bigint IS NULL OR duration_ms <= $10)"));
+        assert!(LIST_REQUESTS_SQL.contains("$11::boolean IS NULL"));
+        assert!(
+            LIST_REQUESTS_SQL.contains("OR ($11 = true AND (error IS NOT NULL OR status >= 500))")
+        );
+        assert!(
+            LIST_REQUESTS_SQL.contains(
+                "OR ($11 = false AND error IS NULL AND (status IS NULL OR status < 500))"
+            )
+        );
         assert!(LIST_REQUESTS_SQL.contains("ORDER BY started_at DESC, id DESC"));
     }
 
