@@ -1,5 +1,7 @@
+use std::collections::BTreeMap;
+
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderName, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -10,6 +12,7 @@ use uuid::Uuid;
 
 use crate::config::Config;
 use crate::plugins::PluginStatus;
+use crate::redaction;
 use crate::state::AppState;
 use crate::storage;
 use crate::types::{BodyRedaction, PluginHook};
@@ -18,6 +21,11 @@ const MAX_REQUEST_SEARCH_BYTES: usize = 512;
 const MAX_REQUEST_FILTER_BYTES: usize = 1024;
 const MAX_REQUEST_TIME_FILTER_BYTES: usize = 128;
 const MAX_AUDIT_FILTER_BYTES: usize = 1024;
+const MAX_REDACTION_PREVIEW_HEADERS: usize = 64;
+const MAX_REDACTION_PREVIEW_HEADER_NAME_BYTES: usize = 128;
+const MAX_REDACTION_PREVIEW_HEADER_VALUE_BYTES: usize = 8 * 1024;
+const MAX_REDACTION_PREVIEW_URI_BYTES: usize = 8 * 1024;
+const MAX_REDACTION_PREVIEW_BODY_BYTES: usize = 64 * 1024;
 const JSONL_CONTENT_TYPE: &str = "application/x-ndjson; charset=utf-8";
 const EXPORT_ROWS_HEADER: HeaderName = HeaderName::from_static("x-llmtrace-export-rows");
 const REQUEST_KIND_FILTERS: &[&str] = &[
@@ -156,6 +164,13 @@ struct DataOverviewQuery {
     since_hours: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct RedactionPreviewRequest {
+    headers: Option<BTreeMap<String, String>>,
+    uri: Option<String>,
+    body: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RequestTimeRange {
     since: Option<DateTime<Utc>>,
@@ -174,6 +189,7 @@ pub fn router() -> Router<AppState> {
         .route("/config", get(runtime_config))
         .route("/security/posture", get(security_posture_report))
         .route("/retention/status", get(retention_status))
+        .route("/redaction/preview", post(redaction_preview))
         .route("/usage/summary", get(usage_summary))
         .route("/usage/api-keys", get(api_key_usage))
         .route("/usage/models", get(model_usage))
@@ -243,6 +259,16 @@ async fn retention_status(State(state): State<AppState>) -> Response {
     {
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn redaction_preview(
+    State(state): State<AppState>,
+    Json(payload): Json<RedactionPreviewRequest>,
+) -> Response {
+    match build_redaction_preview(state.config.as_ref(), payload) {
+        Ok(value) => Json(value).into_response(),
+        Err(message) => bad_request(message),
     }
 }
 
@@ -576,6 +602,140 @@ async fn export_query_jsonl(
 
 async fn plugins(State(state): State<AppState>) -> Response {
     Json(plugin_status_summary(state.plugins.statuses())).into_response()
+}
+
+fn build_redaction_preview(
+    config: &Config,
+    payload: RedactionPreviewRequest,
+) -> Result<Value, String> {
+    Ok(json!({
+        "redaction": {
+            "body_redaction": body_redaction_label(config.redaction.body_redaction),
+            "store_header_hash": config.redaction.store_header_hash,
+            "sensitive_header_count": config.redaction.sensitive_headers.len(),
+            "upstream_header": &config.proxy.upstream_header,
+            "limits": {
+                "max_headers": MAX_REDACTION_PREVIEW_HEADERS,
+                "max_header_name_bytes": MAX_REDACTION_PREVIEW_HEADER_NAME_BYTES,
+                "max_header_value_bytes": MAX_REDACTION_PREVIEW_HEADER_VALUE_BYTES,
+                "max_uri_bytes": MAX_REDACTION_PREVIEW_URI_BYTES,
+                "max_body_bytes": MAX_REDACTION_PREVIEW_BODY_BYTES,
+            },
+        },
+        "headers": redaction_preview_headers(config, payload.headers)?,
+        "uri": redaction_preview_uri(payload.uri)?,
+        "body": redaction_preview_body(payload.body, config.redaction.body_redaction)?,
+    }))
+}
+
+fn redaction_preview_headers(
+    config: &Config,
+    headers: Option<BTreeMap<String, String>>,
+) -> Result<Value, String> {
+    let Some(headers) = headers else {
+        return Ok(json!({
+            "provided": false,
+            "redacted": {},
+            "first_secret_header_hash": Value::Null,
+        }));
+    };
+    if headers.len() > MAX_REDACTION_PREVIEW_HEADERS {
+        return Err(format!(
+            "headers must contain at most {MAX_REDACTION_PREVIEW_HEADERS} entries"
+        ));
+    }
+
+    let mut header_map = HeaderMap::new();
+    for (name, value) in headers {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("header names must not be empty".to_string());
+        }
+        if name.len() > MAX_REDACTION_PREVIEW_HEADER_NAME_BYTES {
+            return Err(format!(
+                "header names must be at most {MAX_REDACTION_PREVIEW_HEADER_NAME_BYTES} bytes"
+            ));
+        }
+        if value.len() > MAX_REDACTION_PREVIEW_HEADER_VALUE_BYTES {
+            return Err(format!(
+                "header {name:?} value must be at most {MAX_REDACTION_PREVIEW_HEADER_VALUE_BYTES} bytes"
+            ));
+        }
+
+        let header_name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| format!("header {name:?} has an invalid name"))?;
+        let header_value = HeaderValue::from_str(&value)
+            .map_err(|_| format!("header {name:?} has an invalid value"))?;
+        header_map.insert(header_name, header_value);
+    }
+
+    let redacted = redaction::redact_headers(
+        &header_map,
+        &config.redaction,
+        &config.proxy.upstream_header,
+    );
+    Ok(json!({
+        "provided": true,
+        "redacted": redacted.json,
+        "first_secret_header_hash": redacted.first_secret_hash,
+    }))
+}
+
+fn redaction_preview_uri(uri: Option<String>) -> Result<Value, String> {
+    let Some(uri) = uri else {
+        return Ok(json!({
+            "provided": false,
+            "redacted": Value::Null,
+        }));
+    };
+    let uri = uri.trim();
+    if uri.is_empty() {
+        return Ok(json!({
+            "provided": false,
+            "redacted": Value::Null,
+        }));
+    }
+    if uri.len() > MAX_REDACTION_PREVIEW_URI_BYTES {
+        return Err(format!(
+            "uri must be at most {MAX_REDACTION_PREVIEW_URI_BYTES} bytes"
+        ));
+    }
+
+    let redacted = redaction::redact_uri_query_values(uri);
+    Ok(json!({
+        "provided": true,
+        "input_bytes": uri.len(),
+        "output_bytes": redacted.len(),
+        "changed": redacted != uri,
+        "redacted": redacted,
+    }))
+}
+
+fn redaction_preview_body(body: Option<String>, mode: BodyRedaction) -> Result<Value, String> {
+    let Some(body) = body else {
+        return Ok(json!({
+            "provided": false,
+            "redacted": Value::Null,
+        }));
+    };
+    if body.len() > MAX_REDACTION_PREVIEW_BODY_BYTES {
+        return Err(format!(
+            "body must be at most {MAX_REDACTION_PREVIEW_BODY_BYTES} bytes"
+        ));
+    }
+
+    let redacted = redaction::redact_body(body.as_bytes(), mode);
+    let output = redacted.as_ref();
+    let changed = output != body.as_bytes();
+
+    Ok(json!({
+        "provided": true,
+        "input_bytes": body.len(),
+        "output_bytes": output.len(),
+        "changed": changed,
+        "dropped": !body.is_empty() && output.is_empty(),
+        "redacted": String::from_utf8_lossy(output),
+    }))
 }
 
 fn bad_request(message: impl Into<String>) -> Response {
@@ -1493,6 +1653,155 @@ mod tests {
         assert!(!serialized.contains("failed to read"));
         assert!(!serialized.contains("failed.wasm"));
         assert!(!serialized.contains("loaded.wasm"));
+    }
+
+    #[test]
+    fn redaction_preview_applies_configured_header_uri_and_body_redaction() {
+        let mut config = Config::default();
+        config.redaction.body_redaction = BodyRedaction::JsonSecrets;
+        config.redaction.store_header_hash = true;
+
+        let mut headers = std::collections::BTreeMap::new();
+        headers.insert(
+            "authorization".to_string(),
+            "Bearer sk-redaction-preview".to_string(),
+        );
+        headers.insert("content-type".to_string(), "application/json".to_string());
+        headers.insert(
+            config.proxy.upstream_header.clone(),
+            "https://proxy-user:proxy-pass@api.example.com/v1?api_key=upstream-secret".to_string(),
+        );
+
+        let preview = build_redaction_preview(
+            &config,
+            RedactionPreviewRequest {
+                headers: Some(headers),
+                uri: Some(
+                    "https://url-user:url-pass@api.example.com/v1?api_key=url-secret&n=1"
+                        .to_string(),
+                ),
+                body: Some(
+                    r#"{"api_key":"sk-body-secret","messages":[{"content":"hello"}]}"#.to_string(),
+                ),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(preview["redaction"]["body_redaction"], "json_secrets");
+        assert_eq!(preview["headers"]["provided"], true);
+        assert_eq!(
+            preview["headers"]["redacted"]["authorization"]["redacted"],
+            true
+        );
+        assert!(
+            preview["headers"]["first_secret_header_hash"]
+                .as_str()
+                .is_some_and(|hash| hash.len() == 64)
+        );
+        assert_eq!(
+            preview["headers"]["redacted"]["content-type"],
+            "application/json"
+        );
+        assert_eq!(
+            preview["headers"]["redacted"]["x-llmtrace-upstream"]["redacted"],
+            true
+        );
+        assert_eq!(
+            preview["headers"]["redacted"]["x-llmtrace-upstream"]["url"],
+            "https://api.example.com/v1?api_key=REDACTED"
+        );
+        assert_eq!(
+            preview["uri"]["redacted"],
+            "https://api.example.com/v1?api_key=REDACTED&n=REDACTED"
+        );
+
+        let redacted_body: Value =
+            serde_json::from_str(preview["body"]["redacted"].as_str().unwrap()).unwrap();
+        assert_eq!(redacted_body["api_key"], "[redacted]");
+        assert_eq!(redacted_body["messages"][0]["content"], "hello");
+        assert_eq!(preview["body"]["changed"], true);
+
+        let serialized = serde_json::to_string(&preview).unwrap();
+        for secret in [
+            "sk-redaction-preview",
+            "sk-body-secret",
+            "proxy-user:proxy-pass",
+            "upstream-secret",
+            "url-user:url-pass",
+            "url-secret",
+        ] {
+            assert!(
+                !serialized.contains(secret),
+                "{secret} leaked in {serialized}"
+            );
+        }
+    }
+
+    #[test]
+    fn redaction_preview_body_reports_drop_mode() {
+        let mut config = Config::default();
+        config.redaction.body_redaction = BodyRedaction::Drop;
+
+        let preview = build_redaction_preview(
+            &config,
+            RedactionPreviewRequest {
+                headers: None,
+                uri: None,
+                body: Some("secret body".to_string()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(preview["redaction"]["body_redaction"], "drop");
+        assert_eq!(preview["body"]["provided"], true);
+        assert_eq!(preview["body"]["changed"], true);
+        assert_eq!(preview["body"]["dropped"], true);
+        assert_eq!(preview["body"]["output_bytes"], 0);
+        assert_eq!(preview["body"]["redacted"], "");
+    }
+
+    #[test]
+    fn redaction_preview_rejects_invalid_and_oversized_inputs() {
+        let config = Config::default();
+
+        let error = build_redaction_preview(
+            &config,
+            RedactionPreviewRequest {
+                headers: None,
+                uri: None,
+                body: Some("x".repeat(MAX_REDACTION_PREVIEW_BODY_BYTES + 1)),
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("body must be at most"));
+
+        let mut headers = std::collections::BTreeMap::new();
+        headers.insert("bad header".to_string(), "value".to_string());
+        let error = build_redaction_preview(
+            &config,
+            RedactionPreviewRequest {
+                headers: Some(headers),
+                uri: None,
+                body: None,
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("invalid name"));
+
+        let mut headers = std::collections::BTreeMap::new();
+        for index in 0..=MAX_REDACTION_PREVIEW_HEADERS {
+            headers.insert(format!("x-test-{index}"), "value".to_string());
+        }
+        let error = build_redaction_preview(
+            &config,
+            RedactionPreviewRequest {
+                headers: Some(headers),
+                uri: None,
+                body: None,
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("headers must contain at most"));
     }
 
     #[tokio::test]
