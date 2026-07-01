@@ -15,6 +15,11 @@ use crate::redaction;
 use crate::storage::{self, ParsedMessage, TraceRecord};
 use crate::types::{BodyRedaction, PluginHook, RequestKind};
 
+const MAX_SESSION_MESSAGES_PER_TRACE: usize = 128;
+const MAX_SESSION_MESSAGE_ROLE_BYTES: usize = 64;
+const MAX_SESSION_MESSAGE_CONTENT_BYTES: usize = 16 * 1024;
+const SESSION_MESSAGES_TRUNCATED_TAG: &str = "session_messages_truncated";
+
 #[derive(Debug)]
 pub struct TraceEvent {
     pub id: Uuid,
@@ -340,6 +345,10 @@ fn build_trace(
 
     let mut messages = event.messages;
     messages.extend(parsed.messages);
+    let (messages, messages_truncated) = bound_session_messages(messages);
+    if messages_truncated {
+        tags.push(SESSION_MESSAGES_TRUNCATED_TAG.to_string());
+    }
 
     let trace = TraceRecord {
         id: event.id,
@@ -380,6 +389,34 @@ fn build_trace(
     };
 
     Ok((trace, messages, user_id, user_name))
+}
+
+fn bound_session_messages(messages: Vec<ParsedMessage>) -> (Vec<ParsedMessage>, bool) {
+    let mut truncated = messages.len() > MAX_SESSION_MESSAGES_PER_TRACE;
+    let mut bounded = Vec::with_capacity(messages.len().min(MAX_SESSION_MESSAGES_PER_TRACE));
+
+    for message in messages.into_iter().take(MAX_SESSION_MESSAGES_PER_TRACE) {
+        let (role, role_truncated) =
+            truncate_utf8_owned(message.role, MAX_SESSION_MESSAGE_ROLE_BYTES);
+        let (content, content_truncated) =
+            truncate_utf8_owned(message.content, MAX_SESSION_MESSAGE_CONTENT_BYTES);
+        truncated |= role_truncated || content_truncated;
+        bounded.push(ParsedMessage { role, content });
+    }
+
+    (bounded, truncated)
+}
+
+fn truncate_utf8_owned(value: String, max_bytes: usize) -> (String, bool) {
+    if value.len() <= max_bytes {
+        return (value, false);
+    }
+
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    (value[..end].to_string(), true)
 }
 
 fn merge_effects(
@@ -449,5 +486,61 @@ mod tests {
             .unwrap();
 
         assert_eq!(recorder.queue_metrics(), TraceQueueMetrics::new(2, 1));
+    }
+
+    #[test]
+    fn bound_session_messages_allows_small_messages() {
+        let messages = vec![ParsedMessage {
+            role: "user".to_string(),
+            content: "hello".to_string(),
+        }];
+
+        let (bounded, truncated) = bound_session_messages(messages);
+
+        assert!(!truncated);
+        assert_eq!(bounded.len(), 1);
+        assert_eq!(bounded[0].role, "user");
+        assert_eq!(bounded[0].content, "hello");
+    }
+
+    #[test]
+    fn bound_session_messages_caps_count_and_field_lengths() {
+        let role = "r".repeat(MAX_SESSION_MESSAGE_ROLE_BYTES + 1);
+        let content = "c".repeat(MAX_SESSION_MESSAGE_CONTENT_BYTES + 1);
+        let messages = (0..=MAX_SESSION_MESSAGES_PER_TRACE)
+            .map(|_| ParsedMessage {
+                role: role.clone(),
+                content: content.clone(),
+            })
+            .collect();
+
+        let (bounded, truncated) = bound_session_messages(messages);
+
+        assert!(truncated);
+        assert_eq!(bounded.len(), MAX_SESSION_MESSAGES_PER_TRACE);
+        assert_eq!(bounded[0].role.len(), MAX_SESSION_MESSAGE_ROLE_BYTES);
+        assert_eq!(bounded[0].content.len(), MAX_SESSION_MESSAGE_CONTENT_BYTES);
+    }
+
+    #[test]
+    fn bound_session_messages_truncates_on_utf8_boundaries() {
+        let role = format!("{}é", "r".repeat(MAX_SESSION_MESSAGE_ROLE_BYTES - 1));
+        let content = format!("{}é", "c".repeat(MAX_SESSION_MESSAGE_CONTENT_BYTES - 1));
+        let messages = vec![ParsedMessage { role, content }];
+
+        let (bounded, truncated) = bound_session_messages(messages);
+
+        assert!(truncated);
+        assert_eq!(bounded[0].role.len(), MAX_SESSION_MESSAGE_ROLE_BYTES - 1);
+        assert!(bounded[0].role.is_char_boundary(bounded[0].role.len()));
+        assert_eq!(
+            bounded[0].content.len(),
+            MAX_SESSION_MESSAGE_CONTENT_BYTES - 1
+        );
+        assert!(
+            bounded[0]
+                .content
+                .is_char_boundary(bounded[0].content.len())
+        );
     }
 }
