@@ -181,6 +181,10 @@ pub fn router() -> Router<AppState> {
             get(export_session_requests_jsonl),
         )
         .route("/sessions/{id}/requests", get(list_session_requests))
+        .route(
+            "/sessions/{id}/messages/export.jsonl",
+            get(export_session_messages_jsonl),
+        )
         .route("/sessions/{id}", get(get_session))
         .route("/audit-events/export.jsonl", get(export_audit_events_jsonl))
         .route("/audit-events/summary", get(audit_summary))
@@ -406,6 +410,22 @@ async fn export_session_requests_jsonl(
     }
 }
 
+async fn export_session_messages_jsonl(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<SessionDetailQuery>,
+) -> Response {
+    match storage::get_session(&state.pool, id, query.messages_limit, query.messages_offset).await {
+        Ok(Some(value)) => session_messages_jsonl_response(value),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "session not found"})),
+        )
+            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
 async fn get_session(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -563,6 +583,21 @@ fn request_list_jsonl_response(value: Value) -> Response {
     };
 
     jsonl_response(rows, "llmtrace-requests.jsonl", "llmtrace-requests.jsonl")
+}
+
+fn session_messages_jsonl_response(value: Value) -> Response {
+    let Some(rows) = value.get("messages").and_then(Value::as_array) else {
+        return api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            anyhow::anyhow!("session result did not contain a message array"),
+        );
+    };
+
+    jsonl_response(
+        rows,
+        "llmtrace-session-messages.jsonl",
+        "llmtrace-session-messages.jsonl",
+    )
 }
 
 fn audit_event_jsonl_response(value: Value) -> Response {
@@ -1506,6 +1541,56 @@ mod tests {
         let response = request_list_jsonl_response(json!({
             "items": [],
             "page": {"limit": 100, "offset": 0, "has_more": false, "next_offset": null}
+        }));
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get(EXPORT_ROWS_HEADER).unwrap(), "0");
+
+        let body = response_body_string(response).await;
+
+        assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn session_messages_jsonl_response_serializes_messages_and_headers() {
+        let response = session_messages_jsonl_response(json!({
+            "id": "e1f806fd-4dd8-4b44-b398-3bbd58f7c821",
+            "messages": [
+                {"id": 1, "role": "user", "content": "hello"},
+                {"id": 2, "role": "assistant", "content": "hi"}
+            ],
+            "messages_page": {"limit": 100, "offset": 0, "has_more": false, "next_offset": null}
+        }));
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            JSONL_CONTENT_TYPE
+        );
+        assert_eq!(
+            response.headers().get(header::CONTENT_DISPOSITION).unwrap(),
+            "attachment; filename=\"llmtrace-session-messages.jsonl\""
+        );
+        assert_eq!(response.headers().get(EXPORT_ROWS_HEADER).unwrap(), "2");
+
+        let body = response_body_string(response).await;
+        let lines = body
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            lines,
+            vec![
+                json!({"id": 1, "role": "user", "content": "hello"}),
+                json!({"id": 2, "role": "assistant", "content": "hi"})
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn session_messages_jsonl_response_allows_empty_exports() {
+        let response = session_messages_jsonl_response(json!({
+            "messages": [],
+            "messages_page": {"limit": 100, "offset": 0, "has_more": false, "next_offset": null}
         }));
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers().get(EXPORT_ROWS_HEADER).unwrap(), "0");
