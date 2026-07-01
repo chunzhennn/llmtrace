@@ -121,6 +121,16 @@ const LIST_REQUESTS_SQL: &str = r#"
         ORDER BY started_at DESC, id DESC
         LIMIT $12 OFFSET $13
         "#;
+const LIST_SESSION_REQUESTS_SQL: &str = r#"
+        SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
+               status, error, request_kind, model, api_key_hash, session_id, ttft_ms,
+               duration_ms, bytes_in, bytes_out, request_body_truncated, response_body_truncated,
+               plugin_metadata, tags
+        FROM trace_requests
+        WHERE session_id = $1
+        ORDER BY started_at DESC, id DESC
+        LIMIT $2 OFFSET $3
+        "#;
 const LIST_SESSIONS_SQL: &str = r#"
         WITH selected_sessions AS (
             SELECT id, session_key, first_seen, last_seen, user_id, user_name
@@ -1132,31 +1142,7 @@ pub async fn list_requests(pool: &PgPool, filters: RequestListFilters) -> anyhow
     let items: Vec<Value> = rows
         .into_iter()
         .take(page.limit as usize)
-        .map(|row| {
-            json!({
-                "id": row.get::<Uuid, _>("id"),
-                "started_at": row.get::<DateTime<Utc>, _>("started_at"),
-                "completed_at": row.try_get::<Option<DateTime<Utc>>, _>("completed_at").ok().flatten(),
-                "method": row.get::<String, _>("method"),
-                "original_uri": row.get::<String, _>("original_uri"),
-                "upstream_url": row.get::<String, _>("upstream_url"),
-                "upstream_host": row.try_get::<Option<String>, _>("upstream_host").ok().flatten(),
-                "status": row.try_get::<Option<i32>, _>("status").ok().flatten(),
-                "error": row.try_get::<Option<String>, _>("error").ok().flatten(),
-                "request_kind": row.get::<String, _>("request_kind"),
-                "model": row.try_get::<Option<String>, _>("model").ok().flatten(),
-                "api_key_hash": row.try_get::<Option<String>, _>("api_key_hash").ok().flatten(),
-                "session_id": row.try_get::<Option<Uuid>, _>("session_id").ok().flatten(),
-                "ttft_ms": row.try_get::<Option<i64>, _>("ttft_ms").ok().flatten(),
-                "duration_ms": row.try_get::<Option<i64>, _>("duration_ms").ok().flatten(),
-                "bytes_in": row.get::<i64, _>("bytes_in"),
-                "bytes_out": row.get::<i64, _>("bytes_out"),
-                "request_body_truncated": row.get::<bool, _>("request_body_truncated"),
-                "response_body_truncated": row.get::<bool, _>("response_body_truncated"),
-                "plugin_metadata": row.get::<Value, _>("plugin_metadata"),
-                "tags": row.get::<Vec<String>, _>("tags"),
-            })
-        })
+        .map(request_summary_row)
         .collect();
     Ok(json!({
         "items": items,
@@ -1167,6 +1153,51 @@ pub async fn list_requests(pool: &PgPool, filters: RequestListFilters) -> anyhow
             "next_offset": page.next_offset(has_more),
         },
     }))
+}
+
+pub async fn list_session_requests(
+    pool: &PgPool,
+    session_id: Uuid,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> anyhow::Result<Option<Value>> {
+    let page = RequestListPage::from_query(limit, offset);
+    let mut tx = begin_api_read_tx(pool).await?;
+    let session_exists = sqlx::query("SELECT 1 FROM trace_sessions WHERE id = $1")
+        .bind(session_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .is_some();
+    if !session_exists {
+        tx.commit().await?;
+        return Ok(None);
+    }
+
+    let rows = sqlx::query(LIST_SESSION_REQUESTS_SQL)
+        .bind(session_id)
+        .bind(page.fetch_limit())
+        .bind(page.offset)
+        .fetch_all(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    let has_more = rows.len() > page.limit as usize;
+    let items: Vec<Value> = rows
+        .into_iter()
+        .take(page.limit as usize)
+        .map(request_summary_row)
+        .collect();
+
+    Ok(Some(json!({
+        "session_id": session_id,
+        "items": items,
+        "page": {
+            "limit": page.limit,
+            "offset": page.offset,
+            "has_more": has_more,
+            "next_offset": page.next_offset(has_more),
+        },
+    })))
 }
 
 pub async fn request_facets(
@@ -1285,6 +1316,32 @@ pub async fn get_request(
         "plugin_metadata": row.get::<Value, _>("plugin_metadata"),
         "tags": row.get::<Vec<String>, _>("tags"),
     })))
+}
+
+fn request_summary_row(row: sqlx::postgres::PgRow) -> Value {
+    json!({
+        "id": row.get::<Uuid, _>("id"),
+        "started_at": row.get::<DateTime<Utc>, _>("started_at"),
+        "completed_at": row.try_get::<Option<DateTime<Utc>>, _>("completed_at").ok().flatten(),
+        "method": row.get::<String, _>("method"),
+        "original_uri": row.get::<String, _>("original_uri"),
+        "upstream_url": row.get::<String, _>("upstream_url"),
+        "upstream_host": row.try_get::<Option<String>, _>("upstream_host").ok().flatten(),
+        "status": row.try_get::<Option<i32>, _>("status").ok().flatten(),
+        "error": row.try_get::<Option<String>, _>("error").ok().flatten(),
+        "request_kind": row.get::<String, _>("request_kind"),
+        "model": row.try_get::<Option<String>, _>("model").ok().flatten(),
+        "api_key_hash": row.try_get::<Option<String>, _>("api_key_hash").ok().flatten(),
+        "session_id": row.try_get::<Option<Uuid>, _>("session_id").ok().flatten(),
+        "ttft_ms": row.try_get::<Option<i64>, _>("ttft_ms").ok().flatten(),
+        "duration_ms": row.try_get::<Option<i64>, _>("duration_ms").ok().flatten(),
+        "bytes_in": row.get::<i64, _>("bytes_in"),
+        "bytes_out": row.get::<i64, _>("bytes_out"),
+        "request_body_truncated": row.get::<bool, _>("request_body_truncated"),
+        "response_body_truncated": row.get::<bool, _>("response_body_truncated"),
+        "plugin_metadata": row.get::<Value, _>("plugin_metadata"),
+        "tags": row.get::<Vec<String>, _>("tags"),
+    })
 }
 
 pub async fn list_sessions(
@@ -3150,6 +3207,24 @@ mod tests {
             )
         );
         assert!(LIST_REQUESTS_SQL.contains("ORDER BY started_at DESC, id DESC"));
+    }
+
+    #[test]
+    fn list_session_requests_query_filters_by_session_before_paging() {
+        let session_filter = LIST_SESSION_REQUESTS_SQL
+            .find("WHERE session_id = $1")
+            .unwrap();
+        let request_order = LIST_SESSION_REQUESTS_SQL
+            .find("ORDER BY started_at DESC, id DESC")
+            .unwrap();
+        let request_limit = LIST_SESSION_REQUESTS_SQL
+            .find("LIMIT $2 OFFSET $3")
+            .unwrap();
+
+        assert!(session_filter < request_order);
+        assert!(request_order < request_limit);
+        assert!(LIST_SESSION_REQUESTS_SQL.contains("FROM trace_requests"));
+        assert!(LIST_SESSION_REQUESTS_SQL.contains("plugin_metadata, tags"));
     }
 
     #[test]

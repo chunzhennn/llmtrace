@@ -64,6 +64,12 @@ struct SessionDetailQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct SessionRequestListQuery {
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct AuditEventListQuery {
     event_type: Option<String>,
     user_id: Option<String>,
@@ -104,6 +110,7 @@ pub fn router() -> Router<AppState> {
         .route("/requests/facets", get(request_facets))
         .route("/requests/{id}", get(get_request))
         .route("/sessions", get(list_sessions))
+        .route("/sessions/{id}/requests", get(list_session_requests))
         .route("/sessions/{id}", get(get_session))
         .route("/audit-events", get(list_audit_events))
         .route("/query", post(run_query))
@@ -254,6 +261,22 @@ async fn get_session(
     Query(query): Query<SessionDetailQuery>,
 ) -> Response {
     match storage::get_session(&state.pool, id, query.messages_limit, query.messages_offset).await {
+        Ok(Some(value)) => Json(value).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "session not found"})),
+        )
+            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn list_session_requests(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<SessionRequestListQuery>,
+) -> Response {
+    match storage::list_session_requests(&state.pool, id, query.limit, query.offset).await {
         Ok(Some(value)) => Json(value).into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
