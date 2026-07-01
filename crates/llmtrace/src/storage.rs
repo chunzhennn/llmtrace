@@ -17,6 +17,9 @@ use crate::types::RequestKind;
 const DEFAULT_SESSION_MESSAGE_LIMIT: i64 = 100;
 const MAX_SESSION_MESSAGE_LIMIT: i64 = 500;
 const MAX_SESSION_MESSAGE_OFFSET: i64 = 1_000_000;
+const DEFAULT_AUDIT_EVENT_LIMIT: i64 = 100;
+const MAX_AUDIT_EVENT_LIMIT: i64 = 500;
+const MAX_AUDIT_EVENT_OFFSET: i64 = 1_000_000;
 const MAX_STRUCTURED_QUERY_FIELDS: usize = 64;
 const MAX_STRUCTURED_QUERY_FILTERS: usize = 32;
 const MAX_STRUCTURED_QUERY_ORDER_BY: usize = 8;
@@ -257,6 +260,12 @@ struct SessionMessagePage {
     offset: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AuditEventPage {
+    limit: i64,
+    offset: i64,
+}
+
 impl QueryField {
     fn name(&self) -> &str {
         match self {
@@ -293,6 +302,25 @@ impl SessionMessagePage {
                 .unwrap_or(DEFAULT_SESSION_MESSAGE_LIMIT)
                 .clamp(1, MAX_SESSION_MESSAGE_LIMIT),
             offset: offset.unwrap_or(0).clamp(0, MAX_SESSION_MESSAGE_OFFSET),
+        }
+    }
+
+    fn fetch_limit(self) -> i64 {
+        self.limit + 1
+    }
+
+    fn next_offset(self, has_more: bool) -> Option<i64> {
+        has_more.then_some(self.offset.saturating_add(self.limit))
+    }
+}
+
+impl AuditEventPage {
+    fn from_query(limit: Option<i64>, offset: Option<i64>) -> Self {
+        Self {
+            limit: limit
+                .unwrap_or(DEFAULT_AUDIT_EVENT_LIMIT)
+                .clamp(1, MAX_AUDIT_EVENT_LIMIT),
+            offset: offset.unwrap_or(0).clamp(0, MAX_AUDIT_EVENT_OFFSET),
         }
     }
 
@@ -1023,6 +1051,60 @@ pub async fn get_session(
             "next_offset": page.next_offset(has_more),
         },
     })))
+}
+
+pub async fn list_audit_events(
+    pool: &PgPool,
+    event_type: Option<String>,
+    user_id: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> anyhow::Result<Value> {
+    let page = AuditEventPage::from_query(limit, offset);
+    let mut tx = begin_api_read_tx(pool).await?;
+    let rows = sqlx::query(
+        r#"
+        SELECT id, created_at, event_type, user_id, remote_addr, detail
+        FROM ui_audit_events
+        WHERE ($1::text IS NULL OR event_type = $1)
+          AND ($2::text IS NULL OR user_id = $2)
+        ORDER BY created_at DESC, id DESC
+        LIMIT $3 OFFSET $4
+        "#,
+    )
+    .bind(event_type)
+    .bind(user_id)
+    .bind(page.fetch_limit())
+    .bind(page.offset)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    let has_more = rows.len() > page.limit as usize;
+    let items: Vec<Value> = rows
+        .into_iter()
+        .take(page.limit as usize)
+        .map(|row| {
+            json!({
+                "id": row.get::<i64, _>("id"),
+                "created_at": row.get::<DateTime<Utc>, _>("created_at"),
+                "event_type": row.get::<String, _>("event_type"),
+                "user_id": row.try_get::<Option<String>, _>("user_id").ok().flatten(),
+                "remote_addr": row.try_get::<Option<String>, _>("remote_addr").ok().flatten(),
+                "detail": row.get::<Value, _>("detail"),
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "items": items,
+        "page": {
+            "limit": page.limit,
+            "offset": page.offset,
+            "has_more": has_more,
+            "next_offset": page.next_offset(has_more),
+        },
+    }))
 }
 
 pub async fn stats(pool: &PgPool) -> anyhow::Result<Value> {
@@ -2121,6 +2203,44 @@ mod tests {
     #[test]
     fn session_message_page_reports_next_offset_only_when_more_rows_exist() {
         let page = SessionMessagePage::from_query(Some(50), Some(100));
+
+        assert_eq!(page.next_offset(true), Some(150));
+        assert_eq!(page.next_offset(false), None);
+    }
+
+    #[test]
+    fn audit_event_page_uses_safe_defaults() {
+        let page = AuditEventPage::from_query(None, None);
+
+        assert_eq!(
+            page,
+            AuditEventPage {
+                limit: DEFAULT_AUDIT_EVENT_LIMIT,
+                offset: 0,
+            }
+        );
+        assert_eq!(page.fetch_limit(), DEFAULT_AUDIT_EVENT_LIMIT + 1);
+    }
+
+    #[test]
+    fn audit_event_page_clamps_limit_and_offset() {
+        let page = AuditEventPage::from_query(Some(i64::MAX), Some(i64::MAX));
+
+        assert_eq!(page.limit, MAX_AUDIT_EVENT_LIMIT);
+        assert_eq!(page.offset, MAX_AUDIT_EVENT_OFFSET);
+    }
+
+    #[test]
+    fn audit_event_page_clamps_negative_values() {
+        let page = AuditEventPage::from_query(Some(-10), Some(-10));
+
+        assert_eq!(page.limit, 1);
+        assert_eq!(page.offset, 0);
+    }
+
+    #[test]
+    fn audit_event_page_reports_next_offset_only_when_more_rows_exist() {
+        let page = AuditEventPage::from_query(Some(50), Some(100));
 
         assert_eq!(page.next_offset(true), Some(150));
         assert_eq!(page.next_offset(false), None);

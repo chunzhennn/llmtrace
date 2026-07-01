@@ -11,6 +11,7 @@ use crate::state::AppState;
 use crate::storage;
 
 const MAX_REQUEST_SEARCH_BYTES: usize = 512;
+const MAX_AUDIT_FILTER_BYTES: usize = 1024;
 const JSONL_CONTENT_TYPE: &str = "application/x-ndjson; charset=utf-8";
 const EXPORT_ROWS_HEADER: HeaderName = HeaderName::from_static("x-llmtrace-export-rows");
 
@@ -32,6 +33,14 @@ struct SessionDetailQuery {
     messages_offset: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct AuditEventListQuery {
+    event_type: Option<String>,
+    user_id: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/stats", get(stats))
@@ -39,6 +48,7 @@ pub fn router() -> Router<AppState> {
         .route("/requests/{id}", get(get_request))
         .route("/sessions", get(list_sessions))
         .route("/sessions/{id}", get(get_session))
+        .route("/audit-events", get(list_audit_events))
         .route("/query", post(run_query))
         .route("/query/schema", get(query_schema))
         .route("/query/export.jsonl", post(export_query_jsonl))
@@ -109,6 +119,27 @@ async fn get_session(
             Json(json!({"error": "session not found"})),
         )
             .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn list_audit_events(
+    State(state): State<AppState>,
+    Query(query): Query<AuditEventListQuery>,
+) -> Response {
+    let event_type = match normalize_optional_filter("event_type", query.event_type) {
+        Ok(value) => value,
+        Err(message) => return bad_request(message),
+    };
+    let user_id = match normalize_optional_filter("user_id", query.user_id) {
+        Ok(value) => value,
+        Err(message) => return bad_request(message),
+    };
+
+    match storage::list_audit_events(&state.pool, event_type, user_id, query.limit, query.offset)
+        .await
+    {
+        Ok(value) => Json(value).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }
@@ -226,6 +257,22 @@ fn normalize_request_search(q: Option<String>) -> Result<Option<String>, String>
         ));
     }
     Ok(Some(q.to_string()))
+}
+
+fn normalize_optional_filter(field: &str, value: Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.len() > MAX_AUDIT_FILTER_BYTES {
+        return Err(format!(
+            "{field} must be at most {MAX_AUDIT_FILTER_BYTES} bytes"
+        ));
+    }
+    Ok(Some(value.to_string()))
 }
 
 #[cfg(test)]
@@ -348,6 +395,28 @@ mod tests {
             normalize_request_search(Some("a".repeat(MAX_REQUEST_SEARCH_BYTES + 1))).unwrap_err();
 
         assert!(error.contains("q must be at most"));
+    }
+
+    #[test]
+    fn optional_filter_normalization_trims_empty_values() {
+        assert_eq!(normalize_optional_filter("event_type", None).unwrap(), None);
+        assert_eq!(
+            normalize_optional_filter("event_type", Some("   ".to_string())).unwrap(),
+            None
+        );
+        assert_eq!(
+            normalize_optional_filter("event_type", Some(" login_failed ".to_string())).unwrap(),
+            Some("login_failed".to_string())
+        );
+    }
+
+    #[test]
+    fn optional_filter_normalization_rejects_oversized_values() {
+        let error =
+            normalize_optional_filter("user_id", Some("a".repeat(MAX_AUDIT_FILTER_BYTES + 1)))
+                .unwrap_err();
+
+        assert!(error.contains("user_id must be at most"));
     }
 
     async fn response_body_json(response: Response) -> serde_json::Value {
