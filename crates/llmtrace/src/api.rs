@@ -3,13 +3,14 @@ use std::collections::BTreeMap;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::routing::{delete, get, post};
+use axum::{Extension, Json, Router};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use crate::auth::MeResponse;
 use crate::config::Config;
 use crate::plugins::PluginStatus;
 use crate::redaction;
@@ -26,6 +27,7 @@ const MAX_REDACTION_PREVIEW_HEADER_NAME_BYTES: usize = 128;
 const MAX_REDACTION_PREVIEW_HEADER_VALUE_BYTES: usize = 8 * 1024;
 const MAX_REDACTION_PREVIEW_URI_BYTES: usize = 8 * 1024;
 const MAX_REDACTION_PREVIEW_BODY_BYTES: usize = 64 * 1024;
+const UI_SESSION_HASH_BYTES: usize = 64;
 const JSONL_CONTENT_TYPE: &str = "application/x-ndjson; charset=utf-8";
 const EXPORT_ROWS_HEADER: HeaderName = HeaderName::from_static("x-llmtrace-export-rows");
 const REQUEST_KIND_FILTERS: &[&str] = &[
@@ -93,6 +95,13 @@ struct SessionDetailQuery {
 
 #[derive(Debug, Deserialize)]
 struct SessionRequestListQuery {
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UiSessionListQuery {
+    include_expired: Option<bool>,
     limit: Option<i64>,
     offset: Option<i64>,
 }
@@ -217,6 +226,8 @@ pub fn router() -> Router<AppState> {
             get(export_session_messages_jsonl),
         )
         .route("/sessions/{id}", get(get_session))
+        .route("/ui-sessions", get(list_ui_sessions))
+        .route("/ui-sessions/{session_hash}", delete(revoke_ui_session))
         .route("/audit-events/export.jsonl", get(export_audit_events_jsonl))
         .route("/audit-events/summary", get(audit_summary))
         .route("/audit-events", get(list_audit_events))
@@ -534,6 +545,61 @@ async fn list_session_requests(
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(json!({"error": "session not found"})),
+        )
+            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn list_ui_sessions(
+    State(state): State<AppState>,
+    Query(query): Query<UiSessionListQuery>,
+) -> Response {
+    match storage::list_ui_sessions(
+        &state.pool,
+        query.include_expired.unwrap_or(false),
+        query.limit,
+        query.offset,
+    )
+    .await
+    {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn revoke_ui_session(
+    State(state): State<AppState>,
+    Extension(user): Extension<MeResponse>,
+    Path(session_hash): Path<String>,
+) -> Response {
+    let session_hash = match normalize_ui_session_hash(session_hash) {
+        Ok(session_hash) => session_hash,
+        Err(message) => return bad_request(message),
+    };
+
+    match storage::revoke_ui_session(&state.pool, &session_hash).await {
+        Ok(Some(session)) => {
+            let audit_result = storage::record_ui_audit_event(
+                &state.pool,
+                "ui_session_revoked",
+                Some(&user.user_id),
+                json!({"session_hash": session_hash}),
+            )
+            .await;
+            if let Err(error) = audit_result {
+                tracing::warn!(%error, "failed to record ui session revocation audit event");
+            }
+
+            Json(json!({
+                "revoked": true,
+                "session": session,
+            }))
+            .into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "ui session not found"})),
         )
             .into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
@@ -975,6 +1041,19 @@ fn normalize_optional_uuid_filter(
     Uuid::parse_str(&value)
         .map(Some)
         .map_err(|_| format!("{field} must be a UUID"))
+}
+
+fn normalize_ui_session_hash(value: String) -> Result<String, String> {
+    let value = value.trim();
+    if value.len() != UI_SESSION_HASH_BYTES {
+        return Err(format!(
+            "session_hash must be a {UI_SESSION_HASH_BYTES}-character hexadecimal SHA-256 value"
+        ));
+    }
+    if !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("session_hash must contain only hexadecimal characters".to_string());
+    }
+    Ok(value.to_ascii_lowercase())
 }
 
 fn normalize_request_time_range(
@@ -2131,6 +2210,27 @@ mod tests {
             .unwrap_err();
 
         assert!(error.contains("session_id must be a UUID"));
+    }
+
+    #[test]
+    fn ui_session_hash_normalization_accepts_sha256_hex() {
+        let hash = "ABCDEF0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789";
+
+        assert_eq!(
+            normalize_ui_session_hash(hash.to_string()).unwrap(),
+            hash.to_ascii_lowercase()
+        );
+    }
+
+    #[test]
+    fn ui_session_hash_normalization_rejects_raw_or_invalid_tokens() {
+        let short = normalize_ui_session_hash("short-token".to_string()).unwrap_err();
+        assert!(short.contains("64-character"));
+
+        let mut invalid = "a".repeat(UI_SESSION_HASH_BYTES);
+        invalid.replace_range(10..11, "z");
+        let error = normalize_ui_session_hash(invalid).unwrap_err();
+        assert!(error.contains("hexadecimal"));
     }
 
     #[test]

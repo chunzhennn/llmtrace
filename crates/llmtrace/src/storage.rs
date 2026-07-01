@@ -37,6 +37,9 @@ const MAX_SESSION_LIST_OFFSET: i64 = 1_000_000;
 const DEFAULT_SESSION_MESSAGE_LIMIT: i64 = 100;
 const MAX_SESSION_MESSAGE_LIMIT: i64 = 500;
 const MAX_SESSION_MESSAGE_OFFSET: i64 = 1_000_000;
+const DEFAULT_UI_SESSION_LIMIT: i64 = 100;
+const MAX_UI_SESSION_LIMIT: i64 = 500;
+const MAX_UI_SESSION_OFFSET: i64 = 1_000_000;
 const DEFAULT_AUDIT_EVENT_LIMIT: i64 = 100;
 const MAX_AUDIT_EVENT_LIMIT: i64 = 500;
 const MAX_AUDIT_EVENT_OFFSET: i64 = 1_000_000;
@@ -748,6 +751,29 @@ const STORAGE_SUMMARY_SQL: &str = r#"
         LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
         ORDER BY t.display_order
         "#;
+const LIST_UI_SESSIONS_SQL: &str = r#"
+        SELECT encode(sha256(convert_to(id, 'UTF8')), 'hex') AS session_hash,
+               user_id,
+               display_name,
+               login_method,
+               created_at,
+               expires_at,
+               expires_at <= $1 AS expired
+        FROM ui_sessions
+        WHERE $2::boolean OR expires_at > $1
+        ORDER BY expires_at DESC, created_at DESC, session_hash ASC
+        LIMIT $3 OFFSET $4
+        "#;
+const REVOKE_UI_SESSION_SQL: &str = r#"
+        DELETE FROM ui_sessions
+        WHERE encode(sha256(convert_to(id, 'UTF8')), 'hex') = $1
+        RETURNING encode(sha256(convert_to(id, 'UTF8')), 'hex') AS session_hash,
+                  user_id,
+                  display_name,
+                  login_method,
+                  created_at,
+                  expires_at
+        "#;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RetentionPruneResult {
@@ -1014,6 +1040,12 @@ struct SessionMessagePage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UiSessionPage {
+    limit: i64,
+    offset: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AuditEventPage {
     limit: i64,
     offset: i64,
@@ -1207,6 +1239,25 @@ impl SessionMessagePage {
                 .unwrap_or(DEFAULT_SESSION_MESSAGE_LIMIT)
                 .clamp(1, MAX_SESSION_MESSAGE_LIMIT),
             offset: offset.unwrap_or(0).clamp(0, MAX_SESSION_MESSAGE_OFFSET),
+        }
+    }
+
+    fn fetch_limit(self) -> i64 {
+        self.limit + 1
+    }
+
+    fn next_offset(self, has_more: bool) -> Option<i64> {
+        has_more.then_some(self.offset.saturating_add(self.limit))
+    }
+}
+
+impl UiSessionPage {
+    fn from_query(limit: Option<i64>, offset: Option<i64>) -> Self {
+        Self {
+            limit: limit
+                .unwrap_or(DEFAULT_UI_SESSION_LIMIT)
+                .clamp(1, MAX_UI_SESSION_LIMIT),
+            offset: offset.unwrap_or(0).clamp(0, MAX_UI_SESSION_OFFSET),
         }
     }
 
@@ -2307,6 +2358,34 @@ fn request_summary_row(row: sqlx::postgres::PgRow) -> Value {
     })
 }
 
+fn ui_session_row(row: sqlx::postgres::PgRow, now: DateTime<Utc>) -> Value {
+    let expires_at = row.get::<DateTime<Utc>, _>("expires_at");
+    json!({
+        "session_hash": row.get::<String, _>("session_hash"),
+        "user_id": row.get::<String, _>("user_id"),
+        "display_name": row.get::<String, _>("display_name"),
+        "login_method": row.get::<String, _>("login_method"),
+        "created_at": row.get::<DateTime<Utc>, _>("created_at"),
+        "expires_at": expires_at,
+        "expires_in_secs": seconds_until(now, expires_at),
+        "expired": row.get::<bool, _>("expired"),
+    })
+}
+
+fn ui_session_revoked_row(row: sqlx::postgres::PgRow, now: DateTime<Utc>) -> Value {
+    let expires_at = row.get::<DateTime<Utc>, _>("expires_at");
+    json!({
+        "session_hash": row.get::<String, _>("session_hash"),
+        "user_id": row.get::<String, _>("user_id"),
+        "display_name": row.get::<String, _>("display_name"),
+        "login_method": row.get::<String, _>("login_method"),
+        "created_at": row.get::<DateTime<Utc>, _>("created_at"),
+        "expires_at": expires_at,
+        "expires_in_secs": seconds_until(now, expires_at),
+        "expired": expires_at <= now,
+    })
+}
+
 pub async fn list_sessions(
     pool: &PgPool,
     q: Option<String>,
@@ -2350,6 +2429,73 @@ pub async fn list_sessions(
             "next_offset": page.next_offset(has_more),
         },
     }))
+}
+
+pub async fn list_ui_sessions(
+    pool: &PgPool,
+    include_expired: bool,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> anyhow::Result<Value> {
+    let now = Utc::now();
+    let page = UiSessionPage::from_query(limit, offset);
+    let mut tx = begin_api_read_tx(pool).await?;
+    let rows = sqlx::query(LIST_UI_SESSIONS_SQL)
+        .bind(now)
+        .bind(include_expired)
+        .bind(page.fetch_limit())
+        .bind(page.offset)
+        .fetch_all(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    let has_more = rows.len() > page.limit as usize;
+    let items = rows
+        .into_iter()
+        .take(page.limit as usize)
+        .map(|row| ui_session_row(row, now))
+        .collect::<Vec<_>>();
+
+    Ok(json!({
+        "items": items,
+        "page": {
+            "limit": page.limit,
+            "offset": page.offset,
+            "include_expired": include_expired,
+            "has_more": has_more,
+            "next_offset": page.next_offset(has_more),
+        },
+    }))
+}
+
+pub async fn revoke_ui_session(pool: &PgPool, session_hash: &str) -> anyhow::Result<Option<Value>> {
+    let now = Utc::now();
+    let row = sqlx::query(REVOKE_UI_SESSION_SQL)
+        .bind(session_hash)
+        .fetch_optional(pool)
+        .await?;
+
+    Ok(row.map(|row| ui_session_revoked_row(row, now)))
+}
+
+pub async fn record_ui_audit_event(
+    pool: &PgPool,
+    event_type: &str,
+    user_id: Option<&str>,
+    detail: Value,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO ui_audit_events (event_type, user_id, remote_addr, detail)
+        VALUES ($1, $2, NULL, $3)
+        "#,
+    )
+    .bind(event_type)
+    .bind(user_id)
+    .bind(detail)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 pub async fn get_session(
@@ -3082,6 +3228,10 @@ pub async fn data_overview(pool: &PgPool, since_hours: Option<i64>) -> anyhow::R
 
 fn seconds_since(now: DateTime<Utc>, value: Option<DateTime<Utc>>) -> Option<i64> {
     value.map(|value| now.signed_duration_since(value).num_seconds().max(0))
+}
+
+fn seconds_until(now: DateTime<Utc>, value: DateTime<Utc>) -> i64 {
+    value.signed_duration_since(now).num_seconds().max(0)
 }
 
 fn rate(numerator: i64, denominator: i64) -> f64 {
@@ -4679,6 +4829,40 @@ mod tests {
     }
 
     #[test]
+    fn ui_session_page_uses_safe_defaults() {
+        let page = UiSessionPage::from_query(None, None);
+
+        assert_eq!(
+            page,
+            UiSessionPage {
+                limit: DEFAULT_UI_SESSION_LIMIT,
+                offset: 0,
+            }
+        );
+        assert_eq!(page.fetch_limit(), DEFAULT_UI_SESSION_LIMIT + 1);
+    }
+
+    #[test]
+    fn ui_session_page_clamps_limit_and_offset() {
+        let page = UiSessionPage::from_query(Some(i64::MAX), Some(i64::MAX));
+
+        assert_eq!(page.limit, MAX_UI_SESSION_LIMIT);
+        assert_eq!(page.offset, MAX_UI_SESSION_OFFSET);
+
+        let min = UiSessionPage::from_query(Some(-10), Some(-10));
+        assert_eq!(min.limit, 1);
+        assert_eq!(min.offset, 0);
+    }
+
+    #[test]
+    fn ui_session_page_reports_next_offset_only_when_more_rows_exist() {
+        let page = UiSessionPage::from_query(Some(50), Some(100));
+
+        assert_eq!(page.next_offset(true), Some(150));
+        assert_eq!(page.next_offset(false), None);
+    }
+
+    #[test]
     fn audit_event_page_uses_safe_defaults() {
         let page = AuditEventPage::from_query(None, None);
 
@@ -4979,6 +5163,22 @@ mod tests {
     }
 
     #[test]
+    fn seconds_until_reports_nonnegative_remaining_ttl() {
+        let now = DateTime::parse_from_rfc3339("2026-07-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let future = DateTime::parse_from_rfc3339("2026-07-01T12:05:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let past = DateTime::parse_from_rfc3339("2026-07-01T11:55:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        assert_eq!(seconds_until(now, future), 300);
+        assert_eq!(seconds_until(now, past), 0);
+    }
+
+    #[test]
     fn rate_handles_empty_and_negative_counts() {
         assert_eq!(rate(5, 10), 0.5);
         assert_eq!(rate(5, 0), 0.0);
@@ -5163,6 +5363,38 @@ mod tests {
         assert!(LIST_SESSIONS_SQL.contains("user_id ILIKE '%' || $1 || '%' ESCAPE '\\'"));
         assert!(LIST_SESSIONS_SQL.contains("user_name ILIKE '%' || $1 || '%' ESCAPE '\\'"));
         assert!(LIST_SESSIONS_SQL.contains("WHERE r.session_id = s.id"));
+    }
+
+    #[test]
+    fn ui_session_queries_use_hashed_token_identifiers() {
+        for query in [LIST_UI_SESSIONS_SQL, REVOKE_UI_SESSION_SQL] {
+            assert!(
+                query.contains("FROM ui_sessions") || query.contains("DELETE FROM ui_sessions")
+            );
+            assert!(query.contains("encode(sha256(convert_to(id, 'UTF8')), 'hex')"));
+            assert!(query.contains("session_hash"));
+            assert!(query.contains("user_id"));
+            assert!(query.contains("display_name"));
+            assert!(query.contains("login_method"));
+            assert!(query.contains("created_at"));
+            assert!(query.contains("expires_at"));
+            assert!(!query.contains("SELECT id"));
+            assert!(!query.contains("RETURNING id"));
+            assert!(!query.contains("request_headers"));
+            assert!(!query.contains("response_headers"));
+            assert!(!query.contains("request_body_compressed"));
+            assert!(!query.contains("response_body_compressed"));
+            assert!(!query.contains("plugin_metadata"));
+            assert!(!query.contains("detail"));
+        }
+
+        assert!(LIST_UI_SESSIONS_SQL.contains("WHERE $2::boolean OR expires_at > $1"));
+        assert!(LIST_UI_SESSIONS_SQL.contains("ORDER BY expires_at DESC"));
+        assert!(LIST_UI_SESSIONS_SQL.contains("LIMIT $3 OFFSET $4"));
+        assert!(
+            REVOKE_UI_SESSION_SQL
+                .contains("WHERE encode(sha256(convert_to(id, 'UTF8')), 'hex') = $1")
+        );
     }
 
     #[test]
