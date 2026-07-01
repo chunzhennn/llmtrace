@@ -21,6 +21,7 @@ struct RequestListQuery {
     q: Option<String>,
     status: Option<i32>,
     limit: Option<i64>,
+    offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,7 +122,7 @@ async fn list_requests(
         Err(message) => return bad_request(message),
     };
 
-    match storage::list_requests(&state.pool, q, query.status, query.limit.unwrap_or(100)).await {
+    match storage::list_requests(&state.pool, q, query.status, query.limit, query.offset).await {
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }

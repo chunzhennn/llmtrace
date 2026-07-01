@@ -151,7 +151,13 @@ Allowlist entries do not support wildcards. URL entries must not contain credent
 
 ## API pagination
 
-List endpoints clamp `limit` to the range `1..=500`. `GET /api/requests?q=...` and `GET /api/sessions?q=...` trim empty search strings, reject search terms over 512 bytes, and treat `%` and `_` as literal characters instead of SQL wildcard operators. Session list search matches `session_key`, `user_id`, and `user_name`; use `limit` and `offset` to page through long session lists:
+List endpoints clamp `limit` to the range `1..=500`. `GET /api/requests?q=...` and `GET /api/sessions?q=...` trim empty search strings, reject search terms over 512 bytes, and treat `%` and `_` as literal characters instead of SQL wildcard operators. Request list search matches `upstream_url`, `model`, and `request_kind`; `status` filters by exact HTTP status code. Use `limit` and `offset` to page through long request lists:
+
+```bash
+curl 'http://127.0.0.1:3000/api/requests?q=gpt-4o&status=500&limit=100&offset=0'
+```
+
+Request list responses include `page.has_more` and `page.next_offset` so clients can request the next page without assuming all matching requests were returned. Session list search matches `session_key`, `user_id`, and `user_name`; use `limit` and `offset` to page through long session lists:
 
 ```bash
 curl 'http://127.0.0.1:3000/api/sessions?q=alice&limit=100&offset=0'

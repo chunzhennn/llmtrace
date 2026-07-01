@@ -14,6 +14,9 @@ use crate::config::StorageConfig;
 use crate::metrics::RuntimeMetrics;
 use crate::types::RequestKind;
 
+const DEFAULT_REQUEST_LIST_LIMIT: i64 = 100;
+const MAX_REQUEST_LIST_LIMIT: i64 = 500;
+const MAX_REQUEST_LIST_OFFSET: i64 = 1_000_000;
 const DEFAULT_SESSION_LIST_LIMIT: i64 = 100;
 const MAX_SESSION_LIST_LIMIT: i64 = 500;
 const MAX_SESSION_LIST_OFFSET: i64 = 1_000_000;
@@ -38,6 +41,22 @@ const MAX_STRUCTURED_QUERY_STRING_VALUE_BYTES: usize = 4 * 1024;
 const MAX_STRUCTURED_QUERY_JSON_VALUE_BYTES: usize = 16 * 1024;
 const API_READ_STATEMENT_TIMEOUT_SQL: &str = "SET LOCAL statement_timeout = '5s'";
 const READINESS_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
+const LIST_REQUESTS_SQL: &str = r#"
+        SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
+               status, error, request_kind, model, api_key_hash, session_id, ttft_ms,
+               duration_ms, bytes_in, bytes_out, request_body_truncated, response_body_truncated,
+               plugin_metadata, tags
+        FROM trace_requests
+        WHERE (
+            $1::text IS NULL
+            OR upstream_url ILIKE '%' || $1 || '%' ESCAPE '\'
+            OR model ILIKE '%' || $1 || '%' ESCAPE '\'
+            OR request_kind ILIKE '%' || $1 || '%' ESCAPE '\'
+        )
+          AND ($2::int IS NULL OR status = $2)
+        ORDER BY started_at DESC, id DESC
+        LIMIT $3 OFFSET $4
+        "#;
 const LIST_SESSIONS_SQL: &str = r#"
         WITH selected_sessions AS (
             SELECT id, session_key, first_seen, last_seen, user_id, user_name
@@ -272,6 +291,12 @@ impl FilterKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RequestListPage {
+    limit: i64,
+    offset: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SessionListPage {
     limit: i64,
     offset: i64,
@@ -334,6 +359,25 @@ impl QueryField {
                 builder.push(")");
             }
         }
+    }
+}
+
+impl RequestListPage {
+    fn from_query(limit: Option<i64>, offset: Option<i64>) -> Self {
+        Self {
+            limit: limit
+                .unwrap_or(DEFAULT_REQUEST_LIST_LIMIT)
+                .clamp(1, MAX_REQUEST_LIST_LIMIT),
+            offset: offset.unwrap_or(0).clamp(0, MAX_REQUEST_LIST_OFFSET),
+        }
+    }
+
+    fn fetch_limit(self) -> i64 {
+        self.limit + 1
+    }
+
+    fn next_offset(self, has_more: bool) -> Option<i64> {
+        has_more.then_some(self.offset.saturating_add(self.limit))
     }
 }
 
@@ -962,37 +1006,25 @@ pub async fn list_requests(
     pool: &PgPool,
     q: Option<String>,
     status: Option<i32>,
-    limit: i64,
+    limit: Option<i64>,
+    offset: Option<i64>,
 ) -> anyhow::Result<Value> {
     let q = q.map(|value| escape_like(&value));
+    let page = RequestListPage::from_query(limit, offset);
     let mut tx = begin_api_read_tx(pool).await?;
-    let rows = sqlx::query(
-        r#"
-        SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
-               status, error, request_kind, model, api_key_hash, session_id, ttft_ms,
-               duration_ms, bytes_in, bytes_out, request_body_truncated, response_body_truncated,
-               plugin_metadata, tags
-        FROM trace_requests
-        WHERE (
-            $1::text IS NULL
-            OR upstream_url ILIKE '%' || $1 || '%' ESCAPE '\'
-            OR model ILIKE '%' || $1 || '%' ESCAPE '\'
-            OR request_kind ILIKE '%' || $1 || '%' ESCAPE '\'
-        )
-          AND ($2::int IS NULL OR status = $2)
-        ORDER BY started_at DESC
-        LIMIT $3
-        "#,
-    )
-    .bind(q)
-    .bind(status)
-    .bind(limit.clamp(1, 500))
-    .fetch_all(&mut *tx)
-    .await?;
+    let rows = sqlx::query(LIST_REQUESTS_SQL)
+        .bind(q)
+        .bind(status)
+        .bind(page.fetch_limit())
+        .bind(page.offset)
+        .fetch_all(&mut *tx)
+        .await?;
     tx.commit().await?;
 
+    let has_more = rows.len() > page.limit as usize;
     let items: Vec<Value> = rows
         .into_iter()
+        .take(page.limit as usize)
         .map(|row| {
             json!({
                 "id": row.get::<Uuid, _>("id"),
@@ -1019,7 +1051,15 @@ pub async fn list_requests(
             })
         })
         .collect();
-    Ok(json!({ "items": items }))
+    Ok(json!({
+        "items": items,
+        "page": {
+            "limit": page.limit,
+            "offset": page.offset,
+            "has_more": has_more,
+            "next_offset": page.next_offset(has_more),
+        },
+    }))
 }
 
 pub async fn get_request(
@@ -2565,6 +2605,44 @@ mod tests {
     }
 
     #[test]
+    fn request_list_page_uses_safe_defaults() {
+        let page = RequestListPage::from_query(None, None);
+
+        assert_eq!(
+            page,
+            RequestListPage {
+                limit: DEFAULT_REQUEST_LIST_LIMIT,
+                offset: 0,
+            }
+        );
+        assert_eq!(page.fetch_limit(), DEFAULT_REQUEST_LIST_LIMIT + 1);
+    }
+
+    #[test]
+    fn request_list_page_clamps_limit_and_offset() {
+        let page = RequestListPage::from_query(Some(i64::MAX), Some(i64::MAX));
+
+        assert_eq!(page.limit, MAX_REQUEST_LIST_LIMIT);
+        assert_eq!(page.offset, MAX_REQUEST_LIST_OFFSET);
+    }
+
+    #[test]
+    fn request_list_page_clamps_negative_values() {
+        let page = RequestListPage::from_query(Some(-10), Some(-10));
+
+        assert_eq!(page.limit, 1);
+        assert_eq!(page.offset, 0);
+    }
+
+    #[test]
+    fn request_list_page_reports_next_offset_only_when_more_rows_exist() {
+        let page = RequestListPage::from_query(Some(50), Some(100));
+
+        assert_eq!(page.next_offset(true), Some(150));
+        assert_eq!(page.next_offset(false), None);
+    }
+
+    #[test]
     fn session_list_page_uses_safe_defaults() {
         let page = SessionListPage::from_query(None, None);
 
@@ -2811,6 +2889,20 @@ mod tests {
         assert!(LIST_SESSIONS_SQL.contains("user_id ILIKE '%' || $1 || '%' ESCAPE '\\'"));
         assert!(LIST_SESSIONS_SQL.contains("user_name ILIKE '%' || $1 || '%' ESCAPE '\\'"));
         assert!(LIST_SESSIONS_SQL.contains("WHERE r.session_id = s.id"));
+    }
+
+    #[test]
+    fn list_requests_query_filters_then_pages_requests() {
+        let where_clause = LIST_REQUESTS_SQL.find("WHERE (").unwrap();
+        let request_limit = LIST_REQUESTS_SQL.find("LIMIT $3 OFFSET $4").unwrap();
+
+        assert!(where_clause < request_limit);
+        assert!(LIST_REQUESTS_SQL.contains("$1::text IS NULL"));
+        assert!(LIST_REQUESTS_SQL.contains("upstream_url ILIKE '%' || $1 || '%' ESCAPE '\\'"));
+        assert!(LIST_REQUESTS_SQL.contains("model ILIKE '%' || $1 || '%' ESCAPE '\\'"));
+        assert!(LIST_REQUESTS_SQL.contains("request_kind ILIKE '%' || $1 || '%' ESCAPE '\\'"));
+        assert!(LIST_REQUESTS_SQL.contains("AND ($2::int IS NULL OR status = $2)"));
+        assert!(LIST_REQUESTS_SQL.contains("ORDER BY started_at DESC, id DESC"));
     }
 
     #[test]
