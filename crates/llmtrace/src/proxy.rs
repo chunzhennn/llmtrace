@@ -127,7 +127,7 @@ async fn proxy_http(
         )
         .body(reqwest::Body::wrap_stream(request_body));
     for (name, value) in parts.headers.iter() {
-        if should_forward_header(name) {
+        if should_forward_header(name, &parts.headers) {
             upstream_request = upstream_request.header(name.as_str(), value.as_bytes());
         }
     }
@@ -196,7 +196,7 @@ async fn proxy_http(
 
     let mut response_builder = Response::builder().status(status);
     for (name, value) in response_headers.iter() {
-        if should_forward_response_header(name) {
+        if should_forward_response_header(name, &response_headers) {
             response_builder = response_builder.header(name, value);
         }
     }
@@ -468,7 +468,7 @@ async fn handle_websocket(
         }
     };
     for (name, value) in original_headers.iter() {
-        if should_forward_header(name)
+        if should_forward_header(name, &original_headers)
             && let Ok(header_name) = tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(
                 name.as_str().as_bytes(),
             )
@@ -991,17 +991,29 @@ fn http_to_ws_url(mut url: Url) -> anyhow::Result<Url> {
     Ok(url)
 }
 
-fn should_forward_header(name: &HeaderName) -> bool {
+fn should_forward_header(name: &HeaderName, headers: &HeaderMap) -> bool {
     let name = name.as_str().to_ascii_lowercase();
     name != header::HOST.as_str()
         && name != header::COOKIE.as_str()
         && !HOP_BY_HOP_HEADERS.contains(&name.as_str())
+        && !connection_header_names(headers, &name)
         && !name.starts_with("x-llmtrace-")
 }
 
-fn should_forward_response_header(name: &HeaderName) -> bool {
+fn should_forward_response_header(name: &HeaderName, headers: &HeaderMap) -> bool {
     let name = name.as_str().to_ascii_lowercase();
-    name != header::SET_COOKIE.as_str() && !HOP_BY_HOP_HEADERS.contains(&name.as_str())
+    name != header::SET_COOKIE.as_str()
+        && !HOP_BY_HOP_HEADERS.contains(&name.as_str())
+        && !connection_header_names(headers, &name)
+}
+
+fn connection_header_names(headers: &HeaderMap, name: &str) -> bool {
+    headers
+        .get_all(header::CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|token| token.trim().eq_ignore_ascii_case(name))
 }
 
 fn is_websocket(headers: &HeaderMap) -> bool {
@@ -1102,32 +1114,90 @@ mod tests {
 
     #[test]
     fn request_header_forwarding_strips_proxy_owned_headers() {
-        assert!(!should_forward_header(&header::HOST));
-        assert!(!should_forward_header(&header::COOKIE));
-        assert!(!should_forward_header(&header::CONNECTION));
-        assert!(!should_forward_header(&HeaderName::from_static(
-            "x-llmtrace-upstream"
-        )));
-        assert!(!should_forward_header(&HeaderName::from_static(
-            "x-llmtrace-trace-id"
-        )));
+        let headers = HeaderMap::new();
+
+        assert!(!should_forward_header(&header::HOST, &headers));
+        assert!(!should_forward_header(&header::COOKIE, &headers));
+        assert!(!should_forward_header(&header::CONNECTION, &headers));
+        assert!(!should_forward_header(
+            &HeaderName::from_static("x-llmtrace-upstream"),
+            &headers
+        ));
+        assert!(!should_forward_header(
+            &HeaderName::from_static("x-llmtrace-trace-id"),
+            &headers
+        ));
+    }
+
+    #[test]
+    fn request_header_forwarding_strips_connection_nominated_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONNECTION,
+            "keep-alive, X-Secret-Hop".parse().unwrap(),
+        );
+        headers.insert("x-secret-hop", "secret".parse().unwrap());
+        headers.insert("x-request-id", "request-1".parse().unwrap());
+
+        assert!(!should_forward_header(
+            &HeaderName::from_static("x-secret-hop"),
+            &headers
+        ));
+        assert!(should_forward_header(
+            &HeaderName::from_static("x-request-id"),
+            &headers
+        ));
     }
 
     #[test]
     fn request_header_forwarding_keeps_end_to_end_headers() {
-        assert!(should_forward_header(&header::AUTHORIZATION));
-        assert!(should_forward_header(&header::CONTENT_TYPE));
-        assert!(should_forward_header(&HeaderName::from_static(
-            "x-request-id"
-        )));
+        let headers = HeaderMap::new();
+
+        assert!(should_forward_header(&header::AUTHORIZATION, &headers));
+        assert!(should_forward_header(&header::CONTENT_TYPE, &headers));
+        assert!(should_forward_header(
+            &HeaderName::from_static("x-request-id"),
+            &headers
+        ));
     }
 
     #[test]
     fn response_header_forwarding_strips_cookie_and_hop_by_hop_headers() {
-        assert!(!should_forward_response_header(&header::SET_COOKIE));
-        assert!(!should_forward_response_header(&header::CONNECTION));
-        assert!(should_forward_response_header(&header::CONTENT_TYPE));
-        assert!(should_forward_response_header(&header::CACHE_CONTROL));
+        let headers = HeaderMap::new();
+
+        assert!(!should_forward_response_header(
+            &header::SET_COOKIE,
+            &headers
+        ));
+        assert!(!should_forward_response_header(
+            &header::CONNECTION,
+            &headers
+        ));
+        assert!(should_forward_response_header(
+            &header::CONTENT_TYPE,
+            &headers
+        ));
+        assert!(should_forward_response_header(
+            &header::CACHE_CONTROL,
+            &headers
+        ));
+    }
+
+    #[test]
+    fn response_header_forwarding_strips_connection_nominated_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONNECTION, "close, X-Upstream-Hop".parse().unwrap());
+        headers.insert("x-upstream-hop", "internal".parse().unwrap());
+        headers.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+
+        assert!(!should_forward_response_header(
+            &HeaderName::from_static("x-upstream-hop"),
+            &headers
+        ));
+        assert!(should_forward_response_header(
+            &header::CACHE_CONTROL,
+            &headers
+        ));
     }
 
     #[test]
