@@ -44,6 +44,7 @@ Set `server.deployment = "production"` to make startup fail fast on insecure or 
 - `auth.cookie_secure = true` when `server.public_url` uses `https`; HTTP public URLs may set it to `false` for private or reverse-proxy deployments that intentionally terminate without browser-facing HTTPS.
 - `auth.login_rate_limit.enabled = true`.
 - `auth.local_admin.password_hash` is set, and plaintext `auth.local_admin.password` is not set.
+- `observability.metrics_bearer_token` is set, so `GET /metrics` requires `Authorization: Bearer <token>`.
 - `redaction.body_redaction` is `drop` or `json_secrets`.
 - When OAuth is enabled, `auth.oauth.require_email_verified = true`, and `auth.oauth.allowed_emails` or `auth.oauth.allowed_domains` is configured. `auth.oauth.issuer_url`, any explicit `auth.oauth.redirect_url`, and discovered or fallback OAuth authorization/token/userinfo endpoints may use `http` or `https`, which supports internal providers and callback URLs reached through a reverse proxy; they are still rejected if they are not valid HTTP(S) URLs or contain embedded credentials. OAuth email allowlist entries must be exact email addresses, and domain entries must be domain names such as `example.com`; URL syntax, wildcards, whitespace, and non-ASCII forms are rejected at startup.
 
@@ -69,6 +70,9 @@ acquire_timeout_secs = 30
 retention_days = 30
 retention_prune_interval_secs = 3600
 retention_prune_batch_size = 1000
+
+[observability]
+metrics_bearer_token = "replace-with-long-random-token"
 
 [auth]
 cookie_secure = true
@@ -115,7 +119,7 @@ Useful environment overrides include:
 - Proxy: `LLMTRACE_DEFAULT_UPSTREAM`, `LLMTRACE_ALLOW_UPSTREAMS`, `LLMTRACE_UPSTREAM_HEADER`, `LLMTRACE_PROXY_TIMEOUT_SECS`, `LLMTRACE_MAX_BODY_CAPTURE_BYTES`, `LLMTRACE_MAX_REQUEST_BODY_BYTES`, `LLMTRACE_MAX_WEBSOCKET_MESSAGE_BYTES`, and `LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES`. `LLMTRACE_ALLOW_UPSTREAMS` is a comma-separated list using the same syntax as `proxy.allow_upstreams`.
 - Auth: `LLMTRACE_AUTH_COOKIE_SECURE`, `LLMTRACE_SESSION_TTL_HOURS`, `LLMTRACE_LOGIN_RATE_LIMIT_ENABLED`, `LLMTRACE_LOGIN_RATE_LIMIT_MAX_FAILURES`, `LLMTRACE_LOGIN_RATE_LIMIT_WINDOW_SECS`, `LLMTRACE_LOGIN_RATE_LIMIT_LOCKOUT_SECS`, `LLMTRACE_LOGIN_RATE_LIMIT_MAX_TRACKED_ENTRIES`, `LLMTRACE_ADMIN_USERNAME`, `LLMTRACE_ADMIN_PASSWORD`, and `LLMTRACE_ADMIN_PASSWORD_HASH`.
 - OAuth: `LLMTRACE_OAUTH_ENABLED`, `LLMTRACE_OAUTH_ISSUER_URL`, `LLMTRACE_OAUTH_CLIENT_ID`, `LLMTRACE_OAUTH_CLIENT_SECRET`, `LLMTRACE_OAUTH_REDIRECT_URL`, `LLMTRACE_OAUTH_REQUIRE_EMAIL_VERIFIED`, `LLMTRACE_OAUTH_ALLOWED_EMAILS`, and `LLMTRACE_OAUTH_ALLOWED_DOMAINS`. The allowed email/domain variables are comma-separated lists and use the same validation as the toml fields.
-- Observability: `LLMTRACE_METRICS_BEARER_TOKEN`, which requires `Authorization: Bearer <token>` on `GET /metrics` when set.
+- Observability: `LLMTRACE_METRICS_BEARER_TOKEN`, which requires `Authorization: Bearer <token>` on `GET /metrics` when set and is required in production mode.
 - Redaction: `LLMTRACE_SENSITIVE_HEADERS`, `LLMTRACE_STORE_HEADER_HASH`, and `LLMTRACE_BODY_REDACTION`, with `LLMTRACE_BODY_REDACTION` set to one of `disabled`, `drop`, or `json_secrets`.
 
 Startup validation rejects obviously dangerous resource limits before the service binds a port. Proxy timeout is capped at 3600 seconds; stored body capture at 64 MiB; live HTTP request bodies at 1 GiB; WebSocket messages at 64 MiB and sessions at 2 GiB. Storage pools are capped at 1024 connections, trace queues at 1000000 entries, trace workers at 128, DB acquire timeout at 300 seconds, and retention prune intervals at 86400 seconds. Login throttling is capped at 1000 failures, 86400 second windows/lockouts, and 1000000 tracked entries.
@@ -155,7 +159,7 @@ Structured `/api/query` requests are also bounded before SQL construction: at mo
 
 `GET /api/stats` includes a `runtime` object with process-local background health counters. `runtime.trace_pipeline` reports enqueued, persisted, dropped, build-failed, and persist-failed trace events, plus the bounded queue capacity, available slots, and current depth. `runtime.retention` reports retention prune runs, failures, last success/failure timestamps, the last error, and the rows deleted by the most recent successful prune. These metrics reset on process restart and should be paired with logs or external metrics for long-term monitoring.
 
-`GET /metrics` exposes the same low-sensitivity runtime counters in Prometheus text format, plus trace queue depth/capacity and database pool size/idle gauges. It intentionally avoids request URLs, headers, body content, user identifiers, API key hashes, and plugin metadata. By default this endpoint is unauthenticated for simple Prometheus scraping; set `observability.metrics_bearer_token` or `LLMTRACE_METRICS_BEARER_TOKEN` to require `Authorization: Bearer <token>`. Keep network-layer protections when deployment policy requires them.
+`GET /metrics` exposes the same low-sensitivity runtime counters in Prometheus text format, plus trace queue depth/capacity and database pool size/idle gauges. It intentionally avoids request URLs, headers, body content, user identifiers, API key hashes, and plugin metadata. Development mode may leave this endpoint unauthenticated for simple Prometheus scraping; production mode requires `observability.metrics_bearer_token` or `LLMTRACE_METRICS_BEARER_TOKEN`, and requests must send `Authorization: Bearer <token>`. Keep network-layer protections when deployment policy requires them.
 
 ## Proxying examples
 

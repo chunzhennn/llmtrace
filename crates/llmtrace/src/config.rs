@@ -551,11 +551,28 @@ impl Config {
     }
 
     fn validate_observability(&self, errors: &mut Vec<String>) {
-        if let Some(token) = self.observability.metrics_bearer_token.as_deref()
-            && token.trim().is_empty()
-        {
-            errors
-                .push("observability.metrics_bearer_token must not be empty when set".to_string());
+        match self.observability.metrics_bearer_token.as_deref() {
+            Some(token) if token.trim().is_empty() => errors
+                .push("observability.metrics_bearer_token must not be empty when set".to_string()),
+            Some(token)
+                if !token.is_ascii()
+                    || token
+                        .bytes()
+                        .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace()) =>
+            {
+                errors.push(
+                    "observability.metrics_bearer_token must contain only printable non-whitespace ASCII"
+                        .to_string(),
+                );
+            }
+            Some(_) => {}
+            None if self.server.deployment.is_production() => {
+                errors.push(
+                    "observability.metrics_bearer_token is required when server.deployment is production"
+                        .to_string(),
+                );
+            }
+            None => {}
         }
     }
 
@@ -1251,6 +1268,7 @@ mod tests {
         assert!(error.contains("proxy.allow_upstreams must not be empty"));
         assert!(error.contains("storage.retention_days is required"));
         assert!(error.contains("auth.local_admin.password must not be used"));
+        assert!(error.contains("observability.metrics_bearer_token is required"));
         assert!(error.contains("redaction.body_redaction must be drop or json_secrets"));
     }
 
@@ -1688,6 +1706,28 @@ mod tests {
     }
 
     #[test]
+    fn validation_rejects_malformed_metrics_bearer_token() {
+        let mut config = Config::default();
+        config.observability.metrics_bearer_token = Some("metrics secret".to_string());
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains(
+            "observability.metrics_bearer_token must contain only printable non-whitespace ASCII"
+        ));
+    }
+
+    #[test]
+    fn production_config_requires_metrics_bearer_token() {
+        let mut config = production_ready_config();
+        config.observability.metrics_bearer_token = None;
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("observability.metrics_bearer_token is required"));
+    }
+
+    #[test]
     fn upstream_allowlist_host_matches_any_path() {
         let proxy = ProxyConfig {
             allow_upstreams: vec!["api.openai.com".to_string()],
@@ -1785,6 +1825,7 @@ mod tests {
         config.auth.cookie_secure = true;
         config.auth.local_admin.password = None;
         config.auth.local_admin.password_hash = Some(VALID_ARGON2_HASH.to_string());
+        config.observability.metrics_bearer_token = Some("metrics-secret".to_string());
         config.redaction.body_redaction = BodyRedaction::JsonSecrets;
         config
     }
