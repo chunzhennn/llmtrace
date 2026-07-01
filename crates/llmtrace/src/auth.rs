@@ -772,21 +772,26 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
 }
 
 fn session_cookie(headers: &HeaderMap) -> Option<String> {
-    named_cookie(headers, SESSION_COOKIE).filter(|value| valid_auth_token(value))
+    auth_cookie(headers, SESSION_COOKIE)
 }
 
 fn oauth_state_cookie(headers: &HeaderMap) -> Option<String> {
-    named_cookie(headers, OAUTH_STATE_COOKIE).filter(|value| valid_auth_token(value))
+    auth_cookie(headers, OAUTH_STATE_COOKIE)
 }
 
-fn named_cookie(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
-    let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
-    for part in cookie.split(';') {
-        let Some((name, value)) = part.trim().split_once('=') else {
-            continue;
-        };
-        if name == cookie_name {
-            return Some(value.to_string());
+fn auth_cookie(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
+    for cookie in headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+    {
+        for part in cookie.split(';') {
+            let Some((name, value)) = part.trim().split_once('=') else {
+                continue;
+            };
+            if name == cookie_name && valid_auth_token(value) {
+                return Some(value.to_string());
+            }
         }
     }
     None
@@ -1437,6 +1442,35 @@ mod tests {
 
         assert_eq!(session_cookie(&headers), None);
         assert_eq!(oauth_state_cookie(&headers), None);
+    }
+
+    #[test]
+    fn session_cookie_reads_split_cookie_headers() {
+        let token = test_auth_token('a');
+        let mut headers = HeaderMap::new();
+        headers.append(header::COOKIE, HeaderValue::from_static("theme=dark"));
+        headers.append(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("llmtrace_session={token}")).unwrap(),
+        );
+
+        assert_eq!(session_cookie(&headers).as_deref(), Some(token.as_str()));
+    }
+
+    #[test]
+    fn session_cookie_skips_invalid_duplicate_before_valid_token() {
+        let token = test_auth_token('a');
+        let mut headers = HeaderMap::new();
+        headers.append(
+            header::COOKIE,
+            HeaderValue::from_static("llmtrace_session=short-token"),
+        );
+        headers.append(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("llmtrace_session={token}")).unwrap(),
+        );
+
+        assert_eq!(session_cookie(&headers).as_deref(), Some(token.as_str()));
     }
 
     #[test]
