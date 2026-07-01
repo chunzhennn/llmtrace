@@ -588,6 +588,55 @@ const LIST_SESSIONS_SQL: &str = r#"
         ) stats ON true
         ORDER BY s.last_seen DESC, s.id DESC
         "#;
+const RETENTION_STATUS_SQL: &str = r#"
+        SELECT CASE
+                   WHEN $1::timestamptz IS NULL THEN 0::bigint
+                   ELSE (
+                       SELECT COUNT(*)::bigint
+                       FROM request_traces
+                       WHERE started_at < $1
+                   )
+               END AS request_traces,
+               CASE
+                   WHEN $1::timestamptz IS NULL THEN 0::bigint
+                   ELSE (
+                       SELECT COUNT(*)::bigint
+                       FROM trace_rollups_minute
+                       WHERE bucket < $1
+                   )
+               END AS trace_rollups_minute,
+               CASE
+                   WHEN $1::timestamptz IS NULL THEN 0::bigint
+                   ELSE (
+                       SELECT COUNT(*)::bigint
+                       FROM trace_sessions s
+                       WHERE s.last_seen < $1
+                         AND NOT EXISTS (
+                             SELECT 1
+                             FROM request_traces r
+                             WHERE r.session_id = s.id
+                         )
+                   )
+               END AS trace_sessions,
+               CASE
+                   WHEN $1::timestamptz IS NULL THEN 0::bigint
+                   ELSE (
+                       SELECT COUNT(*)::bigint
+                       FROM ui_audit_events
+                       WHERE created_at < $1
+                   )
+               END AS ui_audit_events,
+               (
+                   SELECT COUNT(*)::bigint
+                   FROM ui_sessions
+                   WHERE expires_at < $2
+               ) AS ui_sessions,
+               (
+                   SELECT COUNT(*)::bigint
+                   FROM oauth_states
+                   WHERE expires_at < $2
+               ) AS oauth_states
+        "#;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RetentionPruneResult {
@@ -1327,6 +1376,63 @@ pub async fn prune_retention(
         ui_sessions,
         oauth_states,
     })
+}
+
+pub async fn retention_status(
+    pool: &PgPool,
+    retention_days: Option<i64>,
+    prune_interval_secs: u64,
+    prune_batch_size: i64,
+) -> anyhow::Result<Value> {
+    if retention_days.is_some_and(|days| days <= 0) {
+        anyhow::bail!("retention_days must be greater than 0 when set");
+    }
+
+    let now = Utc::now();
+    let cutoff = retention_days.map(|days| retention_cutoff(now, days));
+    let mut tx = begin_api_read_tx(pool).await?;
+    let row = sqlx::query(RETENTION_STATUS_SQL)
+        .bind(cutoff)
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    let request_traces = row.get::<i64, _>("request_traces");
+    let trace_rollups_minute = row.get::<i64, _>("trace_rollups_minute");
+    let trace_sessions = row.get::<i64, _>("trace_sessions");
+    let ui_audit_events = row.get::<i64, _>("ui_audit_events");
+    let ui_sessions = row.get::<i64, _>("ui_sessions");
+    let oauth_states = row.get::<i64, _>("oauth_states");
+
+    Ok(json!({
+        "enabled": retention_days.is_some(),
+        "retention_days": retention_days,
+        "cutoff": cutoff,
+        "checked_at": now,
+        "prune_interval_secs": prune_interval_secs,
+        "prune_batch_size": prune_batch_size,
+        "expired": {
+            "request_traces": request_traces,
+            "trace_rollups_minute": trace_rollups_minute,
+            "trace_sessions": trace_sessions,
+            "ui_audit_events": ui_audit_events,
+            "ui_sessions": ui_sessions,
+            "oauth_states": oauth_states,
+            "total": retention_expired_total([
+                request_traces,
+                trace_rollups_minute,
+                trace_sessions,
+                ui_audit_events,
+                ui_sessions,
+                oauth_states,
+            ]),
+        },
+    }))
+}
+
+fn retention_expired_total(counts: [i64; 6]) -> i64 {
+    counts.into_iter().map(|count| count.max(0)).sum()
 }
 
 fn retention_cutoff(now: DateTime<Utc>, retention_days: i64) -> DateTime<Utc> {
@@ -4525,6 +4631,36 @@ mod tests {
         };
 
         assert_eq!(result.total_deleted(), 21);
+    }
+
+    #[test]
+    fn retention_expired_total_sums_nonnegative_counts() {
+        assert_eq!(retention_expired_total([1, 2, 3, 4, 5, 6]), 21);
+        assert_eq!(retention_expired_total([1, -10, 3, 0, 5, 6]), 15);
+    }
+
+    #[test]
+    fn retention_status_query_counts_pruner_targets_without_deleting() {
+        assert!(RETENTION_STATUS_SQL.contains("FROM request_traces"));
+        assert!(RETENTION_STATUS_SQL.contains("WHERE started_at < $1"));
+        assert!(RETENTION_STATUS_SQL.contains("FROM trace_rollups_minute"));
+        assert!(RETENTION_STATUS_SQL.contains("WHERE bucket < $1"));
+        assert!(RETENTION_STATUS_SQL.contains("FROM trace_sessions s"));
+        assert!(RETENTION_STATUS_SQL.contains("WHERE s.last_seen < $1"));
+        assert!(RETENTION_STATUS_SQL.contains("NOT EXISTS"));
+        assert!(RETENTION_STATUS_SQL.contains("FROM ui_audit_events"));
+        assert!(RETENTION_STATUS_SQL.contains("WHERE created_at < $1"));
+        assert!(RETENTION_STATUS_SQL.contains("FROM ui_sessions"));
+        assert!(RETENTION_STATUS_SQL.contains("WHERE expires_at < $2"));
+        assert!(RETENTION_STATUS_SQL.contains("FROM oauth_states"));
+        assert!(RETENTION_STATUS_SQL.contains("CASE"));
+        assert!(RETENTION_STATUS_SQL.contains("$1::timestamptz IS NULL"));
+        assert!(!RETENTION_STATUS_SQL.contains("DELETE"));
+        assert!(!RETENTION_STATUS_SQL.contains("request_headers"));
+        assert!(!RETENTION_STATUS_SQL.contains("response_headers"));
+        assert!(!RETENTION_STATUS_SQL.contains("request_body_compressed"));
+        assert!(!RETENTION_STATUS_SQL.contains("response_body_compressed"));
+        assert!(!RETENTION_STATUS_SQL.contains("detail"));
     }
 
     #[test]

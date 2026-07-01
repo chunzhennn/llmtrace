@@ -168,6 +168,7 @@ pub fn router() -> Router<AppState> {
         .route("/stats", get(stats))
         .route("/config", get(runtime_config))
         .route("/security/posture", get(security_posture_report))
+        .route("/retention/status", get(retention_status))
         .route("/usage/summary", get(usage_summary))
         .route("/usage/api-keys", get(api_key_usage))
         .route("/usage/models", get(model_usage))
@@ -223,6 +224,20 @@ async fn runtime_config(State(state): State<AppState>) -> Response {
 
 async fn security_posture_report(State(state): State<AppState>) -> Response {
     Json(security_posture(state.config.as_ref())).into_response()
+}
+
+async fn retention_status(State(state): State<AppState>) -> Response {
+    match storage::retention_status(
+        &state.pool,
+        state.config.storage.retention_days,
+        state.config.storage.retention_prune_interval_secs,
+        state.config.storage.retention_prune_batch_size,
+    )
+    .await
+    {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
 }
 
 async fn usage_summary(
