@@ -11,7 +11,9 @@ use axum::{Json, Router};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{Duration, Utc};
+use futures_util::StreamExt;
 use rand::RngCore;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::Row;
@@ -27,6 +29,7 @@ use crate::types::LoginMethod;
 const SESSION_COOKIE: &str = "llmtrace_session";
 const OAUTH_STATE_COOKIE: &str = "llmtrace_oauth_state";
 const OAUTH_STATE_TTL_SECS: i64 = 10 * 60;
+const OAUTH_JSON_BODY_LIMIT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
@@ -345,7 +348,7 @@ async fn finish_oauth(state: &AppState, code: &str) -> anyhow::Result<MeResponse
         .ok_or_else(|| anyhow::anyhow!("oauth provider has no userinfo endpoint"))?;
     let redirect_url = oauth_redirect_url(state);
 
-    let token_response: Value = state
+    let token_response = state
         .http
         .post(token_endpoint)
         .form(&[
@@ -357,23 +360,21 @@ async fn finish_oauth(state: &AppState, code: &str) -> anyhow::Result<MeResponse
         ])
         .send()
         .await?
-        .error_for_status()?
-        .json()
-        .await?;
+        .error_for_status()?;
+    let token_response: Value = read_oauth_json(token_response, "oauth token response").await?;
     let access_token = token_response
         .get("access_token")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("oauth token response missing access_token"))?;
 
-    let userinfo: Value = state
+    let userinfo = state
         .http
         .get(userinfo_endpoint)
         .bearer_auth(access_token)
         .send()
         .await?
-        .error_for_status()?
-        .json()
-        .await?;
+        .error_for_status()?;
+    let userinfo: Value = read_oauth_json(userinfo, "oauth userinfo response").await?;
 
     let email = userinfo
         .get("email")
@@ -399,7 +400,9 @@ async fn oauth_metadata(state: &AppState) -> anyhow::Result<OidcMetadata> {
     let issuer = state.config.auth.oauth.issuer_url.trim_end_matches('/');
     let discovery = format!("{issuer}/.well-known/openid-configuration");
     let metadata = match state.http.get(discovery).send().await {
-        Ok(response) if response.status().is_success() => response.json().await?,
+        Ok(response) if response.status().is_success() => {
+            read_oauth_json(response, "oauth discovery metadata").await?
+        }
         _ => OidcMetadata {
             authorization_endpoint: Some(format!("{issuer}/authorize")),
             token_endpoint: Some(format!("{issuer}/token")),
@@ -408,6 +411,34 @@ async fn oauth_metadata(state: &AppState) -> anyhow::Result<OidcMetadata> {
     };
     validate_oauth_metadata_endpoints(&metadata)?;
     Ok(metadata)
+}
+
+async fn read_oauth_json<T: DeserializeOwned>(
+    response: reqwest::Response,
+    context: &str,
+) -> anyhow::Result<T> {
+    let bytes = read_oauth_json_body(response).await?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| anyhow::anyhow!("{context} is invalid JSON: {error}"))
+}
+
+async fn read_oauth_json_body(response: reqwest::Response) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        append_oauth_json_body_chunk(&mut body, &chunk?)?;
+    }
+    Ok(body)
+}
+
+fn append_oauth_json_body_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> anyhow::Result<()> {
+    if chunk.len() > OAUTH_JSON_BODY_LIMIT_BYTES.saturating_sub(body.len()) {
+        anyhow::bail!(
+            "oauth JSON response exceeds configured limit of {OAUTH_JSON_BODY_LIMIT_BYTES} bytes"
+        );
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
 }
 
 fn validate_oauth_metadata_endpoints(metadata: &OidcMetadata) -> anyhow::Result<()> {
@@ -922,6 +953,28 @@ mod tests {
             .to_string();
 
         assert!(error.contains("token_endpoint must not contain credentials"));
+    }
+
+    #[test]
+    fn oauth_json_body_limit_allows_exact_limit_across_chunks() {
+        let mut body = Vec::new();
+
+        append_oauth_json_body_chunk(&mut body, &vec![b'a'; OAUTH_JSON_BODY_LIMIT_BYTES - 1])
+            .unwrap();
+        append_oauth_json_body_chunk(&mut body, b"b").unwrap();
+
+        assert_eq!(body.len(), OAUTH_JSON_BODY_LIMIT_BYTES);
+    }
+
+    #[test]
+    fn oauth_json_body_limit_rejects_oversized_response() {
+        let mut body = vec![b'a'; OAUTH_JSON_BODY_LIMIT_BYTES];
+        let error = append_oauth_json_body_chunk(&mut body, b"b")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("oauth JSON response exceeds configured limit"));
+        assert_eq!(body.len(), OAUTH_JSON_BODY_LIMIT_BYTES);
     }
 
     #[test]
