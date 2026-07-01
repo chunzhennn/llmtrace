@@ -24,6 +24,25 @@ const MAX_STRUCTURED_QUERY_STRING_VALUE_BYTES: usize = 4 * 1024;
 const MAX_STRUCTURED_QUERY_JSON_VALUE_BYTES: usize = 16 * 1024;
 const API_READ_STATEMENT_TIMEOUT_SQL: &str = "SET LOCAL statement_timeout = '5s'";
 const READINESS_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
+const LIST_SESSIONS_SQL: &str = r#"
+        WITH selected_sessions AS (
+            SELECT id, session_key, first_seen, last_seen, user_id, user_name
+            FROM trace_sessions
+            ORDER BY last_seen DESC
+            LIMIT $1
+        )
+        SELECT s.id, s.session_key, s.first_seen, s.last_seen, s.user_id, s.user_name,
+               COALESCE(stats.request_count, 0)::bigint AS request_count,
+               COALESCE(stats.max_duration_ms, 0)::bigint AS max_duration_ms
+        FROM selected_sessions s
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*)::bigint AS request_count,
+                   COALESCE(MAX(r.duration_ms), 0)::bigint AS max_duration_ms
+            FROM request_traces r
+            WHERE r.session_id = s.id
+        ) stats ON true
+        ORDER BY s.last_seen DESC
+        "#;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RetentionPruneResult {
@@ -852,21 +871,10 @@ pub async fn get_request(
 
 pub async fn list_sessions(pool: &PgPool, limit: i64) -> anyhow::Result<Value> {
     let mut tx = begin_api_read_tx(pool).await?;
-    let rows = sqlx::query(
-        r#"
-        SELECT s.id, s.session_key, s.first_seen, s.last_seen, s.user_id, s.user_name,
-               COUNT(r.id)::bigint AS request_count,
-               COALESCE(MAX(r.duration_ms), 0)::bigint AS max_duration_ms
-        FROM trace_sessions s
-        LEFT JOIN request_traces r ON r.session_id = s.id
-        GROUP BY s.id
-        ORDER BY s.last_seen DESC
-        LIMIT $1
-        "#,
-    )
-    .bind(limit.clamp(1, 500))
-    .fetch_all(&mut *tx)
-    .await?;
+    let rows = sqlx::query(LIST_SESSIONS_SQL)
+        .bind(limit.clamp(1, 500))
+        .fetch_all(&mut *tx)
+        .await?;
     tx.commit().await?;
 
     let items: Vec<Value> = rows
@@ -1944,6 +1952,17 @@ mod tests {
         };
 
         assert_eq!(result.total_deleted(), 21);
+    }
+
+    #[test]
+    fn list_sessions_query_limits_sessions_before_request_stats() {
+        let selected_sessions = LIST_SESSIONS_SQL.find("WITH selected_sessions").unwrap();
+        let session_limit = LIST_SESSIONS_SQL.find("LIMIT $1").unwrap();
+        let lateral_stats = LIST_SESSIONS_SQL.find("LEFT JOIN LATERAL").unwrap();
+
+        assert!(selected_sessions < session_limit);
+        assert!(session_limit < lateral_stats);
+        assert!(LIST_SESSIONS_SQL.contains("WHERE r.session_id = s.id"));
     }
 
     #[tokio::test]
