@@ -40,6 +40,10 @@ const MAX_SESSION_MESSAGE_OFFSET: i64 = 1_000_000;
 const DEFAULT_AUDIT_EVENT_LIMIT: i64 = 100;
 const MAX_AUDIT_EVENT_LIMIT: i64 = 500;
 const MAX_AUDIT_EVENT_OFFSET: i64 = 1_000_000;
+const DEFAULT_AUDIT_SUMMARY_SINCE_HOURS: i64 = 24;
+const MAX_AUDIT_SUMMARY_SINCE_HOURS: i64 = 24 * 90;
+const DEFAULT_AUDIT_SUMMARY_LIMIT: i64 = 10;
+const MAX_AUDIT_SUMMARY_LIMIT: i64 = 50;
 const DEFAULT_USAGE_SUMMARY_SINCE_HOURS: i64 = 24;
 const MAX_USAGE_SUMMARY_SINCE_HOURS: i64 = 24 * 90;
 const DEFAULT_USAGE_SUMMARY_LIMIT: i64 = 10;
@@ -126,6 +130,54 @@ const REQUEST_FACET_ERROR_STATES_SQL: &str = r#"
         WHERE started_at >= $1
         GROUP BY 1
         ORDER BY value DESC
+        "#;
+const AUDIT_SUMMARY_TOTALS_SQL: &str = r#"
+        SELECT COUNT(*)::bigint AS event_count,
+               COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL AND user_id <> '')::bigint AS user_count,
+               COUNT(DISTINCT remote_addr) FILTER (WHERE remote_addr IS NOT NULL AND remote_addr <> '')::bigint AS remote_addr_count,
+               MIN(created_at) AS first_seen_at,
+               MAX(created_at) AS last_seen_at
+        FROM ui_audit_events
+        WHERE created_at >= $1
+        "#;
+const AUDIT_SUMMARY_EVENT_TYPES_SQL: &str = r#"
+        SELECT event_type AS name,
+               COUNT(*)::bigint AS event_count,
+               COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL AND user_id <> '')::bigint AS user_count,
+               COUNT(DISTINCT remote_addr) FILTER (WHERE remote_addr IS NOT NULL AND remote_addr <> '')::bigint AS remote_addr_count,
+               MIN(created_at) AS first_seen_at,
+               MAX(created_at) AS last_seen_at
+        FROM ui_audit_events
+        WHERE created_at >= $1
+        GROUP BY 1
+        ORDER BY event_count DESC, name ASC
+        LIMIT $2
+        "#;
+const AUDIT_SUMMARY_USERS_SQL: &str = r#"
+        SELECT COALESCE(NULLIF(user_id, ''), 'unknown') AS name,
+               COUNT(*)::bigint AS event_count,
+               COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL AND user_id <> '')::bigint AS user_count,
+               COUNT(DISTINCT remote_addr) FILTER (WHERE remote_addr IS NOT NULL AND remote_addr <> '')::bigint AS remote_addr_count,
+               MIN(created_at) AS first_seen_at,
+               MAX(created_at) AS last_seen_at
+        FROM ui_audit_events
+        WHERE created_at >= $1
+        GROUP BY 1
+        ORDER BY event_count DESC, name ASC
+        LIMIT $2
+        "#;
+const AUDIT_SUMMARY_REMOTE_ADDRS_SQL: &str = r#"
+        SELECT COALESCE(NULLIF(remote_addr, ''), 'unknown') AS name,
+               COUNT(*)::bigint AS event_count,
+               COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL AND user_id <> '')::bigint AS user_count,
+               COUNT(DISTINCT remote_addr) FILTER (WHERE remote_addr IS NOT NULL AND remote_addr <> '')::bigint AS remote_addr_count,
+               MIN(created_at) AS first_seen_at,
+               MAX(created_at) AS last_seen_at
+        FROM ui_audit_events
+        WHERE created_at >= $1
+        GROUP BY 1
+        ORDER BY event_count DESC, name ASC
+        LIMIT $2
         "#;
 const ERROR_SUMMARY_TOTALS_SQL: &str = r#"
         SELECT COUNT(*)::bigint AS error_count,
@@ -778,6 +830,12 @@ struct AuditEventPage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AuditSummaryWindow {
+    since_hours: i64,
+    limit: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct UsageSummaryWindow {
     since_hours: i64,
     limit: i64,
@@ -982,6 +1040,23 @@ impl AuditEventPage {
 
     fn next_offset(self, has_more: bool) -> Option<i64> {
         has_more.then_some(self.offset.saturating_add(self.limit))
+    }
+}
+
+impl AuditSummaryWindow {
+    fn from_query(since_hours: Option<i64>, limit: Option<i64>) -> Self {
+        Self {
+            since_hours: since_hours
+                .unwrap_or(DEFAULT_AUDIT_SUMMARY_SINCE_HOURS)
+                .clamp(1, MAX_AUDIT_SUMMARY_SINCE_HOURS),
+            limit: limit
+                .unwrap_or(DEFAULT_AUDIT_SUMMARY_LIMIT)
+                .clamp(1, MAX_AUDIT_SUMMARY_LIMIT),
+        }
+    }
+
+    fn cutoff(self, now: DateTime<Utc>) -> DateTime<Utc> {
+        now - ChronoDuration::hours(self.since_hours)
     }
 }
 
@@ -2084,6 +2159,56 @@ pub async fn list_audit_events(
     }))
 }
 
+pub async fn audit_summary(
+    pool: &PgPool,
+    since_hours: Option<i64>,
+    limit: Option<i64>,
+) -> anyhow::Result<Value> {
+    let window = AuditSummaryWindow::from_query(since_hours, limit);
+    let cutoff = window.cutoff(Utc::now());
+    let mut tx = begin_api_read_tx(pool).await?;
+
+    let totals = sqlx::query(AUDIT_SUMMARY_TOTALS_SQL)
+        .bind(cutoff)
+        .fetch_one(&mut *tx)
+        .await?;
+    let event_types = sqlx::query(AUDIT_SUMMARY_EVENT_TYPES_SQL)
+        .bind(cutoff)
+        .bind(window.limit)
+        .fetch_all(&mut *tx)
+        .await?;
+    let users = sqlx::query(AUDIT_SUMMARY_USERS_SQL)
+        .bind(cutoff)
+        .bind(window.limit)
+        .fetch_all(&mut *tx)
+        .await?;
+    let remote_addrs = sqlx::query(AUDIT_SUMMARY_REMOTE_ADDRS_SQL)
+        .bind(cutoff)
+        .bind(window.limit)
+        .fetch_all(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+
+    Ok(json!({
+        "window": {
+            "since_hours": window.since_hours,
+            "started_at_gte": cutoff,
+            "limit": window.limit,
+        },
+        "totals": {
+            "event_count": totals.get::<i64, _>("event_count"),
+            "user_count": totals.get::<i64, _>("user_count"),
+            "remote_addr_count": totals.get::<i64, _>("remote_addr_count"),
+            "first_seen_at": totals.try_get::<Option<DateTime<Utc>>, _>("first_seen_at").ok().flatten(),
+            "last_seen_at": totals.try_get::<Option<DateTime<Utc>>, _>("last_seen_at").ok().flatten(),
+        },
+        "event_types": audit_summary_rows(event_types),
+        "top_users": audit_summary_rows(users),
+        "top_remote_addrs": audit_summary_rows(remote_addrs),
+    }))
+}
+
 pub async fn usage_summary(
     pool: &PgPool,
     since_hours: Option<i64>,
@@ -2495,6 +2620,21 @@ fn named_metric_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
                 "error_count": row.get::<i64, _>("error_count"),
                 "avg_duration_ms": row.try_get::<Option<i64>, _>("avg_duration_ms").ok().flatten(),
                 "avg_ttft_ms": row.try_get::<Option<i64>, _>("avg_ttft_ms").ok().flatten(),
+            })
+        })
+        .collect()
+}
+
+fn audit_summary_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
+    rows.into_iter()
+        .map(|row| {
+            json!({
+                "name": row.get::<String, _>("name"),
+                "event_count": row.get::<i64, _>("event_count"),
+                "user_count": row.get::<i64, _>("user_count"),
+                "remote_addr_count": row.get::<i64, _>("remote_addr_count"),
+                "first_seen_at": row.try_get::<Option<DateTime<Utc>>, _>("first_seen_at").ok().flatten(),
+                "last_seen_at": row.try_get::<Option<DateTime<Utc>>, _>("last_seen_at").ok().flatten(),
             })
         })
         .collect()
@@ -4056,6 +4196,45 @@ mod tests {
     }
 
     #[test]
+    fn audit_summary_window_uses_safe_defaults() {
+        let window = AuditSummaryWindow::from_query(None, None);
+
+        assert_eq!(
+            window,
+            AuditSummaryWindow {
+                since_hours: DEFAULT_AUDIT_SUMMARY_SINCE_HOURS,
+                limit: DEFAULT_AUDIT_SUMMARY_LIMIT,
+            }
+        );
+    }
+
+    #[test]
+    fn audit_summary_window_clamps_bounds() {
+        let max = AuditSummaryWindow::from_query(Some(i64::MAX), Some(i64::MAX));
+        assert_eq!(max.since_hours, MAX_AUDIT_SUMMARY_SINCE_HOURS);
+        assert_eq!(max.limit, MAX_AUDIT_SUMMARY_LIMIT);
+
+        let min = AuditSummaryWindow::from_query(Some(-10), Some(-10));
+        assert_eq!(min.since_hours, 1);
+        assert_eq!(min.limit, 1);
+    }
+
+    #[test]
+    fn audit_summary_window_calculates_cutoff() {
+        let now = DateTime::parse_from_rfc3339("2026-07-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let window = AuditSummaryWindow::from_query(Some(12), Some(10));
+
+        assert_eq!(
+            window.cutoff(now),
+            DateTime::parse_from_rfc3339("2026-07-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+    }
+
+    #[test]
     fn usage_summary_window_uses_safe_defaults() {
         let window = UsageSummaryWindow::from_query(None, None);
 
@@ -4266,6 +4445,47 @@ mod tests {
         assert!(LIST_SESSIONS_SQL.contains("user_id ILIKE '%' || $1 || '%' ESCAPE '\\'"));
         assert!(LIST_SESSIONS_SQL.contains("user_name ILIKE '%' || $1 || '%' ESCAPE '\\'"));
         assert!(LIST_SESSIONS_SQL.contains("WHERE r.session_id = s.id"));
+    }
+
+    #[test]
+    fn audit_summary_queries_are_windowed_aggregates_without_detail() {
+        assert!(AUDIT_SUMMARY_TOTALS_SQL.contains("FROM ui_audit_events"));
+        assert!(AUDIT_SUMMARY_TOTALS_SQL.contains("WHERE created_at >= $1"));
+        assert!(AUDIT_SUMMARY_TOTALS_SQL.contains("COUNT(*)::bigint AS event_count"));
+        assert!(AUDIT_SUMMARY_TOTALS_SQL.contains(
+            "COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL AND user_id <> '')::bigint AS user_count"
+        ));
+        assert!(AUDIT_SUMMARY_TOTALS_SQL.contains(
+            "COUNT(DISTINCT remote_addr) FILTER (WHERE remote_addr IS NOT NULL AND remote_addr <> '')::bigint AS remote_addr_count"
+        ));
+        assert!(AUDIT_SUMMARY_TOTALS_SQL.contains("MIN(created_at) AS first_seen_at"));
+        assert!(AUDIT_SUMMARY_TOTALS_SQL.contains("MAX(created_at) AS last_seen_at"));
+        assert!(!AUDIT_SUMMARY_TOTALS_SQL.contains("detail"));
+
+        for query in [
+            AUDIT_SUMMARY_EVENT_TYPES_SQL,
+            AUDIT_SUMMARY_USERS_SQL,
+            AUDIT_SUMMARY_REMOTE_ADDRS_SQL,
+        ] {
+            assert!(query.contains("FROM ui_audit_events"));
+            assert!(query.contains("WHERE created_at >= $1"));
+            assert!(query.contains("GROUP BY 1"));
+            assert!(query.contains("ORDER BY event_count DESC, name ASC"));
+            assert!(query.contains("LIMIT $2"));
+            assert!(query.contains("COUNT(*)::bigint AS event_count"));
+            assert!(query.contains("MIN(created_at) AS first_seen_at"));
+            assert!(query.contains("MAX(created_at) AS last_seen_at"));
+            assert!(!query.contains("detail"));
+        }
+
+        assert!(AUDIT_SUMMARY_EVENT_TYPES_SQL.contains("event_type AS name"));
+        assert!(
+            AUDIT_SUMMARY_USERS_SQL.contains("COALESCE(NULLIF(user_id, ''), 'unknown') AS name")
+        );
+        assert!(
+            AUDIT_SUMMARY_REMOTE_ADDRS_SQL
+                .contains("COALESCE(NULLIF(remote_addr, ''), 'unknown') AS name")
+        );
     }
 
     #[test]

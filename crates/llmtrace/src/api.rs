@@ -98,6 +98,12 @@ struct AuditEventListQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct AuditSummaryQuery {
+    since_hours: Option<i64>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct UsageSummaryQuery {
     since_hours: Option<i64>,
     limit: Option<i64>,
@@ -176,6 +182,7 @@ pub fn router() -> Router<AppState> {
         .route("/sessions/{id}/requests", get(list_session_requests))
         .route("/sessions/{id}", get(get_session))
         .route("/audit-events/export.jsonl", get(export_audit_events_jsonl))
+        .route("/audit-events/summary", get(audit_summary))
         .route("/audit-events", get(list_audit_events))
         .route("/query", post(run_query))
         .route("/query/schema", get(query_schema))
@@ -456,6 +463,16 @@ async fn export_audit_events_jsonl(
         .await
     {
         Ok(value) => audit_event_jsonl_response(value),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn audit_summary(
+    State(state): State<AppState>,
+    Query(query): Query<AuditSummaryQuery>,
+) -> Response {
+    match storage::audit_summary(&state.pool, query.since_hours, query.limit).await {
+        Ok(value) => Json(value).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }
