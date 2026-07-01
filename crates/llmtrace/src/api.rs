@@ -110,6 +110,7 @@ pub fn router() -> Router<AppState> {
         .route("/usage/timeseries", get(usage_timeseries))
         .route("/requests", get(list_requests))
         .route("/requests/facets", get(request_facets))
+        .route("/requests/export.jsonl", get(export_requests_jsonl))
         .route("/requests/{id}", get(get_request))
         .route("/sessions", get(list_sessions))
         .route("/sessions/{id}/requests", get(list_session_requests))
@@ -165,62 +166,28 @@ async fn list_requests(
     State(state): State<AppState>,
     Query(query): Query<RequestListQuery>,
 ) -> Response {
-    let q = match normalize_request_search(query.q) {
-        Ok(q) => q,
-        Err(message) => return bad_request(message),
-    };
-    let time_range = match normalize_request_time_range(query.since, query.until) {
-        Ok(range) => range,
-        Err(message) => return bad_request(message),
-    };
-    let duration_range =
-        match normalize_request_duration_range(query.min_duration_ms, query.max_duration_ms) {
-            Ok(range) => range,
-            Err(message) => return bad_request(message),
-        };
-    let upstream_host = match normalize_request_filter("upstream_host", query.upstream_host) {
-        Ok(value) => value,
-        Err(message) => return bad_request(message),
-    };
-    let model = match normalize_request_filter("model", query.model) {
-        Ok(value) => value,
-        Err(message) => return bad_request(message),
-    };
-    let request_kind = match normalize_request_kind_filter(query.request_kind) {
-        Ok(value) => value,
-        Err(message) => return bad_request(message),
-    };
-    let session_id = match normalize_optional_uuid_filter("session_id", query.session_id) {
-        Ok(value) => value,
-        Err(message) => return bad_request(message),
-    };
-    let status_class = match normalize_status_class_filter(query.status_class) {
-        Ok(value) => value,
+    let filters = match request_list_filters(query) {
+        Ok(filters) => filters,
         Err(message) => return bad_request(message),
     };
 
-    match storage::list_requests(
-        &state.pool,
-        storage::RequestListFilters {
-            q,
-            status: query.status,
-            status_class,
-            has_error: query.has_error,
-            upstream_host,
-            model,
-            request_kind,
-            session_id,
-            since: time_range.since,
-            until: time_range.until,
-            min_duration_ms: duration_range.min_duration_ms,
-            max_duration_ms: duration_range.max_duration_ms,
-            limit: query.limit,
-            offset: query.offset,
-        },
-    )
-    .await
-    {
+    match storage::list_requests(&state.pool, filters).await {
         Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn export_requests_jsonl(
+    State(state): State<AppState>,
+    Query(query): Query<RequestListQuery>,
+) -> Response {
+    let filters = match request_list_filters(query) {
+        Ok(filters) => filters,
+        Err(message) => return bad_request(message),
+    };
+
+    match storage::list_requests(&state.pool, filters).await {
+        Ok(value) => request_list_jsonl_response(value),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }
@@ -380,6 +347,25 @@ fn structured_query_jsonl_response(value: Value) -> Response {
         .and_then(Value::as_str)
         .unwrap_or("query");
 
+    jsonl_response(
+        rows,
+        &format!("llmtrace-{dataset}.jsonl"),
+        "llmtrace-query.jsonl",
+    )
+}
+
+fn request_list_jsonl_response(value: Value) -> Response {
+    let Some(rows) = value.get("items").and_then(Value::as_array) else {
+        return api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            anyhow::anyhow!("request list result did not contain an item array"),
+        );
+    };
+
+    jsonl_response(rows, "llmtrace-requests.jsonl", "llmtrace-requests.jsonl")
+}
+
+fn jsonl_response(rows: &[Value], filename: &str, fallback_filename: &'static str) -> Response {
     let mut body = String::new();
     for row in rows {
         match serde_json::to_string(row) {
@@ -397,13 +383,12 @@ fn structured_query_jsonl_response(value: Value) -> Response {
         header::CONTENT_TYPE,
         HeaderValue::from_static(JSONL_CONTENT_TYPE),
     );
+    let disposition = format!("attachment; filename=\"{filename}\"");
     headers.insert(
         header::CONTENT_DISPOSITION,
-        HeaderValue::from_str(&format!(
-            "attachment; filename=\"llmtrace-{dataset}.jsonl\""
-        ))
-        .unwrap_or_else(|_| {
-            HeaderValue::from_static("attachment; filename=\"llmtrace-query.jsonl\"")
+        HeaderValue::from_str(&disposition).unwrap_or_else(|_| {
+            HeaderValue::from_str(&format!("attachment; filename=\"{fallback_filename}\""))
+                .unwrap_or_else(|_| HeaderValue::from_static("attachment"))
         }),
     );
     headers.insert(
@@ -412,6 +397,35 @@ fn structured_query_jsonl_response(value: Value) -> Response {
             .unwrap_or_else(|_| HeaderValue::from_static("0")),
     );
     response
+}
+
+fn request_list_filters(query: RequestListQuery) -> Result<storage::RequestListFilters, String> {
+    let q = normalize_request_search(query.q)?;
+    let time_range = normalize_request_time_range(query.since, query.until)?;
+    let duration_range =
+        normalize_request_duration_range(query.min_duration_ms, query.max_duration_ms)?;
+    let upstream_host = normalize_request_filter("upstream_host", query.upstream_host)?;
+    let model = normalize_request_filter("model", query.model)?;
+    let request_kind = normalize_request_kind_filter(query.request_kind)?;
+    let session_id = normalize_optional_uuid_filter("session_id", query.session_id)?;
+    let status_class = normalize_status_class_filter(query.status_class)?;
+
+    Ok(storage::RequestListFilters {
+        q,
+        status: query.status,
+        status_class,
+        has_error: query.has_error,
+        upstream_host,
+        model,
+        request_kind,
+        session_id,
+        since: time_range.since,
+        until: time_range.until,
+        min_duration_ms: duration_range.min_duration_ms,
+        max_duration_ms: duration_range.max_duration_ms,
+        limit: query.limit,
+        offset: query.offset,
+    })
 }
 
 fn normalize_request_search(q: Option<String>) -> Result<Option<String>, String> {
@@ -674,6 +688,55 @@ mod tests {
             "fields": ["id"],
             "rows": [],
             "limit": 100
+        }));
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get(EXPORT_ROWS_HEADER).unwrap(), "0");
+
+        let body = response_body_string(response).await;
+
+        assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn request_list_jsonl_response_serializes_items_and_headers() {
+        let response = request_list_jsonl_response(json!({
+            "items": [
+                {"id": "trace-1", "status": 200},
+                {"id": "trace-2", "status": 500}
+            ],
+            "page": {"limit": 100, "offset": 0, "has_more": false, "next_offset": null}
+        }));
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            JSONL_CONTENT_TYPE
+        );
+        assert_eq!(
+            response.headers().get(header::CONTENT_DISPOSITION).unwrap(),
+            "attachment; filename=\"llmtrace-requests.jsonl\""
+        );
+        assert_eq!(response.headers().get(EXPORT_ROWS_HEADER).unwrap(), "2");
+
+        let body = response_body_string(response).await;
+        let lines = body
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            lines,
+            vec![
+                json!({"id": "trace-1", "status": 200}),
+                json!({"id": "trace-2", "status": 500})
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn request_list_jsonl_response_allows_empty_exports() {
+        let response = request_list_jsonl_response(json!({
+            "items": [],
+            "page": {"limit": 100, "offset": 0, "has_more": false, "next_offset": null}
         }));
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers().get(EXPORT_ROWS_HEADER).unwrap(), "0");
