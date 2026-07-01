@@ -104,6 +104,7 @@ pub fn redact_body(body: &[u8], mode: BodyRedaction) -> Cow<'_, [u8]> {
         BodyRedaction::Drop => Cow::Borrowed(&[]),
         BodyRedaction::JsonSecrets => match redact_json_secrets(body) {
             Some(redacted) => Cow::Owned(redacted),
+            None if body_looks_like_json(body) => Cow::Borrowed(&[]),
             None => Cow::Borrowed(body),
         },
     }
@@ -113,6 +114,13 @@ fn redact_json_secrets(body: &[u8]) -> Option<Vec<u8>> {
     let mut value: Value = serde_json::from_slice(body).ok()?;
     redact_json_value(&mut value);
     serde_json::to_vec(&value).ok()
+}
+
+fn body_looks_like_json(body: &[u8]) -> bool {
+    body.iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_some_and(|byte| matches!(byte, b'{' | b'['))
 }
 
 fn redact_json_value(value: &mut Value) {
@@ -197,5 +205,19 @@ mod tests {
     fn redact_body_json_secrets_passthrough_on_non_json() {
         let body = b"not json";
         assert_eq!(redact_body(body, BodyRedaction::JsonSecrets).as_ref(), body);
+    }
+
+    #[test]
+    fn redact_body_json_secrets_drops_malformed_json_like_body() {
+        let body = br#" {"api_key":"sk-example""#;
+
+        assert!(redact_body(body, BodyRedaction::JsonSecrets).is_empty());
+    }
+
+    #[test]
+    fn redact_body_json_secrets_drops_malformed_json_arrays() {
+        let body = br#" [{"token":"secret"} "#;
+
+        assert!(redact_body(body, BodyRedaction::JsonSecrets).is_empty());
     }
 }
