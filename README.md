@@ -35,16 +35,15 @@ The runtime image runs as the unprivileged `llmtrace` user with UID/GID `10001`.
 
 ## Production mode
 
-Set `server.deployment = "production"` to make startup fail fast on insecure or ambiguous settings. Production mode currently requires:
+Set `server.deployment = "production"` to make startup fail fast on insecure or ambiguous settings. Production mode allows `http` or `https` service URLs so deployments can run behind TLS-terminating reverse proxies or on private HTTP endpoints. It currently requires:
 
-- `server.public_url` uses `https`.
 - `proxy.allow_upstreams` is non-empty, so the service cannot run as an unrestricted open proxy.
 - `storage.retention_days` is set, so trace and audit storage growth is bounded.
-- `auth.cookie_secure = true`.
+- `auth.cookie_secure = true` when `server.public_url` uses `https`; HTTP public URLs may set it to `false` for private or reverse-proxy deployments that intentionally terminate without browser-facing HTTPS.
 - `auth.login_rate_limit.enabled = true`.
 - `auth.local_admin.password_hash` is set, and plaintext `auth.local_admin.password` is not set.
 - `redaction.body_redaction` is `drop` or `json_secrets`.
-- When OAuth is enabled, any explicit `auth.oauth.redirect_url` uses `https`, `auth.oauth.require_email_verified = true`, and `auth.oauth.allowed_emails` or `auth.oauth.allowed_domains` is configured. `auth.oauth.issuer_url` and discovered or fallback OAuth authorization/token/userinfo endpoints may use `http` or `https`, which supports internal providers reached through a reverse proxy; they are still rejected if they are not valid HTTP(S) URLs or contain embedded credentials. OAuth email allowlist entries must be exact email addresses, and domain entries must be domain names such as `example.com`; URL syntax, wildcards, whitespace, and non-ASCII forms are rejected at startup.
+- When OAuth is enabled, `auth.oauth.require_email_verified = true`, and `auth.oauth.allowed_emails` or `auth.oauth.allowed_domains` is configured. `auth.oauth.issuer_url`, any explicit `auth.oauth.redirect_url`, and discovered or fallback OAuth authorization/token/userinfo endpoints may use `http` or `https`, which supports internal providers and callback URLs reached through a reverse proxy; they are still rejected if they are not valid HTTP(S) URLs or contain embedded credentials. OAuth email allowlist entries must be exact email addresses, and domain entries must be domain names such as `example.com`; URL syntax, wildcards, whitespace, and non-ASCII forms are rejected at startup.
 
 When `server.public_url` uses `https` and `auth.cookie_secure = true`, private UI/API responses include `Strict-Transport-Security: max-age=31536000`. Proxied upstream responses are not modified with this host-level header.
 

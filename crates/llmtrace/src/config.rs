@@ -312,14 +312,7 @@ impl Config {
             &self.server.public_url,
             &["http", "https"],
         ) {
-            Ok(public_url) => {
-                if self.server.deployment.is_production() && public_url.scheme() != "https" {
-                    errors.push(
-                        "server.public_url must use https when server.deployment is production"
-                            .to_string(),
-                    );
-                }
-            }
+            Ok(_) => {}
             Err(error) => errors.push(error),
         }
     }
@@ -482,9 +475,11 @@ impl Config {
         self.validate_login_rate_limit(errors);
 
         if self.server.deployment.is_production() {
-            if !self.auth.cookie_secure {
+            if Url::parse(&self.server.public_url).is_ok_and(|url| url.scheme() == "https")
+                && !self.auth.cookie_secure
+            {
                 errors.push(
-                    "auth.cookie_secure must be true when server.deployment is production"
+                    "auth.cookie_secure must be true when server.public_url uses https in production"
                         .to_string(),
                 );
             }
@@ -576,14 +571,7 @@ impl Config {
                 &oauth.redirect_url,
                 &["http", "https"],
             ) {
-                Ok(redirect_url) => {
-                    if self.server.deployment.is_production() && redirect_url.scheme() != "https" {
-                        errors.push(
-                            "auth.oauth.redirect_url must use https when server.deployment is production"
-                                .to_string(),
-                        );
-                    }
-                }
+                Ok(_) => {}
                 Err(error) => errors.push(error),
             }
         }
@@ -1176,10 +1164,8 @@ mod tests {
 
         let error = config.validate().unwrap_err().to_string();
 
-        assert!(error.contains("server.public_url must use https"));
         assert!(error.contains("proxy.allow_upstreams must not be empty"));
         assert!(error.contains("storage.retention_days is required"));
-        assert!(error.contains("auth.cookie_secure must be true"));
         assert!(error.contains("auth.local_admin.password must not be used"));
         assert!(error.contains("redaction.body_redaction must be drop or json_secrets"));
     }
@@ -1219,7 +1205,26 @@ mod tests {
     }
 
     #[test]
-    fn production_config_requires_https_oauth_redirect_url() {
+    fn production_config_allows_http_public_url() {
+        let mut config = production_ready_config();
+        config.server.public_url = "http://llmtrace.internal".to_string();
+        config.auth.cookie_secure = false;
+
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn production_config_requires_secure_cookies_for_https_public_url() {
+        let mut config = production_ready_config();
+        config.auth.cookie_secure = false;
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("auth.cookie_secure must be true"));
+    }
+
+    #[test]
+    fn production_config_allows_http_oauth_redirect_url() {
         let mut config = production_ready_config();
         config.auth.oauth.enabled = true;
         config.auth.oauth.issuer_url = "http://issuer.example.com".to_string();
@@ -1229,9 +1234,7 @@ mod tests {
             "http://llmtrace.example.com/api/auth/oauth/callback".to_string();
         config.auth.oauth.allowed_domains = vec!["example.com".to_string()];
 
-        let error = config.validate().unwrap_err().to_string();
-
-        assert!(error.contains("auth.oauth.redirect_url must use https"));
+        config.validate().unwrap();
     }
 
     #[test]

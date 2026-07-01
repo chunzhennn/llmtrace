@@ -37,7 +37,8 @@ retention_prune_batch_size = 1000
 # metrics_bearer_token = ""
 
 [auth]
-# Required in production mode so browser session cookies are sent only over HTTPS.
+# Required in production mode when server.public_url uses https. Set false only
+# for HTTP-only endpoints where non-Secure browser cookies are acceptable.
 cookie_secure = false
 session_ttl_hours = 24
 
@@ -60,7 +61,8 @@ password = "admin"
 [auth.oauth]
 enabled = false
 # issuer_url may be HTTP for providers reached through an internal reverse proxy.
-# Production mode still requires HTTPS for any explicit redirect_url.
+# redirect_url may be HTTP or HTTPS; set it to the callback URL visible to the
+# browser and OAuth provider, which may be a reverse-proxy endpoint.
 issuer_url = ""
 client_id = ""
 client_secret = ""
