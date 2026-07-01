@@ -163,6 +163,8 @@ Request list responses include `page.has_more` and `page.next_offset` so clients
 
 `GET /api/requests/facets?since_hours=24&limit=25` returns bounded filter choices for request-list UIs: models, upstream hosts, request kinds, exact statuses, status classes, and error states with request counts. `since_hours` defaults to `24` and is capped at `2160`; `limit` defaults to `25` and is capped at `100` for each facet collection.
 
+`GET /api/requests/recent-errors?since_hours=24&limit=50` returns the newest failed request summaries for incident queues and dashboards. A failed request is any trace with a stored proxy error or an HTTP status `>=500`. `since_hours` defaults to `24` and is capped at `2160`; `limit` defaults to `50` and is capped at `200`. The response includes `window`, `items`, and `page.has_more`.
+
 ```bash
 curl 'http://127.0.0.1:3000/api/sessions?q=alice&limit=100&offset=0'
 ```

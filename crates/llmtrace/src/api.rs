@@ -53,6 +53,12 @@ struct RequestFacetQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct RecentErrorRequestsQuery {
+    since_hours: Option<i64>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct SessionListQuery {
     q: Option<String>,
     limit: Option<i64>,
@@ -110,6 +116,7 @@ pub fn router() -> Router<AppState> {
         .route("/usage/timeseries", get(usage_timeseries))
         .route("/requests", get(list_requests))
         .route("/requests/facets", get(request_facets))
+        .route("/requests/recent-errors", get(recent_error_requests))
         .route("/requests/export.jsonl", get(export_requests_jsonl))
         .route("/requests/{id}", get(get_request))
         .route("/sessions", get(list_sessions))
@@ -197,6 +204,16 @@ async fn request_facets(
     Query(query): Query<RequestFacetQuery>,
 ) -> Response {
     match storage::request_facets(&state.pool, query.since_hours, query.limit).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn recent_error_requests(
+    State(state): State<AppState>,
+    Query(query): Query<RecentErrorRequestsQuery>,
+) -> Response {
+    match storage::recent_error_requests(&state.pool, query.since_hours, query.limit).await {
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }

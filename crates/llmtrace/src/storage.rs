@@ -21,6 +21,10 @@ const DEFAULT_REQUEST_FACET_SINCE_HOURS: i64 = 24;
 const MAX_REQUEST_FACET_SINCE_HOURS: i64 = 24 * 90;
 const DEFAULT_REQUEST_FACET_LIMIT: i64 = 25;
 const MAX_REQUEST_FACET_LIMIT: i64 = 100;
+const DEFAULT_RECENT_ERROR_SINCE_HOURS: i64 = 24;
+const MAX_RECENT_ERROR_SINCE_HOURS: i64 = 24 * 90;
+const DEFAULT_RECENT_ERROR_LIMIT: i64 = 50;
+const MAX_RECENT_ERROR_LIMIT: i64 = 200;
 const DEFAULT_SESSION_LIST_LIMIT: i64 = 100;
 const MAX_SESSION_LIST_LIMIT: i64 = 500;
 const MAX_SESSION_LIST_OFFSET: i64 = 1_000_000;
@@ -157,6 +161,17 @@ const LIST_SESSION_REQUESTS_SQL: &str = r#"
         WHERE session_id = $1
         ORDER BY started_at DESC, id DESC
         LIMIT $2 OFFSET $3
+        "#;
+const RECENT_ERROR_REQUESTS_SQL: &str = r#"
+        SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
+               status, error, request_kind, model, api_key_hash, session_id, ttft_ms,
+               duration_ms, bytes_in, bytes_out, request_body_truncated, response_body_truncated,
+               plugin_metadata, tags
+        FROM trace_requests
+        WHERE started_at >= $1
+          AND (error IS NOT NULL OR status >= 500)
+        ORDER BY started_at DESC, id DESC
+        LIMIT $2
         "#;
 const SESSION_REQUEST_STATS_SQL: &str = r#"
         SELECT COUNT(*)::bigint AS request_count,
@@ -437,6 +452,12 @@ struct RequestFacetWindow {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RecentErrorWindow {
+    since_hours: i64,
+    limit: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SessionListPage {
     limit: i64,
     offset: i64,
@@ -535,6 +556,27 @@ impl RequestFacetWindow {
 
     fn cutoff(self, now: DateTime<Utc>) -> DateTime<Utc> {
         now - ChronoDuration::hours(self.since_hours)
+    }
+}
+
+impl RecentErrorWindow {
+    fn from_query(since_hours: Option<i64>, limit: Option<i64>) -> Self {
+        Self {
+            since_hours: since_hours
+                .unwrap_or(DEFAULT_RECENT_ERROR_SINCE_HOURS)
+                .clamp(1, MAX_RECENT_ERROR_SINCE_HOURS),
+            limit: limit
+                .unwrap_or(DEFAULT_RECENT_ERROR_LIMIT)
+                .clamp(1, MAX_RECENT_ERROR_LIMIT),
+        }
+    }
+
+    fn cutoff(self, now: DateTime<Utc>) -> DateTime<Utc> {
+        now - ChronoDuration::hours(self.since_hours)
+    }
+
+    fn fetch_limit(self) -> i64 {
+        self.limit + 1
     }
 }
 
@@ -1242,6 +1284,42 @@ pub async fn list_session_requests(
             "next_offset": page.next_offset(has_more),
         },
     })))
+}
+
+pub async fn recent_error_requests(
+    pool: &PgPool,
+    since_hours: Option<i64>,
+    limit: Option<i64>,
+) -> anyhow::Result<Value> {
+    let window = RecentErrorWindow::from_query(since_hours, limit);
+    let cutoff = window.cutoff(Utc::now());
+    let mut tx = begin_api_read_tx(pool).await?;
+    let rows = sqlx::query(RECENT_ERROR_REQUESTS_SQL)
+        .bind(cutoff)
+        .bind(window.fetch_limit())
+        .fetch_all(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    let has_more = rows.len() > window.limit as usize;
+    let items: Vec<Value> = rows
+        .into_iter()
+        .take(window.limit as usize)
+        .map(request_summary_row)
+        .collect();
+
+    Ok(json!({
+        "window": {
+            "since_hours": window.since_hours,
+            "started_at_gte": cutoff,
+            "limit": window.limit,
+        },
+        "items": items,
+        "page": {
+            "limit": window.limit,
+            "has_more": has_more,
+        },
+    }))
 }
 
 pub async fn request_facets(
@@ -2997,6 +3075,47 @@ mod tests {
     }
 
     #[test]
+    fn recent_error_window_uses_safe_defaults() {
+        let window = RecentErrorWindow::from_query(None, None);
+
+        assert_eq!(
+            window,
+            RecentErrorWindow {
+                since_hours: DEFAULT_RECENT_ERROR_SINCE_HOURS,
+                limit: DEFAULT_RECENT_ERROR_LIMIT,
+            }
+        );
+        assert_eq!(window.fetch_limit(), DEFAULT_RECENT_ERROR_LIMIT + 1);
+    }
+
+    #[test]
+    fn recent_error_window_clamps_bounds() {
+        let max = RecentErrorWindow::from_query(Some(i64::MAX), Some(i64::MAX));
+        assert_eq!(max.since_hours, MAX_RECENT_ERROR_SINCE_HOURS);
+        assert_eq!(max.limit, MAX_RECENT_ERROR_LIMIT);
+
+        let min = RecentErrorWindow::from_query(Some(-10), Some(-10));
+        assert_eq!(min.since_hours, 1);
+        assert_eq!(min.limit, 1);
+        assert_eq!(min.fetch_limit(), 2);
+    }
+
+    #[test]
+    fn recent_error_window_calculates_cutoff() {
+        let now = DateTime::parse_from_rfc3339("2026-07-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let window = RecentErrorWindow::from_query(Some(12), Some(25));
+
+        assert_eq!(
+            window.cutoff(now),
+            DateTime::parse_from_rfc3339("2026-07-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+    }
+
+    #[test]
     fn session_list_page_uses_safe_defaults() {
         let page = SessionListPage::from_query(None, None);
 
@@ -3298,6 +3417,26 @@ mod tests {
         assert!(request_order < request_limit);
         assert!(LIST_SESSION_REQUESTS_SQL.contains("FROM trace_requests"));
         assert!(LIST_SESSION_REQUESTS_SQL.contains("plugin_metadata, tags"));
+    }
+
+    #[test]
+    fn recent_error_requests_query_filters_errors_and_orders_latest() {
+        let cutoff_filter = RECENT_ERROR_REQUESTS_SQL
+            .find("WHERE started_at >= $1")
+            .unwrap();
+        let error_filter = RECENT_ERROR_REQUESTS_SQL
+            .find("AND (error IS NOT NULL OR status >= 500)")
+            .unwrap();
+        let request_order = RECENT_ERROR_REQUESTS_SQL
+            .find("ORDER BY started_at DESC, id DESC")
+            .unwrap();
+        let request_limit = RECENT_ERROR_REQUESTS_SQL.find("LIMIT $2").unwrap();
+
+        assert!(cutoff_filter < error_filter);
+        assert!(error_filter < request_order);
+        assert!(request_order < request_limit);
+        assert!(RECENT_ERROR_REQUESTS_SQL.contains("FROM trace_requests"));
+        assert!(RECENT_ERROR_REQUESTS_SQL.contains("plugin_metadata, tags"));
     }
 
     #[test]
