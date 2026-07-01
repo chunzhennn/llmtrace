@@ -344,6 +344,34 @@ const UPSTREAM_HEALTH_SQL: &str = r#"
         ORDER BY error_count DESC, p95_duration_ms DESC NULLS LAST, request_count DESC, upstream_host ASC
         LIMIT $2
         "#;
+const MODEL_USAGE_SQL: &str = r#"
+        SELECT COALESCE(NULLIF(model, ''), 'unknown') AS model,
+               COUNT(*)::bigint AS request_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL)::bigint AS proxy_error_count,
+               COUNT(*) FILTER (WHERE status >= 500)::bigint AS http_5xx_count,
+               COUNT(DISTINCT upstream_host) FILTER (WHERE upstream_host IS NOT NULL AND upstream_host <> '')::bigint AS upstream_count,
+               COUNT(DISTINCT api_key_hash) FILTER (WHERE api_key_hash IS NOT NULL AND api_key_hash <> '')::bigint AS api_key_count,
+               COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::bigint AS session_count,
+               COALESCE(SUM(bytes_in), 0)::bigint AS bytes_in,
+               COALESCE(SUM(bytes_out), 0)::bigint AS bytes_out,
+               COALESCE(SUM(request_body_bytes + response_body_bytes), 0)::bigint AS captured_bytes,
+               COUNT(duration_ms)::bigint AS duration_count,
+               AVG(duration_ms)::bigint AS avg_duration_ms,
+               MAX(duration_ms)::bigint AS max_duration_ms,
+               (percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p95_duration_ms,
+               COUNT(ttft_ms)::bigint AS ttft_count,
+               AVG(ttft_ms)::bigint AS avg_ttft_ms,
+               MAX(ttft_ms)::bigint AS max_ttft_ms,
+               (percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p95_ttft_ms,
+               MIN(started_at) AS first_seen_at,
+               MAX(started_at) AS last_seen_at
+        FROM trace_requests
+        WHERE started_at >= $1
+        GROUP BY 1
+        ORDER BY request_count DESC, error_count DESC, model ASC
+        LIMIT $2
+        "#;
 const API_KEY_USAGE_SQL: &str = r#"
         SELECT api_key_hash,
                COUNT(*)::bigint AS request_count,
@@ -2345,6 +2373,31 @@ pub async fn upstream_health(
     }))
 }
 
+pub async fn model_usage(
+    pool: &PgPool,
+    since_hours: Option<i64>,
+    limit: Option<i64>,
+) -> anyhow::Result<Value> {
+    let window = UsageSummaryWindow::from_query(since_hours, limit);
+    let cutoff = window.cutoff(Utc::now());
+    let mut tx = begin_api_read_tx(pool).await?;
+    let rows = sqlx::query(MODEL_USAGE_SQL)
+        .bind(cutoff)
+        .bind(window.limit)
+        .fetch_all(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    Ok(json!({
+        "window": {
+            "since_hours": window.since_hours,
+            "started_at_gte": cutoff,
+            "limit": window.limit,
+        },
+        "items": model_usage_rows(rows),
+    }))
+}
+
 pub async fn usage_timeseries(
     pool: &PgPool,
     since_hours: Option<i64>,
@@ -2551,6 +2604,45 @@ fn upstream_health_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
                 "http_4xx_count": row.get::<i64, _>("http_4xx_count"),
                 "http_5xx_count": row.get::<i64, _>("http_5xx_count"),
                 "no_status_count": row.get::<i64, _>("no_status_count"),
+                "session_count": row.get::<i64, _>("session_count"),
+                "bytes_in": row.get::<i64, _>("bytes_in"),
+                "bytes_out": row.get::<i64, _>("bytes_out"),
+                "captured_bytes": row.get::<i64, _>("captured_bytes"),
+                "duration_count": row.get::<i64, _>("duration_count"),
+                "avg_duration_ms": row.try_get::<Option<i64>, _>("avg_duration_ms").ok().flatten(),
+                "max_duration_ms": row.try_get::<Option<i64>, _>("max_duration_ms").ok().flatten(),
+                "p95_duration_ms": row.try_get::<Option<i64>, _>("p95_duration_ms").ok().flatten(),
+                "ttft_count": row.get::<i64, _>("ttft_count"),
+                "avg_ttft_ms": row.try_get::<Option<i64>, _>("avg_ttft_ms").ok().flatten(),
+                "max_ttft_ms": row.try_get::<Option<i64>, _>("max_ttft_ms").ok().flatten(),
+                "p95_ttft_ms": row.try_get::<Option<i64>, _>("p95_ttft_ms").ok().flatten(),
+                "first_seen_at": row.try_get::<Option<DateTime<Utc>>, _>("first_seen_at").ok().flatten(),
+                "last_seen_at": row.try_get::<Option<DateTime<Utc>>, _>("last_seen_at").ok().flatten(),
+            })
+        })
+        .collect()
+}
+
+fn model_usage_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
+    rows.into_iter()
+        .map(|row| {
+            let request_count = row.get::<i64, _>("request_count");
+            let error_count = row.get::<i64, _>("error_count");
+            let error_rate = if request_count == 0 {
+                0.0
+            } else {
+                error_count as f64 / request_count as f64
+            };
+
+            json!({
+                "model": row.get::<String, _>("model"),
+                "request_count": request_count,
+                "error_count": error_count,
+                "error_rate": error_rate,
+                "proxy_error_count": row.get::<i64, _>("proxy_error_count"),
+                "http_5xx_count": row.get::<i64, _>("http_5xx_count"),
+                "upstream_count": row.get::<i64, _>("upstream_count"),
+                "api_key_count": row.get::<i64, _>("api_key_count"),
                 "session_count": row.get::<i64, _>("session_count"),
                 "bytes_in": row.get::<i64, _>("bytes_in"),
                 "bytes_out": row.get::<i64, _>("bytes_out"),
@@ -4439,6 +4531,37 @@ mod tests {
         assert!(!UPSTREAM_HEALTH_SQL.contains("response_headers"));
         assert!(!UPSTREAM_HEALTH_SQL.contains("request_body_compressed"));
         assert!(!UPSTREAM_HEALTH_SQL.contains("response_body_compressed"));
+    }
+
+    #[test]
+    fn model_usage_query_groups_models_with_distinct_dimensions() {
+        assert!(MODEL_USAGE_SQL.contains("FROM trace_requests"));
+        assert!(MODEL_USAGE_SQL.contains("WHERE started_at >= $1"));
+        assert!(MODEL_USAGE_SQL.contains("GROUP BY 1"));
+        assert!(
+            MODEL_USAGE_SQL.contains("ORDER BY request_count DESC, error_count DESC, model ASC")
+        );
+        assert!(MODEL_USAGE_SQL.contains("LIMIT $2"));
+        assert!(MODEL_USAGE_SQL.contains("COALESCE(NULLIF(model, ''), 'unknown') AS model"));
+        assert!(MODEL_USAGE_SQL.contains(
+            "COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count"
+        ));
+        assert!(MODEL_USAGE_SQL.contains(
+            "COUNT(DISTINCT upstream_host) FILTER (WHERE upstream_host IS NOT NULL AND upstream_host <> '')::bigint AS upstream_count"
+        ));
+        assert!(MODEL_USAGE_SQL.contains(
+            "COUNT(DISTINCT api_key_hash) FILTER (WHERE api_key_hash IS NOT NULL AND api_key_hash <> '')::bigint AS api_key_count"
+        ));
+        assert!(MODEL_USAGE_SQL.contains(
+            "(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p95_duration_ms"
+        ));
+        assert!(MODEL_USAGE_SQL.contains("MIN(started_at) AS first_seen_at"));
+        assert!(MODEL_USAGE_SQL.contains("MAX(started_at) AS last_seen_at"));
+        assert!(!MODEL_USAGE_SQL.contains("original_uri"));
+        assert!(!MODEL_USAGE_SQL.contains("request_headers"));
+        assert!(!MODEL_USAGE_SQL.contains("response_headers"));
+        assert!(!MODEL_USAGE_SQL.contains("request_body_compressed"));
+        assert!(!MODEL_USAGE_SQL.contains("response_body_compressed"));
     }
 
     #[test]
