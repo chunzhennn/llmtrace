@@ -354,15 +354,7 @@ impl Stream for ResponseCaptureStream {
                     self.first_byte_ms = Some(self.started.elapsed().as_millis() as i64);
                 }
                 let limit = self.limit;
-                self.capture.total_bytes += chunk.len() as i64;
-                if self.capture.bytes.len() < limit {
-                    let remaining = limit - self.capture.bytes.len();
-                    let captured = remaining.min(chunk.len());
-                    self.capture.bytes.extend_from_slice(&chunk[..captured]);
-                    self.capture.truncated |= captured < chunk.len();
-                } else {
-                    self.capture.truncated |= !chunk.is_empty();
-                }
+                push_body_capture(&mut self.capture, &chunk, limit);
                 Poll::Ready(Some(Ok(chunk)))
             }
             Poll::Ready(Some(Err(error))) => {
@@ -808,7 +800,9 @@ fn tungstenite_message_size(message: &TungsteniteMessage) -> usize {
 }
 
 fn push_body_capture(capture: &mut BodyCapture, chunk: &[u8], limit: usize) {
-    capture.total_bytes = capture.total_bytes.saturating_add(chunk.len() as i64);
+    capture.total_bytes = capture
+        .total_bytes
+        .saturating_add(usize_to_i64_saturating(chunk.len()));
 
     if capture.bytes.len() < limit {
         let remaining = limit - capture.bytes.len();
@@ -818,6 +812,10 @@ fn push_body_capture(capture: &mut BodyCapture, chunk: &[u8], limit: usize) {
     } else {
         capture.truncated |= !chunk.is_empty();
     }
+}
+
+fn usize_to_i64_saturating(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 fn content_length_exceeds(headers: &HeaderMap, limit: usize) -> bool {
@@ -1061,6 +1059,20 @@ mod tests {
         assert_eq!(snapshot.total_bytes, 6);
         assert!(snapshot.truncated);
         assert!(snapshot.limit_exceeded);
+    }
+
+    #[test]
+    fn body_capture_saturates_total_bytes() {
+        let mut capture = BodyCapture {
+            total_bytes: i64::MAX - 1,
+            ..BodyCapture::default()
+        };
+
+        push_body_capture(&mut capture, b"abcd", 2);
+
+        assert_eq!(capture.total_bytes, i64::MAX);
+        assert_eq!(capture.bytes, b"ab");
+        assert!(capture.truncated);
     }
 
     #[test]
