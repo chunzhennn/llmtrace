@@ -157,6 +157,21 @@ Authenticated read APIs run inside read-only database transactions with a local 
 
 Structured `/api/query` requests are also bounded before SQL construction: at most 64 selected fields, 32 filters, 8 sort keys, 4 KiB per string filter value, and 16 KiB per JSON filter value.
 
+Use `POST /api/query/export.jsonl` with the same structured query payload to download the selected rows as newline-delimited JSON. The export reuses the same dataset, field, filter, sort, limit, read-only transaction, and statement-timeout rules as `/api/query`; responses use `application/x-ndjson`, include `Content-Disposition: attachment`, and expose the row count in `x-llmtrace-export-rows`.
+
+```bash
+curl http://127.0.0.1:3000/api/query/export.jsonl \
+  -H 'content-type: application/json' \
+  -o llmtrace-requests.jsonl \
+  -d '{
+    "dataset": "requests",
+    "fields": ["id", "started_at", "upstream_host", "status", "model", "duration_ms"],
+    "filters": [{"field": "status", "op": "gte", "value": 500}],
+    "order_by": [{"field": "started_at", "direction": "desc"}],
+    "limit": 500
+  }'
+```
+
 ## Runtime stats
 
 `GET /api/stats` includes a `runtime` object with process-local background health counters. `runtime.trace_pipeline` reports enqueued, persisted, dropped, build-failed, and persist-failed trace events, plus the bounded queue capacity, available slots, and current depth. `runtime.retention` reports retention prune runs, failures, last success/failure timestamps, the last error, and the rows deleted by the most recent successful prune. These metrics reset on process restart and should be paired with logs or external metrics for long-term monitoring.

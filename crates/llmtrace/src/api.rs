@@ -1,16 +1,18 @@
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::state::AppState;
 use crate::storage;
 
 const MAX_REQUEST_SEARCH_BYTES: usize = 512;
+const JSONL_CONTENT_TYPE: &str = "application/x-ndjson; charset=utf-8";
+const EXPORT_ROWS_HEADER: HeaderName = HeaderName::from_static("x-llmtrace-export-rows");
 
 #[derive(Debug, Deserialize)]
 struct RequestListQuery {
@@ -38,6 +40,7 @@ pub fn router() -> Router<AppState> {
         .route("/sessions", get(list_sessions))
         .route("/sessions/{id}", get(get_session))
         .route("/query", post(run_query))
+        .route("/query/export.jsonl", post(export_query_jsonl))
         .route("/plugins", get(plugins))
 }
 
@@ -119,6 +122,16 @@ async fn run_query(
     }
 }
 
+async fn export_query_jsonl(
+    State(state): State<AppState>,
+    Json(payload): Json<storage::StructuredQuery>,
+) -> Response {
+    match storage::run_structured_query(&state.pool, payload).await {
+        Ok(value) => structured_query_jsonl_response(value),
+        Err(error) => structured_query_error(error),
+    }
+}
+
 async fn plugins(State(state): State<AppState>) -> Response {
     Json(json!({ "items": state.plugins.statuses() })).into_response()
 }
@@ -146,6 +159,52 @@ fn structured_query_error(error: storage::StructuredQueryError) -> Response {
             api_error(StatusCode::INTERNAL_SERVER_ERROR, error)
         }
     }
+}
+
+fn structured_query_jsonl_response(value: Value) -> Response {
+    let Some(rows) = value.get("rows").and_then(Value::as_array) else {
+        return api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            anyhow::anyhow!("structured query result did not contain a row array"),
+        );
+    };
+    let dataset = value
+        .get("dataset")
+        .and_then(Value::as_str)
+        .unwrap_or("query");
+
+    let mut body = String::new();
+    for row in rows {
+        match serde_json::to_string(row) {
+            Ok(line) => {
+                body.push_str(&line);
+                body.push('\n');
+            }
+            Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, error.into()),
+        }
+    }
+
+    let mut response = (StatusCode::OK, body).into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(JSONL_CONTENT_TYPE),
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!(
+            "attachment; filename=\"llmtrace-{dataset}.jsonl\""
+        ))
+        .unwrap_or_else(|_| {
+            HeaderValue::from_static("attachment; filename=\"llmtrace-query.jsonl\"")
+        }),
+    );
+    headers.insert(
+        EXPORT_ROWS_HEADER,
+        HeaderValue::from_str(&rows.len().to_string())
+            .unwrap_or_else(|_| HeaderValue::from_static("0")),
+    );
+    response
 }
 
 fn normalize_request_search(q: Option<String>) -> Result<Option<String>, String> {
@@ -194,6 +253,60 @@ mod tests {
         assert_eq!(body, json!({"error": "internal server error"}));
     }
 
+    #[tokio::test]
+    async fn structured_query_jsonl_response_serializes_rows_and_headers() {
+        let response = structured_query_jsonl_response(json!({
+            "dataset": "requests",
+            "fields": ["id", "status"],
+            "rows": [
+                {"id": "trace-1", "status": 200},
+                {"id": "trace-2", "status": 500}
+            ],
+            "limit": 100
+        }));
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            JSONL_CONTENT_TYPE
+        );
+        assert_eq!(
+            response.headers().get(header::CONTENT_DISPOSITION).unwrap(),
+            "attachment; filename=\"llmtrace-requests.jsonl\""
+        );
+        assert_eq!(response.headers().get(EXPORT_ROWS_HEADER).unwrap(), "2");
+
+        let body = response_body_string(response).await;
+
+        assert!(body.ends_with('\n'));
+        let lines = body
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            lines,
+            vec![
+                json!({"id": "trace-1", "status": 200}),
+                json!({"id": "trace-2", "status": 500})
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn structured_query_jsonl_response_allows_empty_exports() {
+        let response = structured_query_jsonl_response(json!({
+            "dataset": "sessions",
+            "fields": ["id"],
+            "rows": [],
+            "limit": 100
+        }));
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get(EXPORT_ROWS_HEADER).unwrap(), "0");
+
+        let body = response_body_string(response).await;
+
+        assert!(body.is_empty());
+    }
+
     #[test]
     fn request_search_normalization_trims_empty_values() {
         assert_eq!(normalize_request_search(None).unwrap(), None);
@@ -218,5 +331,10 @@ mod tests {
     async fn response_body_json(response: Response) -> serde_json::Value {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&body).unwrap()
+    }
+
+    async fn response_body_string(response: Response) -> String {
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
     }
 }
