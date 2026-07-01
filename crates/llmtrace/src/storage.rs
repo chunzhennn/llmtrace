@@ -17,6 +17,11 @@ use crate::types::RequestKind;
 const DEFAULT_SESSION_MESSAGE_LIMIT: i64 = 100;
 const MAX_SESSION_MESSAGE_LIMIT: i64 = 500;
 const MAX_SESSION_MESSAGE_OFFSET: i64 = 1_000_000;
+const MAX_STRUCTURED_QUERY_FIELDS: usize = 64;
+const MAX_STRUCTURED_QUERY_FILTERS: usize = 32;
+const MAX_STRUCTURED_QUERY_ORDER_BY: usize = 8;
+const MAX_STRUCTURED_QUERY_STRING_VALUE_BYTES: usize = 4 * 1024;
+const MAX_STRUCTURED_QUERY_JSON_VALUE_BYTES: usize = 16 * 1024;
 const API_READ_STATEMENT_TIMEOUT_SQL: &str = "SET LOCAL statement_timeout = '5s'";
 const READINESS_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -1322,6 +1327,7 @@ pub async fn run_structured_query(
     let dataset = dataset_spec(&request.dataset)?;
     let selected = selected_fields(dataset, request.fields.as_deref())?;
     let order_by = selected_order(dataset, &request.order_by)?;
+    validate_structured_query_filters(&request.filters)?;
     let limit = request.limit.unwrap_or(100).clamp(1, 500);
 
     let mut builder = QueryBuilder::<Postgres>::new(
@@ -1392,7 +1398,15 @@ fn selected_fields(
 ) -> anyhow::Result<Vec<QueryField>> {
     let names: Vec<&str> = match requested {
         Some([]) => anyhow::bail!("fields must not be empty"),
-        Some(fields) => fields.iter().map(String::as_str).collect(),
+        Some(fields) => {
+            if fields.len() > MAX_STRUCTURED_QUERY_FIELDS {
+                anyhow::bail!(
+                    "fields must contain at most {} entries",
+                    MAX_STRUCTURED_QUERY_FIELDS
+                );
+            }
+            fields.iter().map(String::as_str).collect()
+        }
         None => dataset.default_fields.to_vec(),
     };
 
@@ -1418,6 +1432,13 @@ fn selected_order(
     dataset: &'static DatasetSpec,
     requested: &[QueryOrder],
 ) -> anyhow::Result<Vec<(QueryField, SortDirection)>> {
+    if requested.len() > MAX_STRUCTURED_QUERY_ORDER_BY {
+        anyhow::bail!(
+            "order_by must contain at most {} entries",
+            MAX_STRUCTURED_QUERY_ORDER_BY
+        );
+    }
+
     if requested.is_empty() {
         return dataset
             .default_order
@@ -1455,6 +1476,16 @@ fn query_field(dataset: &'static DatasetSpec, name: &str) -> anyhow::Result<Quer
     }
 
     anyhow::bail!("field {name} is not allowed for dataset {}", dataset.name)
+}
+
+fn validate_structured_query_filters(filters: &[QueryFilter]) -> anyhow::Result<()> {
+    if filters.len() > MAX_STRUCTURED_QUERY_FILTERS {
+        anyhow::bail!(
+            "filters must contain at most {} entries",
+            MAX_STRUCTURED_QUERY_FILTERS
+        );
+    }
+    Ok(())
 }
 
 const PLUGIN_METADATA_FIELD_PREFIX: &str = "plugin_metadata.";
@@ -1670,6 +1701,7 @@ fn append_json_filter(
     op: QueryOp,
     value: &Value,
 ) -> anyhow::Result<()> {
+    validate_json_filter_value_size(field.name(), value)?;
     match op {
         QueryOp::Eq | QueryOp::Ne => {
             field.append_sql(builder);
@@ -1729,10 +1761,28 @@ fn comparison_operator(op: QueryOp) -> anyhow::Result<&'static str> {
 }
 
 fn value_as_string(field: &str, value: &Value) -> anyhow::Result<String> {
-    value
+    let value = value
         .as_str()
         .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!("field {field} requires a string value"))
+        .ok_or_else(|| anyhow::anyhow!("field {field} requires a string value"))?;
+    if value.len() > MAX_STRUCTURED_QUERY_STRING_VALUE_BYTES {
+        anyhow::bail!(
+            "field {field} string value must be at most {} bytes",
+            MAX_STRUCTURED_QUERY_STRING_VALUE_BYTES
+        );
+    }
+    Ok(value)
+}
+
+fn validate_json_filter_value_size(field: &str, value: &Value) -> anyhow::Result<()> {
+    let value_len = serde_json::to_vec(value)?.len();
+    if value_len > MAX_STRUCTURED_QUERY_JSON_VALUE_BYTES {
+        anyhow::bail!(
+            "field {field} JSON value must be at most {} bytes",
+            MAX_STRUCTURED_QUERY_JSON_VALUE_BYTES
+        );
+    }
+    Ok(())
 }
 
 fn value_as_i64(field: &str, value: &Value) -> anyhow::Result<i64> {
@@ -1903,6 +1953,18 @@ mod tests {
     }
 
     #[test]
+    fn structured_query_rejects_too_many_selected_fields() {
+        let dataset = dataset_spec("requests").unwrap();
+        let fields = vec!["id".to_string(); MAX_STRUCTURED_QUERY_FIELDS + 1];
+
+        let error = selected_fields(dataset, Some(&fields))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("fields must contain at most"));
+    }
+
+    #[test]
     fn structured_query_deduplicates_selected_fields() {
         let dataset = dataset_spec("requests").unwrap();
         let fields = vec!["id".to_string(), "id".to_string(), "status".to_string()];
@@ -1950,6 +2012,40 @@ mod tests {
     }
 
     #[test]
+    fn structured_query_rejects_too_many_filters() {
+        let filters = vec![
+            QueryFilter {
+                field: "status".to_string(),
+                op: QueryOp::Eq,
+                value: Some(json!(200)),
+            };
+            MAX_STRUCTURED_QUERY_FILTERS + 1
+        ];
+
+        let error = validate_structured_query_filters(&filters)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("filters must contain at most"));
+    }
+
+    #[test]
+    fn structured_query_rejects_too_many_order_fields() {
+        let dataset = dataset_spec("requests").unwrap();
+        let order_by = vec![
+            QueryOrder {
+                field: "started_at".to_string(),
+                direction: SortDirection::Desc,
+            };
+            MAX_STRUCTURED_QUERY_ORDER_BY + 1
+        ];
+
+        let error = selected_order(dataset, &order_by).unwrap_err().to_string();
+
+        assert!(error.contains("order_by must contain at most"));
+    }
+
+    #[test]
     fn structured_query_rejects_wrong_filter_type() {
         let dataset = dataset_spec("requests").unwrap();
         let filter = QueryFilter {
@@ -1964,6 +2060,42 @@ mod tests {
             .to_string();
 
         assert!(error.contains("requires an integer value"));
+    }
+
+    #[test]
+    fn structured_query_rejects_oversized_string_filter_value() {
+        let dataset = dataset_spec("requests").unwrap();
+        let filter = QueryFilter {
+            field: "model".to_string(),
+            op: QueryOp::Eq,
+            value: Some(json!(
+                "a".repeat(MAX_STRUCTURED_QUERY_STRING_VALUE_BYTES + 1)
+            )),
+        };
+        let mut builder = QueryBuilder::<Postgres>::new("");
+
+        let error = append_filter(&mut builder, dataset, &filter)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("string value must be at most"));
+    }
+
+    #[test]
+    fn structured_query_rejects_oversized_json_filter_value() {
+        let dataset = dataset_spec("requests").unwrap();
+        let filter = QueryFilter {
+            field: "plugin_metadata".to_string(),
+            op: QueryOp::Contains,
+            value: Some(json!({"payload": "a".repeat(MAX_STRUCTURED_QUERY_JSON_VALUE_BYTES)})),
+        };
+        let mut builder = QueryBuilder::<Postgres>::new("");
+
+        let error = append_filter(&mut builder, dataset, &filter)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("JSON value must be at most"));
     }
 
     #[test]

@@ -145,6 +145,8 @@ curl 'http://127.0.0.1:3000/api/sessions/<session-id>?messages_limit=100&message
 
 Authenticated read APIs run inside read-only database transactions with a local 5 second statement timeout. This applies to stats, request/session list and detail endpoints, and structured `/api/query` calls, so slow analytics reads fail without blocking write paths indefinitely.
 
+Structured `/api/query` requests are also bounded before SQL construction: at most 64 selected fields, 32 filters, 8 sort keys, 4 KiB per string filter value, and 16 KiB per JSON filter value.
+
 ## Runtime stats
 
 `GET /api/stats` includes a `runtime` object with process-local background health counters. `runtime.trace_pipeline` reports enqueued, persisted, dropped, build-failed, and persist-failed trace events, plus the bounded queue capacity, available slots, and current depth. `runtime.retention` reports retention prune runs, failures, last success/failure timestamps, the last error, and the rows deleted by the most recent successful prune. These metrics reset on process restart and should be paired with logs or external metrics for long-term monitoring.
