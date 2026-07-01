@@ -151,13 +151,13 @@ Allowlist entries do not support wildcards. URL entries must not contain credent
 
 ## API pagination
 
-List endpoints clamp `limit` to the range `1..=500`. `GET /api/requests?q=...` and `GET /api/sessions?q=...` trim empty search strings, reject search terms over 512 bytes, and treat `%` and `_` as literal characters instead of SQL wildcard operators. Request list search matches `upstream_url`, `model`, and `request_kind`; `status` filters by exact HTTP status code. Use RFC3339 `since` and `until` timestamps to constrain `started_at` with inclusive bounds, and use `limit` and `offset` to page through long request lists:
+List endpoints clamp `limit` to the range `1..=500`. `GET /api/requests?q=...` and `GET /api/sessions?q=...` trim empty search strings, reject search terms over 512 bytes, and treat `%` and `_` as literal characters instead of SQL wildcard operators. Request list search matches `upstream_url`, `model`, and `request_kind`; `status`, `upstream_host`, `model`, `request_kind`, and `session_id` apply exact filters. `request_kind` must be one of `openai_chat_completions`, `openai_responses`, `anthropic_messages`, `websocket`, `generic_json`, or `generic_http`. Use RFC3339 `since` and `until` timestamps to constrain `started_at` with inclusive bounds, and use `limit` and `offset` to page through long request lists:
 
 ```bash
-curl 'http://127.0.0.1:3000/api/requests?q=gpt-4o&status=500&since=2026-06-01T00:00:00Z&until=2026-06-02T00:00:00Z&limit=100&offset=0'
+curl 'http://127.0.0.1:3000/api/requests?upstream_host=api.openai.com&model=gpt-4o&request_kind=openai_chat_completions&status=500&since=2026-06-01T00:00:00Z&until=2026-06-02T00:00:00Z&limit=100&offset=0'
 ```
 
-Request list responses include `page.has_more` and `page.next_offset` so clients can request the next page without assuming all matching requests were returned. Invalid timestamps or a `since` value later than `until` return `400 Bad Request`. Session list search matches `session_key`, `user_id`, and `user_name`; use `limit` and `offset` to page through long session lists:
+Request list responses include `page.has_more` and `page.next_offset` so clients can request the next page without assuming all matching requests were returned. Invalid timestamps, a `since` value later than `until`, an unknown `request_kind`, or a malformed `session_id` return `400 Bad Request`. Session list search matches `session_key`, `user_id`, and `user_name`; use `limit` and `offset` to page through long session lists:
 
 ```bash
 curl 'http://127.0.0.1:3000/api/sessions?q=alice&limit=100&offset=0'

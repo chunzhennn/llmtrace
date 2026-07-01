@@ -54,10 +54,14 @@ const LIST_REQUESTS_SQL: &str = r#"
             OR request_kind ILIKE '%' || $1 || '%' ESCAPE '\'
         )
           AND ($2::int IS NULL OR status = $2)
-          AND ($3::timestamptz IS NULL OR started_at >= $3)
-          AND ($4::timestamptz IS NULL OR started_at <= $4)
+          AND ($3::text IS NULL OR upstream_host = $3)
+          AND ($4::text IS NULL OR model = $4)
+          AND ($5::text IS NULL OR request_kind = $5)
+          AND ($6::uuid IS NULL OR session_id = $6)
+          AND ($7::timestamptz IS NULL OR started_at >= $7)
+          AND ($8::timestamptz IS NULL OR started_at <= $8)
         ORDER BY started_at DESC, id DESC
-        LIMIT $5 OFFSET $6
+        LIMIT $9 OFFSET $10
         "#;
 const LIST_SESSIONS_SQL: &str = r#"
         WITH selected_sessions AS (
@@ -126,6 +130,20 @@ pub struct TraceRecord {
     pub content_type: Option<String>,
     pub plugin_metadata: Value,
     pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RequestListFilters {
+    pub q: Option<String>,
+    pub status: Option<i32>,
+    pub upstream_host: Option<String>,
+    pub model: Option<String>,
+    pub request_kind: Option<String>,
+    pub session_id: Option<Uuid>,
+    pub since: Option<DateTime<Utc>>,
+    pub until: Option<DateTime<Utc>>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1004,23 +1022,19 @@ async fn update_rollup(
     Ok(())
 }
 
-pub async fn list_requests(
-    pool: &PgPool,
-    q: Option<String>,
-    status: Option<i32>,
-    since: Option<DateTime<Utc>>,
-    until: Option<DateTime<Utc>>,
-    limit: Option<i64>,
-    offset: Option<i64>,
-) -> anyhow::Result<Value> {
-    let q = q.map(|value| escape_like(&value));
-    let page = RequestListPage::from_query(limit, offset);
+pub async fn list_requests(pool: &PgPool, filters: RequestListFilters) -> anyhow::Result<Value> {
+    let q = filters.q.map(|value| escape_like(&value));
+    let page = RequestListPage::from_query(filters.limit, filters.offset);
     let mut tx = begin_api_read_tx(pool).await?;
     let rows = sqlx::query(LIST_REQUESTS_SQL)
         .bind(q)
-        .bind(status)
-        .bind(since)
-        .bind(until)
+        .bind(filters.status)
+        .bind(filters.upstream_host)
+        .bind(filters.model)
+        .bind(filters.request_kind)
+        .bind(filters.session_id)
+        .bind(filters.since)
+        .bind(filters.until)
         .bind(page.fetch_limit())
         .bind(page.offset)
         .fetch_all(&mut *tx)
@@ -2900,7 +2914,7 @@ mod tests {
     #[test]
     fn list_requests_query_filters_then_pages_requests() {
         let where_clause = LIST_REQUESTS_SQL.find("WHERE (").unwrap();
-        let request_limit = LIST_REQUESTS_SQL.find("LIMIT $5 OFFSET $6").unwrap();
+        let request_limit = LIST_REQUESTS_SQL.find("LIMIT $9 OFFSET $10").unwrap();
 
         assert!(where_clause < request_limit);
         assert!(LIST_REQUESTS_SQL.contains("$1::text IS NULL"));
@@ -2908,8 +2922,12 @@ mod tests {
         assert!(LIST_REQUESTS_SQL.contains("model ILIKE '%' || $1 || '%' ESCAPE '\\'"));
         assert!(LIST_REQUESTS_SQL.contains("request_kind ILIKE '%' || $1 || '%' ESCAPE '\\'"));
         assert!(LIST_REQUESTS_SQL.contains("AND ($2::int IS NULL OR status = $2)"));
-        assert!(LIST_REQUESTS_SQL.contains("AND ($3::timestamptz IS NULL OR started_at >= $3)"));
-        assert!(LIST_REQUESTS_SQL.contains("AND ($4::timestamptz IS NULL OR started_at <= $4)"));
+        assert!(LIST_REQUESTS_SQL.contains("AND ($3::text IS NULL OR upstream_host = $3)"));
+        assert!(LIST_REQUESTS_SQL.contains("AND ($4::text IS NULL OR model = $4)"));
+        assert!(LIST_REQUESTS_SQL.contains("AND ($5::text IS NULL OR request_kind = $5)"));
+        assert!(LIST_REQUESTS_SQL.contains("AND ($6::uuid IS NULL OR session_id = $6)"));
+        assert!(LIST_REQUESTS_SQL.contains("AND ($7::timestamptz IS NULL OR started_at >= $7)"));
+        assert!(LIST_REQUESTS_SQL.contains("AND ($8::timestamptz IS NULL OR started_at <= $8)"));
         assert!(LIST_REQUESTS_SQL.contains("ORDER BY started_at DESC, id DESC"));
     }
 

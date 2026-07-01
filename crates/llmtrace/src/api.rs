@@ -12,16 +12,29 @@ use crate::state::AppState;
 use crate::storage;
 
 const MAX_REQUEST_SEARCH_BYTES: usize = 512;
+const MAX_REQUEST_FILTER_BYTES: usize = 1024;
 const MAX_REQUEST_TIME_FILTER_BYTES: usize = 128;
 const MAX_AUDIT_FILTER_BYTES: usize = 1024;
 const JSONL_CONTENT_TYPE: &str = "application/x-ndjson; charset=utf-8";
 const EXPORT_ROWS_HEADER: HeaderName = HeaderName::from_static("x-llmtrace-export-rows");
+const REQUEST_KIND_FILTERS: &[&str] = &[
+    "openai_chat_completions",
+    "openai_responses",
+    "anthropic_messages",
+    "websocket",
+    "generic_json",
+    "generic_http",
+];
 const USAGE_TIMESERIES_BUCKETS: &[&str] = &["minute", "hour", "day"];
 
 #[derive(Debug, Deserialize)]
 struct RequestListQuery {
     q: Option<String>,
     status: Option<i32>,
+    upstream_host: Option<String>,
+    model: Option<String>,
+    request_kind: Option<String>,
+    session_id: Option<String>,
     since: Option<String>,
     until: Option<String>,
     limit: Option<i64>,
@@ -135,15 +148,37 @@ async fn list_requests(
         Ok(range) => range,
         Err(message) => return bad_request(message),
     };
+    let upstream_host = match normalize_request_filter("upstream_host", query.upstream_host) {
+        Ok(value) => value,
+        Err(message) => return bad_request(message),
+    };
+    let model = match normalize_request_filter("model", query.model) {
+        Ok(value) => value,
+        Err(message) => return bad_request(message),
+    };
+    let request_kind = match normalize_request_kind_filter(query.request_kind) {
+        Ok(value) => value,
+        Err(message) => return bad_request(message),
+    };
+    let session_id = match normalize_optional_uuid_filter("session_id", query.session_id) {
+        Ok(value) => value,
+        Err(message) => return bad_request(message),
+    };
 
     match storage::list_requests(
         &state.pool,
-        q,
-        query.status,
-        time_range.since,
-        time_range.until,
-        query.limit,
-        query.offset,
+        storage::RequestListFilters {
+            q,
+            status: query.status,
+            upstream_host,
+            model,
+            request_kind,
+            session_id,
+            since: time_range.since,
+            until: time_range.until,
+            limit: query.limit,
+            offset: query.offset,
+        },
     )
     .await
     {
@@ -329,6 +364,47 @@ fn normalize_request_search(q: Option<String>) -> Result<Option<String>, String>
         ));
     }
     Ok(Some(q.to_string()))
+}
+
+fn normalize_request_filter(field: &str, value: Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.len() > MAX_REQUEST_FILTER_BYTES {
+        return Err(format!(
+            "{field} must be at most {MAX_REQUEST_FILTER_BYTES} bytes"
+        ));
+    }
+    Ok(Some(value.to_string()))
+}
+
+fn normalize_request_kind_filter(value: Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = normalize_request_filter("request_kind", value)? else {
+        return Ok(None);
+    };
+    if REQUEST_KIND_FILTERS.contains(&value.as_str()) {
+        return Ok(Some(value));
+    }
+    Err(format!(
+        "request_kind must be one of {}",
+        REQUEST_KIND_FILTERS.join(", ")
+    ))
+}
+
+fn normalize_optional_uuid_filter(
+    field: &str,
+    value: Option<String>,
+) -> Result<Option<Uuid>, String> {
+    let Some(value) = normalize_request_filter(field, value)? else {
+        return Ok(None);
+    };
+    Uuid::parse_str(&value)
+        .map(Some)
+        .map_err(|_| format!("{field} must be a UUID"))
 }
 
 fn normalize_request_time_range(
@@ -517,6 +593,61 @@ mod tests {
             normalize_request_search(Some("a".repeat(MAX_REQUEST_SEARCH_BYTES + 1))).unwrap_err();
 
         assert!(error.contains("q must be at most"));
+    }
+
+    #[test]
+    fn request_filter_normalization_trims_empty_values() {
+        assert_eq!(normalize_request_filter("model", None).unwrap(), None);
+        assert_eq!(
+            normalize_request_filter("model", Some("   ".to_string())).unwrap(),
+            None
+        );
+        assert_eq!(
+            normalize_request_filter("model", Some(" gpt-4o-mini ".to_string())).unwrap(),
+            Some("gpt-4o-mini".to_string())
+        );
+    }
+
+    #[test]
+    fn request_filter_normalization_rejects_oversized_values() {
+        let error =
+            normalize_request_filter("model", Some("a".repeat(MAX_REQUEST_FILTER_BYTES + 1)))
+                .unwrap_err();
+
+        assert!(error.contains("model must be at most"));
+    }
+
+    #[test]
+    fn request_kind_filter_normalization_accepts_known_values() {
+        assert_eq!(
+            normalize_request_kind_filter(Some(" websocket ".to_string())).unwrap(),
+            Some("websocket".to_string())
+        );
+    }
+
+    #[test]
+    fn request_kind_filter_normalization_rejects_unknown_values() {
+        let error = normalize_request_kind_filter(Some("unknown".to_string())).unwrap_err();
+
+        assert!(error.contains("request_kind must be one of"));
+    }
+
+    #[test]
+    fn optional_uuid_filter_normalization_accepts_valid_uuid() {
+        let id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+
+        assert_eq!(
+            normalize_optional_uuid_filter("session_id", Some(format!(" {id} "))).unwrap(),
+            Some(id)
+        );
+    }
+
+    #[test]
+    fn optional_uuid_filter_normalization_rejects_invalid_uuid() {
+        let error = normalize_optional_uuid_filter("session_id", Some("not-a-uuid".to_string()))
+            .unwrap_err();
+
+        assert!(error.contains("session_id must be a UUID"));
     }
 
     #[test]
