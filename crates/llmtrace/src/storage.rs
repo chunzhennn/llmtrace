@@ -84,6 +84,23 @@ const REQUEST_FACET_STATUSES_SQL: &str = r#"
         ORDER BY request_count DESC, value ASC
         LIMIT $2
         "#;
+const REQUEST_FACET_STATUS_CLASSES_SQL: &str = r#"
+        SELECT CASE
+                   WHEN status IS NULL THEN 'no_status'
+                   WHEN status BETWEEN 100 AND 199 THEN '1xx'
+                   WHEN status BETWEEN 200 AND 299 THEN '2xx'
+                   WHEN status BETWEEN 300 AND 399 THEN '3xx'
+                   WHEN status BETWEEN 400 AND 499 THEN '4xx'
+                   WHEN status BETWEEN 500 AND 599 THEN '5xx'
+                   ELSE 'other'
+               END AS value,
+               COUNT(*)::bigint AS request_count
+        FROM trace_requests
+        WHERE started_at >= $1
+        GROUP BY 1
+        ORDER BY request_count DESC, value ASC
+        LIMIT $2
+        "#;
 const REQUEST_FACET_ERROR_STATES_SQL: &str = r#"
         SELECT (error IS NOT NULL OR COALESCE(status >= 500, false)) AS value,
                COUNT(*)::bigint AS request_count
@@ -118,8 +135,18 @@ const LIST_REQUESTS_SQL: &str = r#"
               OR ($11 = true AND (error IS NOT NULL OR status >= 500))
               OR ($11 = false AND error IS NULL AND (status IS NULL OR status < 500))
           )
+          AND (
+              $12::text IS NULL
+              OR ($12 = 'no_status' AND status IS NULL)
+              OR ($12 = '1xx' AND status BETWEEN 100 AND 199)
+              OR ($12 = '2xx' AND status BETWEEN 200 AND 299)
+              OR ($12 = '3xx' AND status BETWEEN 300 AND 399)
+              OR ($12 = '4xx' AND status BETWEEN 400 AND 499)
+              OR ($12 = '5xx' AND status BETWEEN 500 AND 599)
+              OR ($12 = 'other' AND status IS NOT NULL AND (status < 100 OR status > 599))
+          )
         ORDER BY started_at DESC, id DESC
-        LIMIT $12 OFFSET $13
+        LIMIT $13 OFFSET $14
         "#;
 const LIST_SESSION_REQUESTS_SQL: &str = r#"
         SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
@@ -204,6 +231,7 @@ pub struct TraceRecord {
 pub struct RequestListFilters {
     pub q: Option<String>,
     pub status: Option<i32>,
+    pub status_class: Option<String>,
     pub has_error: Option<bool>,
     pub upstream_host: Option<String>,
     pub model: Option<String>,
@@ -1132,6 +1160,7 @@ pub async fn list_requests(pool: &PgPool, filters: RequestListFilters) -> anyhow
         .bind(filters.min_duration_ms)
         .bind(filters.max_duration_ms)
         .bind(filters.has_error)
+        .bind(filters.status_class)
         .bind(page.fetch_limit())
         .bind(page.offset)
         .fetch_all(&mut *tx)
@@ -1229,6 +1258,11 @@ pub async fn request_facets(
         .bind(window.limit)
         .fetch_all(&mut *tx)
         .await?;
+    let status_classes = sqlx::query(REQUEST_FACET_STATUS_CLASSES_SQL)
+        .bind(cutoff)
+        .bind(window.limit)
+        .fetch_all(&mut *tx)
+        .await?;
     let error_states = sqlx::query(REQUEST_FACET_ERROR_STATES_SQL)
         .bind(cutoff)
         .fetch_all(&mut *tx)
@@ -1246,6 +1280,7 @@ pub async fn request_facets(
             "upstream_hosts": text_facet_rows(upstream_hosts),
             "request_kinds": text_facet_rows(request_kinds),
             "statuses": int_facet_rows(statuses),
+            "status_classes": text_facet_rows(status_classes),
             "error_states": bool_facet_rows(error_states),
         },
     }))
@@ -3181,7 +3216,7 @@ mod tests {
     #[test]
     fn list_requests_query_filters_then_pages_requests() {
         let where_clause = LIST_REQUESTS_SQL.find("WHERE (").unwrap();
-        let request_limit = LIST_REQUESTS_SQL.find("LIMIT $12 OFFSET $13").unwrap();
+        let request_limit = LIST_REQUESTS_SQL.find("LIMIT $13 OFFSET $14").unwrap();
 
         assert!(where_clause < request_limit);
         assert!(LIST_REQUESTS_SQL.contains("$1::text IS NULL"));
@@ -3206,6 +3241,12 @@ mod tests {
                 "OR ($11 = false AND error IS NULL AND (status IS NULL OR status < 500))"
             )
         );
+        assert!(LIST_REQUESTS_SQL.contains("$12::text IS NULL"));
+        assert!(LIST_REQUESTS_SQL.contains("OR ($12 = 'no_status' AND status IS NULL)"));
+        assert!(LIST_REQUESTS_SQL.contains("OR ($12 = '5xx' AND status BETWEEN 500 AND 599)"));
+        assert!(LIST_REQUESTS_SQL.contains(
+            "OR ($12 = 'other' AND status IS NOT NULL AND (status < 100 OR status > 599))"
+        ));
         assert!(LIST_REQUESTS_SQL.contains("ORDER BY started_at DESC, id DESC"));
     }
 
@@ -3244,6 +3285,13 @@ mod tests {
         assert!(REQUEST_FACET_STATUSES_SQL.contains("WHERE started_at >= $1"));
         assert!(REQUEST_FACET_STATUSES_SQL.contains("status IS NOT NULL"));
         assert!(REQUEST_FACET_STATUSES_SQL.contains("LIMIT $2"));
+        assert!(REQUEST_FACET_STATUS_CLASSES_SQL.contains("WHEN status IS NULL THEN 'no_status'"));
+        assert!(
+            REQUEST_FACET_STATUS_CLASSES_SQL.contains("WHEN status BETWEEN 500 AND 599 THEN '5xx'")
+        );
+        assert!(REQUEST_FACET_STATUS_CLASSES_SQL.contains("ELSE 'other'"));
+        assert!(REQUEST_FACET_STATUS_CLASSES_SQL.contains("WHERE started_at >= $1"));
+        assert!(REQUEST_FACET_STATUS_CLASSES_SQL.contains("LIMIT $2"));
         assert!(REQUEST_FACET_ERROR_STATES_SQL.contains("WHERE started_at >= $1"));
         assert!(
             REQUEST_FACET_ERROR_STATES_SQL

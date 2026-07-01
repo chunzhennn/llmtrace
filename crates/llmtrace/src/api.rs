@@ -25,12 +25,14 @@ const REQUEST_KIND_FILTERS: &[&str] = &[
     "generic_json",
     "generic_http",
 ];
+const STATUS_CLASS_FILTERS: &[&str] = &["no_status", "1xx", "2xx", "3xx", "4xx", "5xx", "other"];
 const USAGE_TIMESERIES_BUCKETS: &[&str] = &["minute", "hour", "day"];
 
 #[derive(Debug, Deserialize)]
 struct RequestListQuery {
     q: Option<String>,
     status: Option<i32>,
+    status_class: Option<String>,
     has_error: Option<bool>,
     upstream_host: Option<String>,
     model: Option<String>,
@@ -192,12 +194,17 @@ async fn list_requests(
         Ok(value) => value,
         Err(message) => return bad_request(message),
     };
+    let status_class = match normalize_status_class_filter(query.status_class) {
+        Ok(value) => value,
+        Err(message) => return bad_request(message),
+    };
 
     match storage::list_requests(
         &state.pool,
         storage::RequestListFilters {
             q,
             status: query.status,
+            status_class,
             has_error: query.has_error,
             upstream_host,
             model,
@@ -449,6 +456,20 @@ fn normalize_request_kind_filter(value: Option<String>) -> Result<Option<String>
     Err(format!(
         "request_kind must be one of {}",
         REQUEST_KIND_FILTERS.join(", ")
+    ))
+}
+
+fn normalize_status_class_filter(value: Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = normalize_request_filter("status_class", value)? else {
+        return Ok(None);
+    };
+    let value = value.to_ascii_lowercase();
+    if STATUS_CLASS_FILTERS.contains(&value.as_str()) {
+        return Ok(Some(value));
+    }
+    Err(format!(
+        "status_class must be one of {}",
+        STATUS_CLASS_FILTERS.join(", ")
     ))
 }
 
@@ -718,6 +739,25 @@ mod tests {
         let error = normalize_request_kind_filter(Some("unknown".to_string())).unwrap_err();
 
         assert!(error.contains("request_kind must be one of"));
+    }
+
+    #[test]
+    fn status_class_filter_normalization_accepts_known_values() {
+        assert_eq!(
+            normalize_status_class_filter(Some(" 5XX ".to_string())).unwrap(),
+            Some("5xx".to_string())
+        );
+        assert_eq!(
+            normalize_status_class_filter(Some(" no_status ".to_string())).unwrap(),
+            Some("no_status".to_string())
+        );
+    }
+
+    #[test]
+    fn status_class_filter_normalization_rejects_unknown_values() {
+        let error = normalize_status_class_filter(Some("success".to_string())).unwrap_err();
+
+        assert!(error.contains("status_class must be one of"));
     }
 
     #[test]
