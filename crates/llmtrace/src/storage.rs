@@ -54,8 +54,10 @@ const LIST_REQUESTS_SQL: &str = r#"
             OR request_kind ILIKE '%' || $1 || '%' ESCAPE '\'
         )
           AND ($2::int IS NULL OR status = $2)
+          AND ($3::timestamptz IS NULL OR started_at >= $3)
+          AND ($4::timestamptz IS NULL OR started_at <= $4)
         ORDER BY started_at DESC, id DESC
-        LIMIT $3 OFFSET $4
+        LIMIT $5 OFFSET $6
         "#;
 const LIST_SESSIONS_SQL: &str = r#"
         WITH selected_sessions AS (
@@ -1006,6 +1008,8 @@ pub async fn list_requests(
     pool: &PgPool,
     q: Option<String>,
     status: Option<i32>,
+    since: Option<DateTime<Utc>>,
+    until: Option<DateTime<Utc>>,
     limit: Option<i64>,
     offset: Option<i64>,
 ) -> anyhow::Result<Value> {
@@ -1015,6 +1019,8 @@ pub async fn list_requests(
     let rows = sqlx::query(LIST_REQUESTS_SQL)
         .bind(q)
         .bind(status)
+        .bind(since)
+        .bind(until)
         .bind(page.fetch_limit())
         .bind(page.offset)
         .fetch_all(&mut *tx)
@@ -2894,7 +2900,7 @@ mod tests {
     #[test]
     fn list_requests_query_filters_then_pages_requests() {
         let where_clause = LIST_REQUESTS_SQL.find("WHERE (").unwrap();
-        let request_limit = LIST_REQUESTS_SQL.find("LIMIT $3 OFFSET $4").unwrap();
+        let request_limit = LIST_REQUESTS_SQL.find("LIMIT $5 OFFSET $6").unwrap();
 
         assert!(where_clause < request_limit);
         assert!(LIST_REQUESTS_SQL.contains("$1::text IS NULL"));
@@ -2902,6 +2908,8 @@ mod tests {
         assert!(LIST_REQUESTS_SQL.contains("model ILIKE '%' || $1 || '%' ESCAPE '\\'"));
         assert!(LIST_REQUESTS_SQL.contains("request_kind ILIKE '%' || $1 || '%' ESCAPE '\\'"));
         assert!(LIST_REQUESTS_SQL.contains("AND ($2::int IS NULL OR status = $2)"));
+        assert!(LIST_REQUESTS_SQL.contains("AND ($3::timestamptz IS NULL OR started_at >= $3)"));
+        assert!(LIST_REQUESTS_SQL.contains("AND ($4::timestamptz IS NULL OR started_at <= $4)"));
         assert!(LIST_REQUESTS_SQL.contains("ORDER BY started_at DESC, id DESC"));
     }
 

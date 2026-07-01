@@ -3,6 +3,7 @@ use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -11,6 +12,7 @@ use crate::state::AppState;
 use crate::storage;
 
 const MAX_REQUEST_SEARCH_BYTES: usize = 512;
+const MAX_REQUEST_TIME_FILTER_BYTES: usize = 128;
 const MAX_AUDIT_FILTER_BYTES: usize = 1024;
 const JSONL_CONTENT_TYPE: &str = "application/x-ndjson; charset=utf-8";
 const EXPORT_ROWS_HEADER: HeaderName = HeaderName::from_static("x-llmtrace-export-rows");
@@ -20,6 +22,8 @@ const USAGE_TIMESERIES_BUCKETS: &[&str] = &["minute", "hour", "day"];
 struct RequestListQuery {
     q: Option<String>,
     status: Option<i32>,
+    since: Option<String>,
+    until: Option<String>,
     limit: Option<i64>,
     offset: Option<i64>,
 }
@@ -55,6 +59,12 @@ struct UsageSummaryQuery {
 struct UsageTimeseriesQuery {
     since_hours: Option<i64>,
     bucket: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RequestTimeRange {
+    since: Option<DateTime<Utc>>,
+    until: Option<DateTime<Utc>>,
 }
 
 pub fn router() -> Router<AppState> {
@@ -121,8 +131,22 @@ async fn list_requests(
         Ok(q) => q,
         Err(message) => return bad_request(message),
     };
+    let time_range = match normalize_request_time_range(query.since, query.until) {
+        Ok(range) => range,
+        Err(message) => return bad_request(message),
+    };
 
-    match storage::list_requests(&state.pool, q, query.status, query.limit, query.offset).await {
+    match storage::list_requests(
+        &state.pool,
+        q,
+        query.status,
+        time_range.since,
+        time_range.until,
+        query.limit,
+        query.offset,
+    )
+    .await
+    {
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
@@ -307,6 +331,41 @@ fn normalize_request_search(q: Option<String>) -> Result<Option<String>, String>
     Ok(Some(q.to_string()))
 }
 
+fn normalize_request_time_range(
+    since: Option<String>,
+    until: Option<String>,
+) -> Result<RequestTimeRange, String> {
+    let since = normalize_optional_timestamp_filter("since", since)?;
+    let until = normalize_optional_timestamp_filter("until", until)?;
+    if since.zip(until).is_some_and(|(since, until)| since > until) {
+        return Err("since must be earlier than or equal to until".to_string());
+    }
+    Ok(RequestTimeRange { since, until })
+}
+
+fn normalize_optional_timestamp_filter(
+    field: &str,
+    value: Option<String>,
+) -> Result<Option<DateTime<Utc>>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.len() > MAX_REQUEST_TIME_FILTER_BYTES {
+        return Err(format!(
+            "{field} must be at most {MAX_REQUEST_TIME_FILTER_BYTES} bytes"
+        ));
+    }
+    Ok(Some(
+        DateTime::parse_from_rfc3339(value)
+            .map_err(|_| format!("{field} must be an RFC3339 timestamp"))?
+            .with_timezone(&Utc),
+    ))
+}
+
 fn normalize_optional_filter(field: &str, value: Option<String>) -> Result<Option<String>, String> {
     let Some(value) = value else {
         return Ok(None);
@@ -458,6 +517,66 @@ mod tests {
             normalize_request_search(Some("a".repeat(MAX_REQUEST_SEARCH_BYTES + 1))).unwrap_err();
 
         assert!(error.contains("q must be at most"));
+    }
+
+    #[test]
+    fn request_time_range_normalization_accepts_rfc3339_bounds() {
+        let range = normalize_request_time_range(
+            Some(" 2026-06-01T12:00:00Z ".to_string()),
+            Some("2026-06-01T12:30:00+00:00".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            range.since.unwrap(),
+            DateTime::parse_from_rfc3339("2026-06-01T12:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+        assert_eq!(
+            range.until.unwrap(),
+            DateTime::parse_from_rfc3339("2026-06-01T12:30:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+    }
+
+    #[test]
+    fn request_time_range_normalization_trims_empty_values() {
+        assert_eq!(
+            normalize_request_time_range(None, Some("   ".to_string())).unwrap(),
+            RequestTimeRange {
+                since: None,
+                until: None
+            }
+        );
+    }
+
+    #[test]
+    fn request_time_range_normalization_rejects_invalid_values() {
+        let error = normalize_request_time_range(Some("not-a-time".to_string()), None).unwrap_err();
+
+        assert!(error.contains("since must be an RFC3339 timestamp"));
+    }
+
+    #[test]
+    fn request_time_range_normalization_rejects_oversized_values() {
+        let error =
+            normalize_request_time_range(Some("a".repeat(MAX_REQUEST_TIME_FILTER_BYTES + 1)), None)
+                .unwrap_err();
+
+        assert!(error.contains("since must be at most"));
+    }
+
+    #[test]
+    fn request_time_range_normalization_rejects_reversed_bounds() {
+        let error = normalize_request_time_range(
+            Some("2026-06-01T12:30:00Z".to_string()),
+            Some("2026-06-01T12:00:00Z".to_string()),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("since must be earlier than or equal to until"));
     }
 
     #[test]
