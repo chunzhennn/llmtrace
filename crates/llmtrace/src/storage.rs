@@ -42,6 +42,10 @@ const DEFAULT_ERROR_SUMMARY_SINCE_HOURS: i64 = 24;
 const MAX_ERROR_SUMMARY_SINCE_HOURS: i64 = 24 * 90;
 const DEFAULT_ERROR_SUMMARY_LIMIT: i64 = 10;
 const MAX_ERROR_SUMMARY_LIMIT: i64 = 50;
+const DEFAULT_LATENCY_SUMMARY_SINCE_HOURS: i64 = 24;
+const MAX_LATENCY_SUMMARY_SINCE_HOURS: i64 = 24 * 90;
+const DEFAULT_LATENCY_SUMMARY_LIMIT: i64 = 10;
+const MAX_LATENCY_SUMMARY_LIMIT: i64 = 50;
 const DEFAULT_USAGE_TIMESERIES_SINCE_HOURS: i64 = 24;
 const MAX_USAGE_TIMESERIES_MINUTE_HOURS: i64 = 24;
 const MAX_USAGE_TIMESERIES_HOUR_HOURS: i64 = 24 * 90;
@@ -211,6 +215,97 @@ const ERROR_SUMMARY_STATUS_CLASSES_SQL: &str = r#"
           AND (error IS NOT NULL OR status >= 500)
         GROUP BY 1
         ORDER BY error_count DESC, name ASC
+        LIMIT $2
+        "#;
+const LATENCY_SUMMARY_TOTALS_SQL: &str = r#"
+        SELECT COUNT(*)::bigint AS request_count,
+               COUNT(duration_ms)::bigint AS duration_count,
+               AVG(duration_ms)::bigint AS avg_duration_ms,
+               MAX(duration_ms)::bigint AS max_duration_ms,
+               (percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p50_duration_ms,
+               (percentile_cont(0.90) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p90_duration_ms,
+               (percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p95_duration_ms,
+               (percentile_cont(0.99) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p99_duration_ms,
+               COUNT(ttft_ms)::bigint AS ttft_count,
+               AVG(ttft_ms)::bigint AS avg_ttft_ms,
+               MAX(ttft_ms)::bigint AS max_ttft_ms,
+               (percentile_cont(0.50) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p50_ttft_ms,
+               (percentile_cont(0.90) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p90_ttft_ms,
+               (percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p95_ttft_ms,
+               (percentile_cont(0.99) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p99_ttft_ms
+        FROM trace_requests
+        WHERE started_at >= $1
+        "#;
+const LATENCY_SUMMARY_UPSTREAMS_SQL: &str = r#"
+        SELECT COALESCE(NULLIF(upstream_host, ''), 'unknown') AS name,
+               COUNT(*)::bigint AS request_count,
+               COUNT(duration_ms)::bigint AS duration_count,
+               AVG(duration_ms)::bigint AS avg_duration_ms,
+               MAX(duration_ms)::bigint AS max_duration_ms,
+               (percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p50_duration_ms,
+               (percentile_cont(0.90) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p90_duration_ms,
+               (percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p95_duration_ms,
+               (percentile_cont(0.99) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p99_duration_ms,
+               COUNT(ttft_ms)::bigint AS ttft_count,
+               AVG(ttft_ms)::bigint AS avg_ttft_ms,
+               MAX(ttft_ms)::bigint AS max_ttft_ms,
+               (percentile_cont(0.50) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p50_ttft_ms,
+               (percentile_cont(0.90) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p90_ttft_ms,
+               (percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p95_ttft_ms,
+               (percentile_cont(0.99) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p99_ttft_ms
+        FROM trace_requests
+        WHERE started_at >= $1
+        GROUP BY 1
+        HAVING COUNT(duration_ms) > 0 OR COUNT(ttft_ms) > 0
+        ORDER BY p95_duration_ms DESC NULLS LAST, request_count DESC, name ASC
+        LIMIT $2
+        "#;
+const LATENCY_SUMMARY_MODELS_SQL: &str = r#"
+        SELECT COALESCE(NULLIF(model, ''), 'unknown') AS name,
+               COUNT(*)::bigint AS request_count,
+               COUNT(duration_ms)::bigint AS duration_count,
+               AVG(duration_ms)::bigint AS avg_duration_ms,
+               MAX(duration_ms)::bigint AS max_duration_ms,
+               (percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p50_duration_ms,
+               (percentile_cont(0.90) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p90_duration_ms,
+               (percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p95_duration_ms,
+               (percentile_cont(0.99) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p99_duration_ms,
+               COUNT(ttft_ms)::bigint AS ttft_count,
+               AVG(ttft_ms)::bigint AS avg_ttft_ms,
+               MAX(ttft_ms)::bigint AS max_ttft_ms,
+               (percentile_cont(0.50) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p50_ttft_ms,
+               (percentile_cont(0.90) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p90_ttft_ms,
+               (percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p95_ttft_ms,
+               (percentile_cont(0.99) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p99_ttft_ms
+        FROM trace_requests
+        WHERE started_at >= $1
+        GROUP BY 1
+        HAVING COUNT(duration_ms) > 0 OR COUNT(ttft_ms) > 0
+        ORDER BY p95_duration_ms DESC NULLS LAST, request_count DESC, name ASC
+        LIMIT $2
+        "#;
+const LATENCY_SUMMARY_REQUEST_KINDS_SQL: &str = r#"
+        SELECT COALESCE(NULLIF(request_kind, ''), 'unknown') AS name,
+               COUNT(*)::bigint AS request_count,
+               COUNT(duration_ms)::bigint AS duration_count,
+               AVG(duration_ms)::bigint AS avg_duration_ms,
+               MAX(duration_ms)::bigint AS max_duration_ms,
+               (percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p50_duration_ms,
+               (percentile_cont(0.90) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p90_duration_ms,
+               (percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p95_duration_ms,
+               (percentile_cont(0.99) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p99_duration_ms,
+               COUNT(ttft_ms)::bigint AS ttft_count,
+               AVG(ttft_ms)::bigint AS avg_ttft_ms,
+               MAX(ttft_ms)::bigint AS max_ttft_ms,
+               (percentile_cont(0.50) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p50_ttft_ms,
+               (percentile_cont(0.90) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p90_ttft_ms,
+               (percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p95_ttft_ms,
+               (percentile_cont(0.99) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p99_ttft_ms
+        FROM trace_requests
+        WHERE started_at >= $1
+        GROUP BY 1
+        HAVING COUNT(duration_ms) > 0 OR COUNT(ttft_ms) > 0
+        ORDER BY p95_duration_ms DESC NULLS LAST, request_count DESC, name ASC
         LIMIT $2
         "#;
 const LIST_REQUESTS_SQL: &str = r#"
@@ -588,6 +683,12 @@ struct ErrorSummaryWindow {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LatencySummaryWindow {
+    since_hours: i64,
+    limit: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UsageTimeseriesBucket {
     Minute,
     Hour,
@@ -769,6 +870,23 @@ impl ErrorSummaryWindow {
             limit: limit
                 .unwrap_or(DEFAULT_ERROR_SUMMARY_LIMIT)
                 .clamp(1, MAX_ERROR_SUMMARY_LIMIT),
+        }
+    }
+
+    fn cutoff(self, now: DateTime<Utc>) -> DateTime<Utc> {
+        now - ChronoDuration::hours(self.since_hours)
+    }
+}
+
+impl LatencySummaryWindow {
+    fn from_query(since_hours: Option<i64>, limit: Option<i64>) -> Self {
+        Self {
+            since_hours: since_hours
+                .unwrap_or(DEFAULT_LATENCY_SUMMARY_SINCE_HOURS)
+                .clamp(1, MAX_LATENCY_SUMMARY_SINCE_HOURS),
+            limit: limit
+                .unwrap_or(DEFAULT_LATENCY_SUMMARY_LIMIT)
+                .clamp(1, MAX_LATENCY_SUMMARY_LIMIT),
         }
     }
 
@@ -1977,6 +2095,50 @@ pub async fn error_summary(
     }))
 }
 
+pub async fn latency_summary(
+    pool: &PgPool,
+    since_hours: Option<i64>,
+    limit: Option<i64>,
+) -> anyhow::Result<Value> {
+    let window = LatencySummaryWindow::from_query(since_hours, limit);
+    let cutoff = window.cutoff(Utc::now());
+    let mut tx = begin_api_read_tx(pool).await?;
+
+    let totals = sqlx::query(LATENCY_SUMMARY_TOTALS_SQL)
+        .bind(cutoff)
+        .fetch_one(&mut *tx)
+        .await?;
+    let top_upstreams = sqlx::query(LATENCY_SUMMARY_UPSTREAMS_SQL)
+        .bind(cutoff)
+        .bind(window.limit)
+        .fetch_all(&mut *tx)
+        .await?;
+    let top_models = sqlx::query(LATENCY_SUMMARY_MODELS_SQL)
+        .bind(cutoff)
+        .bind(window.limit)
+        .fetch_all(&mut *tx)
+        .await?;
+    let request_kinds = sqlx::query(LATENCY_SUMMARY_REQUEST_KINDS_SQL)
+        .bind(cutoff)
+        .bind(window.limit)
+        .fetch_all(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+
+    Ok(json!({
+        "window": {
+            "since_hours": window.since_hours,
+            "started_at_gte": cutoff,
+            "limit": window.limit,
+        },
+        "totals": latency_metric_row(totals),
+        "top_upstreams": latency_metric_rows(top_upstreams),
+        "top_models": latency_metric_rows(top_models),
+        "request_kinds": latency_metric_rows(request_kinds),
+    }))
+}
+
 pub async fn usage_timeseries(
     pool: &PgPool,
     since_hours: Option<i64>,
@@ -2089,6 +2251,51 @@ fn error_metric_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
                 "http_5xx_count": row.get::<i64, _>("http_5xx_count"),
                 "avg_duration_ms": row.try_get::<Option<i64>, _>("avg_duration_ms").ok().flatten(),
                 "max_duration_ms": row.try_get::<Option<i64>, _>("max_duration_ms").ok().flatten(),
+            })
+        })
+        .collect()
+}
+
+fn latency_metric_row(row: sqlx::postgres::PgRow) -> Value {
+    json!({
+        "request_count": row.get::<i64, _>("request_count"),
+        "duration_count": row.get::<i64, _>("duration_count"),
+        "avg_duration_ms": row.try_get::<Option<i64>, _>("avg_duration_ms").ok().flatten(),
+        "max_duration_ms": row.try_get::<Option<i64>, _>("max_duration_ms").ok().flatten(),
+        "p50_duration_ms": row.try_get::<Option<i64>, _>("p50_duration_ms").ok().flatten(),
+        "p90_duration_ms": row.try_get::<Option<i64>, _>("p90_duration_ms").ok().flatten(),
+        "p95_duration_ms": row.try_get::<Option<i64>, _>("p95_duration_ms").ok().flatten(),
+        "p99_duration_ms": row.try_get::<Option<i64>, _>("p99_duration_ms").ok().flatten(),
+        "ttft_count": row.get::<i64, _>("ttft_count"),
+        "avg_ttft_ms": row.try_get::<Option<i64>, _>("avg_ttft_ms").ok().flatten(),
+        "max_ttft_ms": row.try_get::<Option<i64>, _>("max_ttft_ms").ok().flatten(),
+        "p50_ttft_ms": row.try_get::<Option<i64>, _>("p50_ttft_ms").ok().flatten(),
+        "p90_ttft_ms": row.try_get::<Option<i64>, _>("p90_ttft_ms").ok().flatten(),
+        "p95_ttft_ms": row.try_get::<Option<i64>, _>("p95_ttft_ms").ok().flatten(),
+        "p99_ttft_ms": row.try_get::<Option<i64>, _>("p99_ttft_ms").ok().flatten(),
+    })
+}
+
+fn latency_metric_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
+    rows.into_iter()
+        .map(|row| {
+            json!({
+                "name": row.get::<String, _>("name"),
+                "request_count": row.get::<i64, _>("request_count"),
+                "duration_count": row.get::<i64, _>("duration_count"),
+                "avg_duration_ms": row.try_get::<Option<i64>, _>("avg_duration_ms").ok().flatten(),
+                "max_duration_ms": row.try_get::<Option<i64>, _>("max_duration_ms").ok().flatten(),
+                "p50_duration_ms": row.try_get::<Option<i64>, _>("p50_duration_ms").ok().flatten(),
+                "p90_duration_ms": row.try_get::<Option<i64>, _>("p90_duration_ms").ok().flatten(),
+                "p95_duration_ms": row.try_get::<Option<i64>, _>("p95_duration_ms").ok().flatten(),
+                "p99_duration_ms": row.try_get::<Option<i64>, _>("p99_duration_ms").ok().flatten(),
+                "ttft_count": row.get::<i64, _>("ttft_count"),
+                "avg_ttft_ms": row.try_get::<Option<i64>, _>("avg_ttft_ms").ok().flatten(),
+                "max_ttft_ms": row.try_get::<Option<i64>, _>("max_ttft_ms").ok().flatten(),
+                "p50_ttft_ms": row.try_get::<Option<i64>, _>("p50_ttft_ms").ok().flatten(),
+                "p90_ttft_ms": row.try_get::<Option<i64>, _>("p90_ttft_ms").ok().flatten(),
+                "p95_ttft_ms": row.try_get::<Option<i64>, _>("p95_ttft_ms").ok().flatten(),
+                "p99_ttft_ms": row.try_get::<Option<i64>, _>("p99_ttft_ms").ok().flatten(),
             })
         })
         .collect()
@@ -3512,6 +3719,45 @@ mod tests {
     }
 
     #[test]
+    fn latency_summary_window_uses_safe_defaults() {
+        let window = LatencySummaryWindow::from_query(None, None);
+
+        assert_eq!(
+            window,
+            LatencySummaryWindow {
+                since_hours: DEFAULT_LATENCY_SUMMARY_SINCE_HOURS,
+                limit: DEFAULT_LATENCY_SUMMARY_LIMIT,
+            }
+        );
+    }
+
+    #[test]
+    fn latency_summary_window_clamps_bounds() {
+        let max = LatencySummaryWindow::from_query(Some(i64::MAX), Some(i64::MAX));
+        assert_eq!(max.since_hours, MAX_LATENCY_SUMMARY_SINCE_HOURS);
+        assert_eq!(max.limit, MAX_LATENCY_SUMMARY_LIMIT);
+
+        let min = LatencySummaryWindow::from_query(Some(-10), Some(-10));
+        assert_eq!(min.since_hours, 1);
+        assert_eq!(min.limit, 1);
+    }
+
+    #[test]
+    fn latency_summary_window_calculates_cutoff() {
+        let now = DateTime::parse_from_rfc3339("2026-07-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let window = LatencySummaryWindow::from_query(Some(8), Some(10));
+
+        assert_eq!(
+            window.cutoff(now),
+            DateTime::parse_from_rfc3339("2026-07-01T04:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+    }
+
+    #[test]
     fn usage_timeseries_window_uses_safe_defaults() {
         let window = UsageTimeseriesWindow::from_query(None, None).unwrap();
 
@@ -3742,6 +3988,50 @@ mod tests {
         assert!(
             ERROR_SUMMARY_STATUS_CLASSES_SQL.contains("WHEN status BETWEEN 500 AND 599 THEN '5xx'")
         );
+    }
+
+    #[test]
+    fn latency_summary_queries_use_windowed_percentiles() {
+        assert!(LATENCY_SUMMARY_TOTALS_SQL.contains("FROM trace_requests"));
+        assert!(LATENCY_SUMMARY_TOTALS_SQL.contains("WHERE started_at >= $1"));
+        assert!(
+            LATENCY_SUMMARY_TOTALS_SQL.contains("COUNT(duration_ms)::bigint AS duration_count")
+        );
+        assert!(LATENCY_SUMMARY_TOTALS_SQL.contains(
+            "(percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p50_duration_ms"
+        ));
+        assert!(LATENCY_SUMMARY_TOTALS_SQL.contains(
+            "(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p95_duration_ms"
+        ));
+        assert!(LATENCY_SUMMARY_TOTALS_SQL.contains(
+            "(percentile_cont(0.99) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p99_ttft_ms"
+        ));
+        assert!(!LATENCY_SUMMARY_TOTALS_SQL.contains("original_uri"));
+
+        for query in [
+            LATENCY_SUMMARY_UPSTREAMS_SQL,
+            LATENCY_SUMMARY_MODELS_SQL,
+            LATENCY_SUMMARY_REQUEST_KINDS_SQL,
+        ] {
+            assert!(query.contains("FROM trace_requests"));
+            assert!(query.contains("WHERE started_at >= $1"));
+            assert!(query.contains("GROUP BY 1"));
+            assert!(query.contains("HAVING COUNT(duration_ms) > 0 OR COUNT(ttft_ms) > 0"));
+            assert!(query.contains(
+                "ORDER BY p95_duration_ms DESC NULLS LAST, request_count DESC, name ASC"
+            ));
+            assert!(query.contains("LIMIT $2"));
+            assert!(query.contains("COUNT(*)::bigint AS request_count"));
+            assert!(query.contains("COUNT(duration_ms)::bigint AS duration_count"));
+            assert!(query.contains(
+                "(percentile_cont(0.90) WITHIN GROUP (ORDER BY duration_ms))::bigint AS p90_duration_ms"
+            ));
+            assert!(query.contains(
+                "(percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p95_ttft_ms"
+            ));
+            assert!(!query.contains("request_headers"));
+            assert!(!query.contains("response_headers"));
+        }
     }
 
     #[test]

@@ -98,6 +98,12 @@ struct ErrorSummaryQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct LatencySummaryQuery {
+    since_hours: Option<i64>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct UsageTimeseriesQuery {
     since_hours: Option<i64>,
     bucket: Option<String>,
@@ -120,6 +126,7 @@ pub fn router() -> Router<AppState> {
         .route("/stats", get(stats))
         .route("/usage/summary", get(usage_summary))
         .route("/usage/errors", get(error_summary))
+        .route("/usage/latency", get(latency_summary))
         .route("/usage/timeseries", get(usage_timeseries))
         .route("/requests", get(list_requests))
         .route("/requests/facets", get(request_facets))
@@ -166,6 +173,16 @@ async fn error_summary(
     Query(query): Query<ErrorSummaryQuery>,
 ) -> Response {
     match storage::error_summary(&state.pool, query.since_hours, query.limit).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn latency_summary(
+    State(state): State<AppState>,
+    Query(query): Query<LatencySummaryQuery>,
+) -> Response {
+    match storage::latency_summary(&state.pool, query.since_hours, query.limit).await {
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
