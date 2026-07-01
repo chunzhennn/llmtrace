@@ -176,7 +176,20 @@ fn build_router(state: AppState) -> Router {
         .merge(private_routes)
         .fallback(proxy::proxy)
         .with_state(state)
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(request_trace_span))
+}
+
+fn request_trace_span<B>(request: &Request<B>) -> tracing::Span {
+    tracing::info_span!(
+        "request",
+        method = %request.method(),
+        path = request_trace_path(request),
+        version = ?request.version(),
+    )
+}
+
+fn request_trace_path<B>(request: &Request<B>) -> &str {
+    request.uri().path()
 }
 
 async fn private_response_headers(
@@ -241,6 +254,16 @@ mod tests {
             .to_string();
 
         assert!(error.contains("cannot be used with"));
+    }
+
+    #[test]
+    fn request_trace_path_excludes_query_values() {
+        let request = Request::builder()
+            .uri("/v1/messages?api_key=sk-secret&debug=true")
+            .body(Body::empty())
+            .unwrap();
+
+        assert_eq!(request_trace_path(&request), "/v1/messages");
     }
 
     #[test]

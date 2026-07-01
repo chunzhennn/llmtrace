@@ -8,6 +8,8 @@ use url::Url;
 use crate::config::RedactionConfig;
 use crate::types::BodyRedaction;
 
+const REDACTED_QUERY_VALUE: &str = "REDACTED";
+
 #[derive(Debug, Clone)]
 pub struct RedactedHeaders {
     pub json: Value,
@@ -64,6 +66,26 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Redacts all URI query parameter values before data leaves the trace pipeline.
+pub fn redact_uri_query_values(value: &str) -> String {
+    if let Ok(mut url) = Url::parse(value) {
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+        if let Some(query) = url.query() {
+            let redacted_query = redact_query_string(query);
+            url.set_query(Some(&redacted_query));
+        }
+        url.set_fragment(None);
+        return url.to_string();
+    }
+
+    let without_fragment = value.split_once('#').map_or(value, |(prefix, _)| prefix);
+    let Some((path, query)) = without_fragment.split_once('?') else {
+        return without_fragment.to_string();
+    };
+    format!("{path}?{}", redact_query_string(query))
+}
+
 fn is_sensitive_header(name: &str, config: &RedactionConfig) -> bool {
     config
         .sensitive_headers
@@ -80,6 +102,21 @@ fn is_sensitive_header(name: &str, config: &RedactionConfig) -> bool {
 fn header_name_matches(name: &str, candidate: &str) -> bool {
     name == candidate
         || (candidate.ends_with('*') && name.starts_with(candidate.trim_end_matches('*')))
+}
+
+fn redact_query_string(query: &str) -> String {
+    if query.is_empty() {
+        return String::new();
+    }
+
+    query
+        .split('&')
+        .map(|pair| {
+            let name = pair.split_once('=').map_or(pair, |(name, _)| name);
+            format!("{name}={REDACTED_QUERY_VALUE}")
+        })
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 fn redacted_value(value: &str, hash: Option<String>) -> Value {
@@ -238,5 +275,40 @@ mod tests {
         assert_eq!(redacted.json["cookie"]["redacted"], json!(true));
         assert_eq!(redacted.json["set-cookie"]["redacted"], json!(true));
         assert!(redacted.first_secret_hash.is_some());
+    }
+
+    #[test]
+    fn redact_uri_query_values_redacts_relative_uri_values() {
+        assert_eq!(
+            redact_uri_query_values("/v1/messages?api_key=sk-secret&debug=true"),
+            "/v1/messages?api_key=REDACTED&debug=REDACTED"
+        );
+    }
+
+    #[test]
+    fn redact_uri_query_values_redacts_absolute_url_values_credentials_and_fragment() {
+        assert_eq!(
+            redact_uri_query_values(
+                "https://user:secret@api.example.com/v1/messages?access_token=secret&debug=true#fragment"
+            ),
+            "https://api.example.com/v1/messages?access_token=REDACTED&debug=REDACTED"
+        );
+    }
+
+    #[test]
+    fn redact_uri_query_values_preserves_uris_without_query() {
+        assert_eq!(
+            redact_uri_query_values("/v1/messages"),
+            "/v1/messages".to_string()
+        );
+        assert_eq!(
+            redact_uri_query_values("https://api.example.com/v1/messages"),
+            "https://api.example.com/v1/messages".to_string()
+        );
+    }
+
+    #[test]
+    fn redact_uri_query_values_preserves_empty_query() {
+        assert_eq!(redact_uri_query_values("/v1/messages?"), "/v1/messages?");
     }
 }

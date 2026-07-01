@@ -354,14 +354,16 @@ fn build_trace(
     messages.extend(parsed.messages);
     let (messages, messages_truncated) = bound_session_messages(messages);
     let tags = bound_trace_tags(tags, messages_truncated, identity_truncated);
+    let original_uri = redaction::redact_uri_query_values(&event.original_uri);
+    let upstream_url = redaction::redact_uri_query_values(&event.upstream_url);
 
     let trace = TraceRecord {
         id: event.id,
         started_at: event.started_at,
         completed_at: event.completed_at,
         method: event.method,
-        original_uri: event.original_uri,
-        upstream_url: event.upstream_url,
+        original_uri,
+        upstream_url,
         upstream_host: event.upstream_host,
         status: event.status,
         error: event.error,
@@ -638,6 +640,28 @@ mod tests {
         assert_eq!(bounded.len(), 1);
         assert_eq!(bounded[0].role, "user");
         assert_eq!(bounded[0].content, "hello");
+    }
+
+    #[test]
+    fn build_trace_redacts_uri_query_values_before_persistence() {
+        let plugins = PluginManager::load(&[]).unwrap();
+        let mut event = TraceEvent::base(Uuid::new_v4(), Utc::now());
+        event.method = "GET".to_string();
+        event.original_uri = "/v1/messages?api_key=sk-secret&debug=true".to_string();
+        event.upstream_url =
+            "https://api.example.com/v1/messages?api_key=sk-secret&debug=true".to_string();
+        event.upstream_host = Some("api.example.com".to_string());
+
+        let (trace, _, _, _) = build_trace(event, &plugins, BodyRedaction::Disabled).unwrap();
+
+        assert_eq!(
+            trace.original_uri,
+            "/v1/messages?api_key=REDACTED&debug=REDACTED"
+        );
+        assert_eq!(
+            trace.upstream_url,
+            "https://api.example.com/v1/messages?api_key=REDACTED&debug=REDACTED"
+        );
     }
 
     #[test]
