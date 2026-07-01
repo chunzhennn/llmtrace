@@ -65,6 +65,9 @@ const MAX_USAGE_TIMESERIES_HOUR_HOURS: i64 = 24 * 90;
 const MAX_USAGE_TIMESERIES_DAY_HOURS: i64 = 24 * 365;
 const DEFAULT_DATA_OVERVIEW_SINCE_HOURS: i64 = 24;
 const MAX_DATA_OVERVIEW_SINCE_HOURS: i64 = 24 * 90;
+const DEFAULT_DATA_INTEGRITY_SINCE_HOURS: i64 = 24;
+const MAX_DATA_INTEGRITY_SINCE_HOURS: i64 = 24 * 90;
+const DATA_INTEGRITY_MISMATCH_LIMIT: i64 = 50;
 const MAX_STRUCTURED_QUERY_FIELDS: usize = 64;
 const MAX_STRUCTURED_QUERY_FILTERS: usize = 32;
 const MAX_STRUCTURED_QUERY_ORDER_BY: usize = 8;
@@ -655,6 +658,203 @@ const DATA_OVERVIEW_AUTH_STATE_SQL: &str = r#"
                    WHERE expires_at < $1
                ) AS expired_oauth_states
         "#;
+macro_rules! data_integrity_rollup_diffs_sql {
+    ($select:literal) => {
+        concat!(
+            r#"
+        WITH bounds AS (
+            SELECT date_trunc('minute', $1::timestamptz) AS start_bucket,
+                   date_trunc('minute', $2::timestamptz) AS end_bucket
+        ),
+        raw AS (
+            SELECT date_trunc('minute', started_at) AS bucket,
+                   COUNT(*)::bigint AS total,
+                   COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS errors,
+                   COALESCE(SUM(request_body_bytes + response_body_bytes), 0)::bigint AS captured_bytes,
+                   COUNT(duration_ms)::bigint AS duration_count,
+                   COALESCE(SUM(duration_ms), 0)::bigint AS duration_sum_ms,
+                   COUNT(ttft_ms)::bigint AS ttft_count,
+                   COALESCE(SUM(ttft_ms), 0)::bigint AS ttft_sum_ms
+            FROM request_traces, bounds
+            WHERE started_at >= bounds.start_bucket
+              AND started_at <= $2
+            GROUP BY 1
+        ),
+        rollups AS (
+            SELECT bucket,
+                   COALESCE(SUM(total), 0)::bigint AS total,
+                   COALESCE(SUM(errors), 0)::bigint AS errors,
+                   COALESCE(SUM(captured_bytes), 0)::bigint AS captured_bytes,
+                   COALESCE(SUM(duration_count), 0)::bigint AS duration_count,
+                   COALESCE(SUM(duration_sum_ms), 0)::bigint AS duration_sum_ms,
+                   COALESCE(SUM(ttft_count), 0)::bigint AS ttft_count,
+                   COALESCE(SUM(ttft_sum_ms), 0)::bigint AS ttft_sum_ms
+            FROM trace_rollups_minute, bounds
+            WHERE bucket >= bounds.start_bucket
+              AND bucket <= bounds.end_bucket
+            GROUP BY bucket
+        ),
+        combined AS (
+            SELECT COALESCE(raw.bucket, rollups.bucket) AS bucket,
+                   raw.bucket IS NOT NULL AS has_raw,
+                   rollups.bucket IS NOT NULL AS has_rollup,
+                   COALESCE(raw.total, 0)::bigint AS raw_total,
+                   COALESCE(rollups.total, 0)::bigint AS rollup_total,
+                   COALESCE(raw.errors, 0)::bigint AS raw_errors,
+                   COALESCE(rollups.errors, 0)::bigint AS rollup_errors,
+                   COALESCE(raw.captured_bytes, 0)::bigint AS raw_captured_bytes,
+                   COALESCE(rollups.captured_bytes, 0)::bigint AS rollup_captured_bytes,
+                   COALESCE(raw.duration_count, 0)::bigint AS raw_duration_count,
+                   COALESCE(rollups.duration_count, 0)::bigint AS rollup_duration_count,
+                   COALESCE(raw.duration_sum_ms, 0)::bigint AS raw_duration_sum_ms,
+                   COALESCE(rollups.duration_sum_ms, 0)::bigint AS rollup_duration_sum_ms,
+                   COALESCE(raw.ttft_count, 0)::bigint AS raw_ttft_count,
+                   COALESCE(rollups.ttft_count, 0)::bigint AS rollup_ttft_count,
+                   COALESCE(raw.ttft_sum_ms, 0)::bigint AS raw_ttft_sum_ms,
+                   COALESCE(rollups.ttft_sum_ms, 0)::bigint AS rollup_ttft_sum_ms
+            FROM raw
+            FULL OUTER JOIN rollups USING (bucket)
+        ),
+        diffs AS (
+            SELECT *,
+                   raw_total - rollup_total AS total_delta,
+                   raw_errors - rollup_errors AS errors_delta,
+                   raw_captured_bytes - rollup_captured_bytes AS captured_bytes_delta,
+                   raw_duration_count - rollup_duration_count AS duration_count_delta,
+                   raw_duration_sum_ms - rollup_duration_sum_ms AS duration_sum_ms_delta,
+                   raw_ttft_count - rollup_ttft_count AS ttft_count_delta,
+                   raw_ttft_sum_ms - rollup_ttft_sum_ms AS ttft_sum_ms_delta,
+                   raw_total IS DISTINCT FROM rollup_total
+                       OR raw_errors IS DISTINCT FROM rollup_errors
+                       OR raw_captured_bytes IS DISTINCT FROM rollup_captured_bytes
+                       OR raw_duration_count IS DISTINCT FROM rollup_duration_count
+                       OR raw_duration_sum_ms IS DISTINCT FROM rollup_duration_sum_ms
+                       OR raw_ttft_count IS DISTINCT FROM rollup_ttft_count
+                       OR raw_ttft_sum_ms IS DISTINCT FROM rollup_ttft_sum_ms AS mismatched
+            FROM combined
+        )
+        "#,
+            $select
+        )
+    };
+}
+
+const DATA_INTEGRITY_ROLLUP_SUMMARY_SQL: &str = data_integrity_rollup_diffs_sql!(
+    r#"
+        SELECT (SELECT start_bucket FROM bounds) AS start_bucket,
+               (SELECT end_bucket FROM bounds) AS end_bucket,
+               COUNT(*)::bigint AS compared_bucket_count,
+               COUNT(*) FILTER (WHERE mismatched)::bigint AS mismatched_bucket_count,
+               COUNT(*) FILTER (WHERE has_raw AND NOT has_rollup)::bigint AS missing_rollup_bucket_count,
+               COUNT(*) FILTER (WHERE has_rollup AND NOT has_raw)::bigint AS extra_rollup_bucket_count,
+               COALESCE(SUM(raw_total), 0)::bigint AS raw_total,
+               COALESCE(SUM(rollup_total), 0)::bigint AS rollup_total,
+               COALESCE(SUM(total_delta), 0)::bigint AS total_delta,
+               COALESCE(SUM(raw_errors), 0)::bigint AS raw_errors,
+               COALESCE(SUM(rollup_errors), 0)::bigint AS rollup_errors,
+               COALESCE(SUM(errors_delta), 0)::bigint AS errors_delta,
+               COALESCE(SUM(raw_captured_bytes), 0)::bigint AS raw_captured_bytes,
+               COALESCE(SUM(rollup_captured_bytes), 0)::bigint AS rollup_captured_bytes,
+               COALESCE(SUM(captured_bytes_delta), 0)::bigint AS captured_bytes_delta,
+               COALESCE(SUM(raw_duration_count), 0)::bigint AS raw_duration_count,
+               COALESCE(SUM(rollup_duration_count), 0)::bigint AS rollup_duration_count,
+               COALESCE(SUM(duration_count_delta), 0)::bigint AS duration_count_delta,
+               COALESCE(SUM(raw_duration_sum_ms), 0)::bigint AS raw_duration_sum_ms,
+               COALESCE(SUM(rollup_duration_sum_ms), 0)::bigint AS rollup_duration_sum_ms,
+               COALESCE(SUM(duration_sum_ms_delta), 0)::bigint AS duration_sum_ms_delta,
+               COALESCE(SUM(raw_ttft_count), 0)::bigint AS raw_ttft_count,
+               COALESCE(SUM(rollup_ttft_count), 0)::bigint AS rollup_ttft_count,
+               COALESCE(SUM(ttft_count_delta), 0)::bigint AS ttft_count_delta,
+               COALESCE(SUM(raw_ttft_sum_ms), 0)::bigint AS raw_ttft_sum_ms,
+               COALESCE(SUM(rollup_ttft_sum_ms), 0)::bigint AS rollup_ttft_sum_ms,
+               COALESCE(SUM(ttft_sum_ms_delta), 0)::bigint AS ttft_sum_ms_delta,
+               MIN(bucket) FILTER (WHERE mismatched) AS first_mismatch_bucket,
+               MAX(bucket) FILTER (WHERE mismatched) AS last_mismatch_bucket
+        FROM diffs
+        "#
+);
+const DATA_INTEGRITY_ROLLUP_MISMATCHES_SQL: &str = data_integrity_rollup_diffs_sql!(
+    r#"
+        SELECT bucket,
+               has_raw,
+               has_rollup,
+               raw_total,
+               rollup_total,
+               total_delta,
+               raw_errors,
+               rollup_errors,
+               errors_delta,
+               raw_captured_bytes,
+               rollup_captured_bytes,
+               captured_bytes_delta,
+               raw_duration_count,
+               rollup_duration_count,
+               duration_count_delta,
+               raw_duration_sum_ms,
+               rollup_duration_sum_ms,
+               duration_sum_ms_delta,
+               raw_ttft_count,
+               rollup_ttft_count,
+               ttft_count_delta,
+               raw_ttft_sum_ms,
+               rollup_ttft_sum_ms,
+               ttft_sum_ms_delta
+        FROM diffs
+        WHERE mismatched
+        ORDER BY bucket DESC
+        LIMIT $3
+        "#
+);
+const DATA_INTEGRITY_RELATIONSHIP_SQL: &str = r#"
+        WITH bounds AS (
+            SELECT date_trunc('minute', $1::timestamptz) AS start_bucket
+        )
+        SELECT (
+                   SELECT COUNT(*)::bigint
+                   FROM request_traces r, bounds
+                   WHERE r.started_at >= bounds.start_bucket
+                     AND r.started_at <= $2
+                     AND r.session_id IS NOT NULL
+                     AND NOT EXISTS (
+                         SELECT 1
+                         FROM trace_sessions s
+                         WHERE s.id = r.session_id
+                     )
+               ) AS request_missing_session_count,
+               (
+                   SELECT COUNT(*)::bigint
+                   FROM trace_sessions s, bounds
+                   WHERE s.last_seen >= bounds.start_bucket
+                     AND s.last_seen <= $2
+                     AND NOT EXISTS (
+                         SELECT 1
+                         FROM request_traces r
+                         WHERE r.session_id = s.id
+                     )
+               ) AS empty_session_count,
+               (
+                   SELECT COUNT(*)::bigint
+                   FROM session_messages m, bounds
+                   WHERE m.created_at >= bounds.start_bucket
+                     AND m.created_at <= $2
+                     AND NOT EXISTS (
+                         SELECT 1
+                         FROM request_traces r
+                         WHERE r.id = m.request_id
+                     )
+               ) AS message_missing_request_count,
+               (
+                   SELECT COUNT(*)::bigint
+                   FROM session_messages m, bounds
+                   WHERE m.created_at >= bounds.start_bucket
+                     AND m.created_at <= $2
+                     AND NOT EXISTS (
+                         SELECT 1
+                         FROM trace_sessions s
+                         WHERE s.id = m.session_id
+                     )
+               ) AS message_missing_session_count
+        "#;
 const SESSION_REQUEST_STATS_SQL: &str = r#"
         SELECT COUNT(*)::bigint AS request_count,
                COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
@@ -1129,6 +1329,11 @@ struct DataOverviewWindow {
     since_hours: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DataIntegrityWindow {
+    since_hours: i64,
+}
+
 impl QueryField {
     fn name(&self) -> &str {
         match self {
@@ -1454,6 +1659,20 @@ impl DataOverviewWindow {
             since_hours: since_hours
                 .unwrap_or(DEFAULT_DATA_OVERVIEW_SINCE_HOURS)
                 .clamp(1, MAX_DATA_OVERVIEW_SINCE_HOURS),
+        }
+    }
+
+    fn cutoff(self, now: DateTime<Utc>) -> DateTime<Utc> {
+        now - ChronoDuration::hours(self.since_hours)
+    }
+}
+
+impl DataIntegrityWindow {
+    fn from_query(since_hours: Option<i64>) -> Self {
+        Self {
+            since_hours: since_hours
+                .unwrap_or(DEFAULT_DATA_INTEGRITY_SINCE_HOURS)
+                .clamp(1, MAX_DATA_INTEGRITY_SINCE_HOURS),
         }
     }
 
@@ -3331,6 +3550,141 @@ pub async fn data_overview(pool: &PgPool, since_hours: Option<i64>) -> anyhow::R
             "expired_oauth_states": auth_state.get::<i64, _>("expired_oauth_states"),
         },
     }))
+}
+
+pub async fn data_integrity(pool: &PgPool, since_hours: Option<i64>) -> anyhow::Result<Value> {
+    let window = DataIntegrityWindow::from_query(since_hours);
+    let now = Utc::now();
+    let cutoff = window.cutoff(now);
+    let mut tx = begin_api_read_tx(pool).await?;
+
+    let rollup_summary = sqlx::query(DATA_INTEGRITY_ROLLUP_SUMMARY_SQL)
+        .bind(cutoff)
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await?;
+    let rollup_mismatches = sqlx::query(DATA_INTEGRITY_ROLLUP_MISMATCHES_SQL)
+        .bind(cutoff)
+        .bind(now)
+        .bind(DATA_INTEGRITY_MISMATCH_LIMIT)
+        .fetch_all(&mut *tx)
+        .await?;
+    let relationships = sqlx::query(DATA_INTEGRITY_RELATIONSHIP_SQL)
+        .bind(cutoff)
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+
+    let mismatched_bucket_count = rollup_summary.get::<i64, _>("mismatched_bucket_count");
+    let request_missing_session_count =
+        relationships.get::<i64, _>("request_missing_session_count");
+    let message_missing_request_count =
+        relationships.get::<i64, _>("message_missing_request_count");
+    let message_missing_session_count =
+        relationships.get::<i64, _>("message_missing_session_count");
+    let rollups_consistent = mismatched_bucket_count == 0;
+    let references_consistent = request_missing_session_count == 0
+        && message_missing_request_count == 0
+        && message_missing_session_count == 0;
+    let status = if rollups_consistent && references_consistent {
+        "ok"
+    } else {
+        "attention"
+    };
+
+    Ok(json!({
+        "checked_at": now,
+        "status": status,
+        "window": {
+            "since_hours": window.since_hours,
+            "started_at_gte": cutoff,
+            "bucket_started_at_gte": rollup_summary.get::<DateTime<Utc>, _>("start_bucket"),
+            "bucket_started_at_lte": rollup_summary.get::<DateTime<Utc>, _>("end_bucket"),
+            "mismatch_limit": DATA_INTEGRITY_MISMATCH_LIMIT,
+        },
+        "rollups": {
+            "consistent": rollups_consistent,
+            "compared_bucket_count": rollup_summary.get::<i64, _>("compared_bucket_count"),
+            "mismatched_bucket_count": mismatched_bucket_count,
+            "missing_rollup_bucket_count": rollup_summary.get::<i64, _>("missing_rollup_bucket_count"),
+            "extra_rollup_bucket_count": rollup_summary.get::<i64, _>("extra_rollup_bucket_count"),
+            "first_mismatch_bucket": rollup_summary.try_get::<Option<DateTime<Utc>>, _>("first_mismatch_bucket").ok().flatten(),
+            "last_mismatch_bucket": rollup_summary.try_get::<Option<DateTime<Utc>>, _>("last_mismatch_bucket").ok().flatten(),
+            "metrics": rollup_integrity_metrics(&rollup_summary),
+            "mismatches": rollup_mismatches
+                .into_iter()
+                .map(rollup_integrity_mismatch_row)
+                .collect::<Vec<_>>(),
+        },
+        "relationships": {
+            "consistent": references_consistent,
+            "request_missing_session_count": request_missing_session_count,
+            "message_missing_request_count": message_missing_request_count,
+            "message_missing_session_count": message_missing_session_count,
+            "empty_session_count": relationships.get::<i64, _>("empty_session_count"),
+        },
+    }))
+}
+
+fn rollup_integrity_metrics(row: &sqlx::postgres::PgRow) -> Value {
+    json!({
+        "requests": rollup_integrity_metric(row, "raw_total", "rollup_total", "total_delta"),
+        "errors": rollup_integrity_metric(row, "raw_errors", "rollup_errors", "errors_delta"),
+        "captured_bytes": rollup_integrity_metric(
+            row,
+            "raw_captured_bytes",
+            "rollup_captured_bytes",
+            "captured_bytes_delta",
+        ),
+        "duration_count": rollup_integrity_metric(
+            row,
+            "raw_duration_count",
+            "rollup_duration_count",
+            "duration_count_delta",
+        ),
+        "duration_sum_ms": rollup_integrity_metric(
+            row,
+            "raw_duration_sum_ms",
+            "rollup_duration_sum_ms",
+            "duration_sum_ms_delta",
+        ),
+        "ttft_count": rollup_integrity_metric(
+            row,
+            "raw_ttft_count",
+            "rollup_ttft_count",
+            "ttft_count_delta",
+        ),
+        "ttft_sum_ms": rollup_integrity_metric(
+            row,
+            "raw_ttft_sum_ms",
+            "rollup_ttft_sum_ms",
+            "ttft_sum_ms_delta",
+        ),
+    })
+}
+
+fn rollup_integrity_mismatch_row(row: sqlx::postgres::PgRow) -> Value {
+    json!({
+        "bucket": row.get::<DateTime<Utc>, _>("bucket"),
+        "has_raw": row.get::<bool, _>("has_raw"),
+        "has_rollup": row.get::<bool, _>("has_rollup"),
+        "metrics": rollup_integrity_metrics(&row),
+    })
+}
+
+fn rollup_integrity_metric(
+    row: &sqlx::postgres::PgRow,
+    raw_column: &str,
+    rollup_column: &str,
+    delta_column: &str,
+) -> Value {
+    json!({
+        "raw": row.get::<i64, _>(raw_column),
+        "rollup": row.get::<i64, _>(rollup_column),
+        "delta": row.get::<i64, _>(delta_column),
+    })
 }
 
 fn seconds_since(now: DateTime<Utc>, value: Option<DateTime<Utc>>) -> Option<i64> {
@@ -5253,6 +5607,42 @@ mod tests {
     }
 
     #[test]
+    fn data_integrity_window_uses_safe_defaults() {
+        let window = DataIntegrityWindow::from_query(None);
+
+        assert_eq!(
+            window,
+            DataIntegrityWindow {
+                since_hours: DEFAULT_DATA_INTEGRITY_SINCE_HOURS,
+            }
+        );
+    }
+
+    #[test]
+    fn data_integrity_window_clamps_bounds() {
+        let max = DataIntegrityWindow::from_query(Some(i64::MAX));
+        assert_eq!(max.since_hours, MAX_DATA_INTEGRITY_SINCE_HOURS);
+
+        let min = DataIntegrityWindow::from_query(Some(-10));
+        assert_eq!(min.since_hours, 1);
+    }
+
+    #[test]
+    fn data_integrity_window_calculates_cutoff() {
+        let now = DateTime::parse_from_rfc3339("2026-07-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let window = DataIntegrityWindow::from_query(Some(6));
+
+        assert_eq!(
+            window.cutoff(now),
+            DateTime::parse_from_rfc3339("2026-07-01T06:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+    }
+
+    #[test]
     fn seconds_since_reports_nonnegative_lag() {
         let now = DateTime::parse_from_rfc3339("2026-07-01T12:00:00Z")
             .unwrap()
@@ -5454,6 +5844,73 @@ mod tests {
             assert!(!query.contains("plugin_metadata"));
             assert!(!query.contains("tags"));
             assert!(!query.contains("detail"));
+        }
+    }
+
+    #[test]
+    fn data_integrity_queries_compare_rollups_with_shared_cte_and_low_sensitivity() {
+        assert_eq!(
+            DATA_INTEGRITY_ROLLUP_SUMMARY_SQL
+                .matches("WITH bounds AS")
+                .count(),
+            1
+        );
+        assert_eq!(
+            DATA_INTEGRITY_ROLLUP_MISMATCHES_SQL
+                .matches("WITH bounds AS")
+                .count(),
+            1
+        );
+
+        for query in [
+            DATA_INTEGRITY_ROLLUP_SUMMARY_SQL,
+            DATA_INTEGRITY_ROLLUP_MISMATCHES_SQL,
+        ] {
+            assert!(query.contains("raw AS"));
+            assert!(query.contains("rollups AS"));
+            assert!(query.contains("combined AS"));
+            assert!(query.contains("diffs AS"));
+            assert!(query.contains("FULL OUTER JOIN rollups USING (bucket)"));
+            assert!(query.contains("COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)"));
+            assert!(query.contains("raw_total IS DISTINCT FROM rollup_total"));
+        }
+
+        assert!(DATA_INTEGRITY_ROLLUP_SUMMARY_SQL.contains("mismatched_bucket_count"));
+        assert!(
+            DATA_INTEGRITY_ROLLUP_SUMMARY_SQL
+                .contains("COUNT(*) FILTER (WHERE has_raw AND NOT has_rollup)")
+        );
+        assert!(
+            DATA_INTEGRITY_ROLLUP_SUMMARY_SQL
+                .contains("COUNT(*) FILTER (WHERE has_rollup AND NOT has_raw)")
+        );
+        assert!(DATA_INTEGRITY_ROLLUP_MISMATCHES_SQL.contains("WHERE mismatched"));
+        assert!(DATA_INTEGRITY_ROLLUP_MISMATCHES_SQL.contains("LIMIT $3"));
+        assert!(DATA_INTEGRITY_RELATIONSHIP_SQL.contains("request_missing_session_count"));
+        assert!(DATA_INTEGRITY_RELATIONSHIP_SQL.contains("empty_session_count"));
+        assert!(DATA_INTEGRITY_RELATIONSHIP_SQL.contains("message_missing_request_count"));
+        assert!(DATA_INTEGRITY_RELATIONSHIP_SQL.contains("message_missing_session_count"));
+
+        for query in [
+            DATA_INTEGRITY_ROLLUP_SUMMARY_SQL,
+            DATA_INTEGRITY_ROLLUP_MISMATCHES_SQL,
+            DATA_INTEGRITY_RELATIONSHIP_SQL,
+        ] {
+            assert!(!query.contains("DELETE"));
+            assert!(!query.contains("original_uri"));
+            assert!(!query.contains("upstream_url"));
+            assert!(!query.contains("api_key_hash"));
+            assert!(!query.contains("session_key"));
+            assert!(!query.contains("user_id"));
+            assert!(!query.contains("user_name"));
+            assert!(!query.contains("request_headers"));
+            assert!(!query.contains("response_headers"));
+            assert!(!query.contains("request_body_compressed"));
+            assert!(!query.contains("response_body_compressed"));
+            assert!(!query.contains("plugin_metadata"));
+            assert!(!query.contains("tags"));
+            assert!(!query.contains("role"));
+            assert!(!query.contains("content"));
         }
     }
 

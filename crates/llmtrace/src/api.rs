@@ -174,6 +174,11 @@ struct DataOverviewQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct DataIntegrityQuery {
+    since_hours: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct RedactionPreviewRequest {
     headers: Option<BTreeMap<String, String>>,
     uri: Option<String>,
@@ -209,6 +214,7 @@ pub fn router() -> Router<AppState> {
         .route("/usage/latency", get(latency_summary))
         .route("/usage/timeseries", get(usage_timeseries))
         .route("/data/overview", get(data_overview))
+        .route("/data/integrity", get(data_integrity))
         .route("/requests", get(list_requests))
         .route("/requests/facets", get(request_facets))
         .route("/requests/recent-errors", get(recent_error_requests))
@@ -384,6 +390,16 @@ async fn data_overview(
     Query(query): Query<DataOverviewQuery>,
 ) -> Response {
     match storage::data_overview(&state.pool, query.since_hours).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn data_integrity(
+    State(state): State<AppState>,
+    Query(query): Query<DataIntegrityQuery>,
+) -> Response {
+    match storage::data_integrity(&state.pool, query.since_hours).await {
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
