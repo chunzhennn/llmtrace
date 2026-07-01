@@ -424,6 +424,36 @@ const MODEL_USAGE_SQL: &str = r#"
         ORDER BY request_count DESC, error_count DESC, model ASC
         LIMIT $2
         "#;
+const USER_USAGE_SQL: &str = r#"
+        SELECT COALESCE(NULLIF(s.user_id, ''), 'unknown') AS user_id,
+               COALESCE(NULLIF(s.user_name, ''), 'unknown') AS user_name,
+               COUNT(*)::bigint AS request_count,
+               COUNT(*) FILTER (WHERE r.error IS NOT NULL OR r.status >= 500)::bigint AS error_count,
+               COUNT(*) FILTER (WHERE r.error IS NOT NULL)::bigint AS proxy_error_count,
+               COUNT(*) FILTER (WHERE r.status >= 500)::bigint AS http_5xx_count,
+               COUNT(DISTINCT r.session_id) FILTER (WHERE r.session_id IS NOT NULL)::bigint AS session_count,
+               COUNT(DISTINCT r.api_key_hash) FILTER (WHERE r.api_key_hash IS NOT NULL AND r.api_key_hash <> '')::bigint AS api_key_count,
+               COUNT(DISTINCT r.upstream_host) FILTER (WHERE r.upstream_host IS NOT NULL AND r.upstream_host <> '')::bigint AS upstream_count,
+               COALESCE(SUM(r.bytes_in), 0)::bigint AS bytes_in,
+               COALESCE(SUM(r.bytes_out), 0)::bigint AS bytes_out,
+               COALESCE(SUM(r.request_body_bytes + r.response_body_bytes), 0)::bigint AS captured_bytes,
+               COUNT(r.duration_ms)::bigint AS duration_count,
+               AVG(r.duration_ms)::bigint AS avg_duration_ms,
+               MAX(r.duration_ms)::bigint AS max_duration_ms,
+               (percentile_cont(0.95) WITHIN GROUP (ORDER BY r.duration_ms))::bigint AS p95_duration_ms,
+               COUNT(r.ttft_ms)::bigint AS ttft_count,
+               AVG(r.ttft_ms)::bigint AS avg_ttft_ms,
+               MAX(r.ttft_ms)::bigint AS max_ttft_ms,
+               (percentile_cont(0.95) WITHIN GROUP (ORDER BY r.ttft_ms))::bigint AS p95_ttft_ms,
+               MIN(r.started_at) AS first_seen_at,
+               MAX(r.started_at) AS last_seen_at
+        FROM trace_requests r
+        LEFT JOIN trace_sessions s ON s.id = r.session_id
+        WHERE r.started_at >= $1
+        GROUP BY 1, 2
+        ORDER BY request_count DESC, user_id ASC, user_name ASC
+        LIMIT $2
+        "#;
 const API_KEY_USAGE_SQL: &str = r#"
         SELECT api_key_hash,
                COUNT(*)::bigint AS request_count,
@@ -2523,6 +2553,31 @@ pub async fn model_usage(
     }))
 }
 
+pub async fn user_usage(
+    pool: &PgPool,
+    since_hours: Option<i64>,
+    limit: Option<i64>,
+) -> anyhow::Result<Value> {
+    let window = UsageSummaryWindow::from_query(since_hours, limit);
+    let cutoff = window.cutoff(Utc::now());
+    let mut tx = begin_api_read_tx(pool).await?;
+    let rows = sqlx::query(USER_USAGE_SQL)
+        .bind(cutoff)
+        .bind(window.limit)
+        .fetch_all(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    Ok(json!({
+        "window": {
+            "since_hours": window.since_hours,
+            "started_at_gte": cutoff,
+            "limit": window.limit,
+        },
+        "items": user_usage_rows(rows),
+    }))
+}
+
 pub async fn usage_timeseries(
     pool: &PgPool,
     since_hours: Option<i64>,
@@ -2784,6 +2839,46 @@ fn model_usage_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
                 "upstream_count": row.get::<i64, _>("upstream_count"),
                 "api_key_count": row.get::<i64, _>("api_key_count"),
                 "session_count": row.get::<i64, _>("session_count"),
+                "bytes_in": row.get::<i64, _>("bytes_in"),
+                "bytes_out": row.get::<i64, _>("bytes_out"),
+                "captured_bytes": row.get::<i64, _>("captured_bytes"),
+                "duration_count": row.get::<i64, _>("duration_count"),
+                "avg_duration_ms": row.try_get::<Option<i64>, _>("avg_duration_ms").ok().flatten(),
+                "max_duration_ms": row.try_get::<Option<i64>, _>("max_duration_ms").ok().flatten(),
+                "p95_duration_ms": row.try_get::<Option<i64>, _>("p95_duration_ms").ok().flatten(),
+                "ttft_count": row.get::<i64, _>("ttft_count"),
+                "avg_ttft_ms": row.try_get::<Option<i64>, _>("avg_ttft_ms").ok().flatten(),
+                "max_ttft_ms": row.try_get::<Option<i64>, _>("max_ttft_ms").ok().flatten(),
+                "p95_ttft_ms": row.try_get::<Option<i64>, _>("p95_ttft_ms").ok().flatten(),
+                "first_seen_at": row.try_get::<Option<DateTime<Utc>>, _>("first_seen_at").ok().flatten(),
+                "last_seen_at": row.try_get::<Option<DateTime<Utc>>, _>("last_seen_at").ok().flatten(),
+            })
+        })
+        .collect()
+}
+
+fn user_usage_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
+    rows.into_iter()
+        .map(|row| {
+            let request_count = row.get::<i64, _>("request_count");
+            let error_count = row.get::<i64, _>("error_count");
+            let error_rate = if request_count == 0 {
+                0.0
+            } else {
+                error_count as f64 / request_count as f64
+            };
+
+            json!({
+                "user_id": row.get::<String, _>("user_id"),
+                "user_name": row.get::<String, _>("user_name"),
+                "request_count": request_count,
+                "error_count": error_count,
+                "error_rate": error_rate,
+                "proxy_error_count": row.get::<i64, _>("proxy_error_count"),
+                "http_5xx_count": row.get::<i64, _>("http_5xx_count"),
+                "session_count": row.get::<i64, _>("session_count"),
+                "api_key_count": row.get::<i64, _>("api_key_count"),
+                "upstream_count": row.get::<i64, _>("upstream_count"),
                 "bytes_in": row.get::<i64, _>("bytes_in"),
                 "bytes_out": row.get::<i64, _>("bytes_out"),
                 "captured_bytes": row.get::<i64, _>("captured_bytes"),
@@ -4486,6 +4581,42 @@ mod tests {
             AUDIT_SUMMARY_REMOTE_ADDRS_SQL
                 .contains("COALESCE(NULLIF(remote_addr, ''), 'unknown') AS name")
         );
+    }
+
+    #[test]
+    fn user_usage_query_groups_session_identity_with_aggregate_metrics() {
+        assert!(USER_USAGE_SQL.contains("FROM trace_requests r"));
+        assert!(USER_USAGE_SQL.contains("LEFT JOIN trace_sessions s ON s.id = r.session_id"));
+        assert!(USER_USAGE_SQL.contains("WHERE r.started_at >= $1"));
+        assert!(USER_USAGE_SQL.contains("GROUP BY 1, 2"));
+        assert!(USER_USAGE_SQL.contains("ORDER BY request_count DESC, user_id ASC, user_name ASC"));
+        assert!(USER_USAGE_SQL.contains("LIMIT $2"));
+        assert!(USER_USAGE_SQL.contains("COALESCE(NULLIF(s.user_id, ''), 'unknown') AS user_id"));
+        assert!(
+            USER_USAGE_SQL.contains("COALESCE(NULLIF(s.user_name, ''), 'unknown') AS user_name")
+        );
+        assert!(USER_USAGE_SQL.contains(
+            "COUNT(*) FILTER (WHERE r.error IS NOT NULL OR r.status >= 500)::bigint AS error_count"
+        ));
+        assert!(USER_USAGE_SQL.contains(
+            "COUNT(DISTINCT r.session_id) FILTER (WHERE r.session_id IS NOT NULL)::bigint AS session_count"
+        ));
+        assert!(USER_USAGE_SQL.contains(
+            "COUNT(DISTINCT r.api_key_hash) FILTER (WHERE r.api_key_hash IS NOT NULL AND r.api_key_hash <> '')::bigint AS api_key_count"
+        ));
+        assert!(USER_USAGE_SQL.contains(
+            "COUNT(DISTINCT r.upstream_host) FILTER (WHERE r.upstream_host IS NOT NULL AND r.upstream_host <> '')::bigint AS upstream_count"
+        ));
+        assert!(USER_USAGE_SQL.contains(
+            "(percentile_cont(0.95) WITHIN GROUP (ORDER BY r.duration_ms))::bigint AS p95_duration_ms"
+        ));
+        assert!(USER_USAGE_SQL.contains("MIN(r.started_at) AS first_seen_at"));
+        assert!(USER_USAGE_SQL.contains("MAX(r.started_at) AS last_seen_at"));
+        assert!(!USER_USAGE_SQL.contains("request_headers"));
+        assert!(!USER_USAGE_SQL.contains("response_headers"));
+        assert!(!USER_USAGE_SQL.contains("request_body_compressed"));
+        assert!(!USER_USAGE_SQL.contains("response_body_compressed"));
+        assert!(!USER_USAGE_SQL.contains("plugin_metadata"));
     }
 
     #[test]

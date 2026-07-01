@@ -122,6 +122,12 @@ struct ModelUsageQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct UserUsageQuery {
+    since_hours: Option<i64>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct UpstreamHealthQuery {
     since_hours: Option<i64>,
     limit: Option<i64>,
@@ -165,6 +171,7 @@ pub fn router() -> Router<AppState> {
         .route("/usage/summary", get(usage_summary))
         .route("/usage/api-keys", get(api_key_usage))
         .route("/usage/models", get(model_usage))
+        .route("/usage/users", get(user_usage))
         .route("/usage/upstreams", get(upstream_health))
         .route("/usage/errors", get(error_summary))
         .route("/usage/latency", get(latency_summary))
@@ -243,6 +250,16 @@ async fn model_usage(
     Query(query): Query<ModelUsageQuery>,
 ) -> Response {
     match storage::model_usage(&state.pool, query.since_hours, query.limit).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn user_usage(
+    State(state): State<AppState>,
+    Query(query): Query<UserUsageQuery>,
+) -> Response {
+    match storage::user_usage(&state.pool, query.since_hours, query.limit).await {
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
