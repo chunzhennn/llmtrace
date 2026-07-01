@@ -17,6 +17,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::Row;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration as StdDuration;
 use url::Url;
@@ -36,6 +37,7 @@ const MAX_SESSION_IDENTITY_BYTES: usize = 1024;
 const MAX_AUDIT_TEXT_BYTES: usize = 1024;
 const AUTH_TOKEN_BYTES: usize = 32;
 const AUTH_TOKEN_ENCODED_LEN: usize = 43;
+const AUTH_DB_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
@@ -198,10 +200,14 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
     }
 
     if let Some(session_id) = session_cookie(&headers) {
-        let _ = sqlx::query("DELETE FROM ui_sessions WHERE id = $1")
-            .bind(&session_id)
-            .execute(&state.pool)
-            .await;
+        let _ = auth_db_timeout("session delete", async {
+            sqlx::query("DELETE FROM ui_sessions WHERE id = $1")
+                .bind(&session_id)
+                .execute(&state.pool)
+                .await?;
+            Ok(())
+        })
+        .await;
         let _ = audit(&state, "logout", None, None, json!({})).await;
     }
     let mut response = Json(json!({"ok": true})).into_response();
@@ -258,12 +264,16 @@ async fn oauth_start(State(state): State<AppState>) -> Response {
     };
     let state_value = random_token();
     let expires_at = Utc::now() + Duration::minutes(10);
-    if let Err(error) = sqlx::query(
-        "INSERT INTO oauth_states (state, created_at, expires_at) VALUES ($1, now(), $2)",
-    )
-    .bind(&state_value)
-    .bind(expires_at)
-    .execute(&state.pool)
+    if let Err(error) = auth_db_timeout("oauth state insert", async {
+        sqlx::query(
+            "INSERT INTO oauth_states (state, created_at, expires_at) VALUES ($1, now(), $2)",
+        )
+        .bind(&state_value)
+        .bind(expires_at)
+        .execute(&state.pool)
+        .await?;
+        Ok(())
+    })
     .await
     {
         return server_error(error);
@@ -306,11 +316,15 @@ async fn oauth_callback(
         return response;
     }
 
-    let state_row = match sqlx::query(
-        "DELETE FROM oauth_states WHERE state = $1 AND expires_at > now() RETURNING state",
-    )
-    .bind(&callback.state)
-    .fetch_optional(&state.pool)
+    let state_row = match auth_db_timeout("oauth state consume", async {
+        let row = sqlx::query(
+            "DELETE FROM oauth_states WHERE state = $1 AND expires_at > now() RETURNING state",
+        )
+        .bind(&callback.state)
+        .fetch_optional(&state.pool)
+        .await?;
+        Ok(row)
+    })
     .await
     {
         Ok(row) => row,
@@ -544,15 +558,19 @@ async fn current_user(state: &AppState, headers: &HeaderMap) -> anyhow::Result<O
     let Some(session_id) = session_cookie(headers) else {
         return Ok(None);
     };
-    let row = sqlx::query(
-        r#"
-        SELECT user_id, display_name, login_method
-        FROM ui_sessions
-        WHERE id = $1 AND expires_at > now()
-        "#,
-    )
-    .bind(session_id)
-    .fetch_optional(&state.pool)
+    let row = auth_db_timeout("session lookup", async {
+        let row = sqlx::query(
+            r#"
+                SELECT user_id, display_name, login_method
+                FROM ui_sessions
+                WHERE id = $1 AND expires_at > now()
+                "#,
+        )
+        .bind(session_id)
+        .fetch_optional(&state.pool)
+        .await?;
+        Ok(row)
+    })
     .await?;
 
     row.map(|row| {
@@ -625,18 +643,22 @@ async fn create_session(
     validate_identity_field("session display_name", display_name)?;
     let session_id = random_token();
     let expires_at = Utc::now() + Duration::hours(state.config.auth.session_ttl_hours);
-    sqlx::query(
-        r#"
-        INSERT INTO ui_sessions (id, user_id, display_name, login_method, created_at, expires_at)
-        VALUES ($1, $2, $3, $4, now(), $5)
-        "#,
-    )
-    .bind(&session_id)
-    .bind(user_id)
-    .bind(display_name)
-    .bind(login_method.as_str())
-    .bind(expires_at)
-    .execute(&state.pool)
+    auth_db_timeout("session create", async {
+        sqlx::query(
+            r#"
+            INSERT INTO ui_sessions (id, user_id, display_name, login_method, created_at, expires_at)
+            VALUES ($1, $2, $3, $4, now(), $5)
+            "#,
+        )
+        .bind(&session_id)
+        .bind(user_id)
+        .bind(display_name)
+        .bind(login_method.as_str())
+        .bind(expires_at)
+        .execute(&state.pool)
+        .await?;
+        Ok(())
+    })
     .await?;
     Ok(session_id)
 }
@@ -650,19 +672,47 @@ async fn audit(
 ) -> anyhow::Result<()> {
     let user_id = user_id.map(|value| truncate_utf8(&value, MAX_AUDIT_TEXT_BYTES));
     let remote_addr = remote_addr.map(|value| truncate_utf8(&value, MAX_AUDIT_TEXT_BYTES));
-    sqlx::query(
-        r#"
-        INSERT INTO ui_audit_events (event_type, user_id, remote_addr, detail)
-        VALUES ($1, $2, $3, $4)
-        "#,
-    )
-    .bind(event_type)
-    .bind(user_id)
-    .bind(remote_addr)
-    .bind(detail)
-    .execute(&state.pool)
+    auth_db_timeout("audit insert", async {
+        sqlx::query(
+            r#"
+            INSERT INTO ui_audit_events (event_type, user_id, remote_addr, detail)
+            VALUES ($1, $2, $3, $4)
+            "#,
+        )
+        .bind(event_type)
+        .bind(user_id)
+        .bind(remote_addr)
+        .bind(detail)
+        .execute(&state.pool)
+        .await?;
+        Ok(())
+    })
     .await?;
     Ok(())
+}
+
+async fn auth_db_timeout<T, F>(operation: &str, future: F) -> anyhow::Result<T>
+where
+    F: Future<Output = anyhow::Result<T>>,
+{
+    auth_db_timeout_with_duration(operation, future, AUTH_DB_TIMEOUT).await
+}
+
+async fn auth_db_timeout_with_duration<T, F>(
+    operation: &str,
+    future: F,
+    timeout_duration: StdDuration,
+) -> anyhow::Result<T>
+where
+    F: Future<Output = anyhow::Result<T>>,
+{
+    match tokio::time::timeout(timeout_duration, future).await {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!(
+            "{operation} timed out after {} ms",
+            timeout_duration.as_millis()
+        ),
+    }
 }
 
 fn login_payload_size_error(payload: &LoginRequest) -> Option<&'static str> {
@@ -1110,6 +1160,33 @@ mod tests {
 
         assert_eq!(truncated.len(), MAX_AUDIT_TEXT_BYTES - 1);
         assert!(truncated.is_char_boundary(truncated.len()));
+    }
+
+    #[tokio::test]
+    async fn auth_db_timeout_allows_fast_future() {
+        let value = auth_db_timeout_with_duration(
+            "test op",
+            async { Ok::<_, anyhow::Error>(42) },
+            StdDuration::from_millis(1),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(value, 42);
+    }
+
+    #[tokio::test]
+    async fn auth_db_timeout_rejects_slow_future() {
+        let error = auth_db_timeout_with_duration(
+            "test op",
+            async { std::future::pending::<anyhow::Result<()>>().await },
+            StdDuration::from_millis(1),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("test op timed out"));
     }
 
     #[test]
