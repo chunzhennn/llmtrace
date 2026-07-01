@@ -34,6 +34,8 @@ const MAX_LOGIN_USERNAME_BYTES: usize = 320;
 const MAX_LOGIN_PASSWORD_BYTES: usize = 4096;
 const MAX_SESSION_IDENTITY_BYTES: usize = 1024;
 const MAX_AUDIT_TEXT_BYTES: usize = 1024;
+const AUTH_TOKEN_BYTES: usize = 32;
+const AUTH_TOKEN_ENCODED_LEN: usize = 43;
 
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
@@ -708,11 +710,11 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
 }
 
 fn session_cookie(headers: &HeaderMap) -> Option<String> {
-    named_cookie(headers, SESSION_COOKIE)
+    named_cookie(headers, SESSION_COOKIE).filter(|value| valid_auth_token(value))
 }
 
 fn oauth_state_cookie(headers: &HeaderMap) -> Option<String> {
-    named_cookie(headers, OAUTH_STATE_COOKIE)
+    named_cookie(headers, OAUTH_STATE_COOKIE).filter(|value| valid_auth_token(value))
 }
 
 fn named_cookie(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
@@ -726,6 +728,13 @@ fn named_cookie(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn valid_auth_token(value: &str) -> bool {
+    value.len() == AUTH_TOKEN_ENCODED_LEN
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
 fn cross_site_request_response(method: &Method) -> Response {
@@ -829,7 +838,7 @@ fn append_set_cookie(headers: &mut HeaderMap, cookie: &str) {
 }
 
 fn random_token() -> String {
-    let mut bytes = [0_u8; 32];
+    let mut bytes = [0_u8; AUTH_TOKEN_BYTES];
     rand::thread_rng().fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
 }
@@ -1312,12 +1321,11 @@ mod tests {
 
     #[test]
     fn session_cookie_reads_cookie_after_malformed_segments() {
-        let headers = headers_with(
-            header::COOKIE,
-            "bad-cookie; theme=dark; llmtrace_session=session-123",
-        );
+        let token = test_auth_token('a');
+        let cookie = format!("bad-cookie; theme=dark; llmtrace_session={token}");
+        let headers = headers_with(header::COOKIE, &cookie);
 
-        assert_eq!(session_cookie(&headers).as_deref(), Some("session-123"));
+        assert_eq!(session_cookie(&headers).as_deref(), Some(token.as_str()));
     }
 
     #[test]
@@ -1328,13 +1336,27 @@ mod tests {
     }
 
     #[test]
-    fn oauth_state_cookie_reads_only_oauth_state_cookie() {
+    fn session_cookie_ignores_malformed_token_values() {
         let headers = headers_with(
             header::COOKIE,
-            "llmtrace_session=session-123; llmtrace_oauth_state=state-456",
+            "llmtrace_session=short-token; llmtrace_oauth_state=also-short",
         );
 
-        assert_eq!(oauth_state_cookie(&headers).as_deref(), Some("state-456"));
+        assert_eq!(session_cookie(&headers), None);
+        assert_eq!(oauth_state_cookie(&headers), None);
+    }
+
+    #[test]
+    fn oauth_state_cookie_reads_only_oauth_state_cookie() {
+        let session = test_auth_token('a');
+        let state = test_auth_token('b');
+        let cookie = format!("llmtrace_session={session}; llmtrace_oauth_state={state}");
+        let headers = headers_with(header::COOKIE, &cookie);
+
+        assert_eq!(
+            oauth_state_cookie(&headers).as_deref(),
+            Some(state.as_str())
+        );
     }
 
     #[test]
@@ -1374,9 +1396,9 @@ mod tests {
         );
     }
 
-    fn headers_with(name: axum::http::HeaderName, value: &'static str) -> HeaderMap {
+    fn headers_with(name: axum::http::HeaderName, value: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        headers.insert(name, HeaderValue::from_static(value));
+        headers.insert(name, HeaderValue::from_str(value).unwrap());
         headers
     }
 
@@ -1386,6 +1408,10 @@ mod tests {
             .hash_password(password.as_bytes(), &salt)
             .unwrap()
             .to_string()
+    }
+
+    fn test_auth_token(fill: char) -> String {
+        fill.to_string().repeat(AUTH_TOKEN_ENCODED_LEN)
     }
 
     fn oauth_metadata_with_endpoints(
