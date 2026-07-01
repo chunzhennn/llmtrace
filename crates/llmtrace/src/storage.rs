@@ -24,6 +24,10 @@ const DEFAULT_USAGE_SUMMARY_SINCE_HOURS: i64 = 24;
 const MAX_USAGE_SUMMARY_SINCE_HOURS: i64 = 24 * 90;
 const DEFAULT_USAGE_SUMMARY_LIMIT: i64 = 10;
 const MAX_USAGE_SUMMARY_LIMIT: i64 = 50;
+const DEFAULT_USAGE_TIMESERIES_SINCE_HOURS: i64 = 24;
+const MAX_USAGE_TIMESERIES_MINUTE_HOURS: i64 = 24;
+const MAX_USAGE_TIMESERIES_HOUR_HOURS: i64 = 24 * 90;
+const MAX_USAGE_TIMESERIES_DAY_HOURS: i64 = 24 * 365;
 const MAX_STRUCTURED_QUERY_FIELDS: usize = 64;
 const MAX_STRUCTURED_QUERY_FILTERS: usize = 32;
 const MAX_STRUCTURED_QUERY_ORDER_BY: usize = 8;
@@ -276,6 +280,19 @@ struct UsageSummaryWindow {
     limit: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UsageTimeseriesBucket {
+    Minute,
+    Hour,
+    Day,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UsageTimeseriesWindow {
+    since_hours: i64,
+    bucket: UsageTimeseriesBucket,
+}
+
 impl QueryField {
     fn name(&self) -> &str {
         match self {
@@ -353,6 +370,61 @@ impl UsageSummaryWindow {
                 .unwrap_or(DEFAULT_USAGE_SUMMARY_LIMIT)
                 .clamp(1, MAX_USAGE_SUMMARY_LIMIT),
         }
+    }
+
+    fn cutoff(self, now: DateTime<Utc>) -> DateTime<Utc> {
+        now - ChronoDuration::hours(self.since_hours)
+    }
+}
+
+impl UsageTimeseriesBucket {
+    fn parse(value: Option<&str>) -> anyhow::Result<Self> {
+        let Some(value) = value else {
+            return Ok(Self::Hour);
+        };
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" => Ok(Self::Hour),
+            "minute" => Ok(Self::Minute),
+            "hour" => Ok(Self::Hour),
+            "day" => Ok(Self::Day),
+            _ => anyhow::bail!("bucket must be one of minute, hour, or day"),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Minute => "minute",
+            Self::Hour => "hour",
+            Self::Day => "day",
+        }
+    }
+
+    fn interval_sql(self) -> &'static str {
+        match self {
+            Self::Minute => "'1 minute'::interval",
+            Self::Hour => "'1 hour'::interval",
+            Self::Day => "'1 day'::interval",
+        }
+    }
+
+    fn max_since_hours(self) -> i64 {
+        match self {
+            Self::Minute => MAX_USAGE_TIMESERIES_MINUTE_HOURS,
+            Self::Hour => MAX_USAGE_TIMESERIES_HOUR_HOURS,
+            Self::Day => MAX_USAGE_TIMESERIES_DAY_HOURS,
+        }
+    }
+}
+
+impl UsageTimeseriesWindow {
+    fn from_query(since_hours: Option<i64>, bucket: Option<&str>) -> anyhow::Result<Self> {
+        let bucket = UsageTimeseriesBucket::parse(bucket)?;
+        Ok(Self {
+            since_hours: since_hours
+                .unwrap_or(DEFAULT_USAGE_TIMESERIES_SINCE_HOURS)
+                .clamp(1, bucket.max_since_hours()),
+            bucket,
+        })
     }
 
     fn cutoff(self, now: DateTime<Utc>) -> DateTime<Utc> {
@@ -1260,6 +1332,94 @@ pub async fn usage_summary(
         "top_upstreams": named_metric_rows(top_upstreams),
         "status_classes": count_rows(status_classes),
         "request_kinds": named_metric_rows(request_kinds),
+    }))
+}
+
+pub async fn usage_timeseries(
+    pool: &PgPool,
+    since_hours: Option<i64>,
+    bucket: Option<&str>,
+) -> anyhow::Result<Value> {
+    let window = UsageTimeseriesWindow::from_query(since_hours, bucket)?;
+    let now = Utc::now();
+    let cutoff = window.cutoff(now);
+    let mut tx = begin_api_read_tx(pool).await?;
+    let mut builder = QueryBuilder::<Postgres>::new("WITH bounds AS (SELECT date_trunc(");
+    builder.push_bind(window.bucket.as_str());
+    builder.push(", ");
+    builder.push_bind(cutoff);
+    builder.push("::timestamptz) AS start_bucket, date_trunc(");
+    builder.push_bind(window.bucket.as_str());
+    builder.push(", ");
+    builder.push_bind(now);
+    builder.push("::timestamptz) AS end_bucket), series AS (SELECT generate_series(start_bucket, end_bucket, ");
+    builder.push(window.bucket.interval_sql());
+    builder.push(
+        r#") AS bucket FROM bounds), rollups AS (
+            SELECT date_trunc("#,
+    );
+    builder.push_bind(window.bucket.as_str());
+    builder.push(
+        r#", bucket) AS bucket,
+                   COALESCE(SUM(total), 0)::bigint AS request_count,
+                   COALESCE(SUM(errors), 0)::bigint AS error_count,
+                   COALESCE(SUM(captured_bytes), 0)::bigint AS captured_bytes,
+                   COALESCE(SUM(duration_count), 0)::bigint AS duration_count,
+                   COALESCE(SUM(duration_sum_ms), 0)::bigint AS duration_sum_ms,
+                   COALESCE(SUM(ttft_count), 0)::bigint AS ttft_count,
+                   COALESCE(SUM(ttft_sum_ms), 0)::bigint AS ttft_sum_ms
+            FROM trace_rollups_minute
+            WHERE bucket >= "#,
+    );
+    builder.push_bind(cutoff);
+    builder.push(" AND bucket <= ");
+    builder.push_bind(now);
+    builder.push(
+        r#"
+            GROUP BY 1
+        )
+        SELECT s.bucket,
+               COALESCE(r.request_count, 0)::bigint AS request_count,
+               COALESCE(r.error_count, 0)::bigint AS error_count,
+               COALESCE(r.captured_bytes, 0)::bigint AS captured_bytes,
+               CASE
+                   WHEN COALESCE(r.duration_count, 0) = 0 THEN NULL
+                   ELSE (r.duration_sum_ms / r.duration_count)::bigint
+               END AS avg_duration_ms,
+               CASE
+                   WHEN COALESCE(r.ttft_count, 0) = 0 THEN NULL
+                   ELSE (r.ttft_sum_ms / r.ttft_count)::bigint
+               END AS avg_ttft_ms
+        FROM series s
+        LEFT JOIN rollups r ON r.bucket = s.bucket
+        ORDER BY s.bucket ASC
+        "#,
+    );
+
+    let rows = builder.build().fetch_all(&mut *tx).await?;
+    tx.commit().await?;
+
+    let points: Vec<Value> = rows
+        .into_iter()
+        .map(|row| {
+            json!({
+                "bucket": row.get::<DateTime<Utc>, _>("bucket"),
+                "request_count": row.get::<i64, _>("request_count"),
+                "error_count": row.get::<i64, _>("error_count"),
+                "captured_bytes": row.get::<i64, _>("captured_bytes"),
+                "avg_duration_ms": row.try_get::<Option<i64>, _>("avg_duration_ms").ok().flatten(),
+                "avg_ttft_ms": row.try_get::<Option<i64>, _>("avg_ttft_ms").ok().flatten(),
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "window": {
+            "since_hours": window.since_hours,
+            "started_at_gte": cutoff,
+            "bucket": window.bucket.as_str(),
+        },
+        "points": points,
     }))
 }
 
@@ -2461,6 +2621,59 @@ mod tests {
         assert_eq!(
             window.cutoff(now),
             DateTime::parse_from_rfc3339("2026-07-01T06:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+    }
+
+    #[test]
+    fn usage_timeseries_window_uses_safe_defaults() {
+        let window = UsageTimeseriesWindow::from_query(None, None).unwrap();
+
+        assert_eq!(
+            window,
+            UsageTimeseriesWindow {
+                since_hours: DEFAULT_USAGE_TIMESERIES_SINCE_HOURS,
+                bucket: UsageTimeseriesBucket::Hour,
+            }
+        );
+    }
+
+    #[test]
+    fn usage_timeseries_window_clamps_by_bucket() {
+        let minute = UsageTimeseriesWindow::from_query(Some(i64::MAX), Some("minute")).unwrap();
+        assert_eq!(minute.since_hours, MAX_USAGE_TIMESERIES_MINUTE_HOURS);
+        assert_eq!(minute.bucket, UsageTimeseriesBucket::Minute);
+
+        let hour = UsageTimeseriesWindow::from_query(Some(i64::MAX), Some("hour")).unwrap();
+        assert_eq!(hour.since_hours, MAX_USAGE_TIMESERIES_HOUR_HOURS);
+
+        let day = UsageTimeseriesWindow::from_query(Some(i64::MAX), Some("day")).unwrap();
+        assert_eq!(day.since_hours, MAX_USAGE_TIMESERIES_DAY_HOURS);
+
+        let min = UsageTimeseriesWindow::from_query(Some(-10), Some("day")).unwrap();
+        assert_eq!(min.since_hours, 1);
+    }
+
+    #[test]
+    fn usage_timeseries_window_rejects_unknown_bucket() {
+        let error = UsageTimeseriesWindow::from_query(Some(24), Some("week"))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("bucket must be one of"));
+    }
+
+    #[test]
+    fn usage_timeseries_window_calculates_cutoff() {
+        let now = DateTime::parse_from_rfc3339("2026-07-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let window = UsageTimeseriesWindow::from_query(Some(12), Some("hour")).unwrap();
+
+        assert_eq!(
+            window.cutoff(now),
+            DateTime::parse_from_rfc3339("2026-07-01T00:00:00Z")
                 .unwrap()
                 .with_timezone(&Utc)
         );

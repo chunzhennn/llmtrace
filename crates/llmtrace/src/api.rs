@@ -14,6 +14,7 @@ const MAX_REQUEST_SEARCH_BYTES: usize = 512;
 const MAX_AUDIT_FILTER_BYTES: usize = 1024;
 const JSONL_CONTENT_TYPE: &str = "application/x-ndjson; charset=utf-8";
 const EXPORT_ROWS_HEADER: HeaderName = HeaderName::from_static("x-llmtrace-export-rows");
+const USAGE_TIMESERIES_BUCKETS: &[&str] = &["minute", "hour", "day"];
 
 #[derive(Debug, Deserialize)]
 struct RequestListQuery {
@@ -47,10 +48,17 @@ struct UsageSummaryQuery {
     limit: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct UsageTimeseriesQuery {
+    since_hours: Option<i64>,
+    bucket: Option<String>,
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/stats", get(stats))
         .route("/usage/summary", get(usage_summary))
+        .route("/usage/timeseries", get(usage_timeseries))
         .route("/requests", get(list_requests))
         .route("/requests/{id}", get(get_request))
         .route("/sessions", get(list_sessions))
@@ -82,6 +90,21 @@ async fn usage_summary(
     Query(query): Query<UsageSummaryQuery>,
 ) -> Response {
     match storage::usage_summary(&state.pool, query.since_hours, query.limit).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn usage_timeseries(
+    State(state): State<AppState>,
+    Query(query): Query<UsageTimeseriesQuery>,
+) -> Response {
+    let bucket = match normalize_usage_timeseries_bucket(query.bucket) {
+        Ok(bucket) => bucket,
+        Err(message) => return bad_request(message),
+    };
+
+    match storage::usage_timeseries(&state.pool, query.since_hours, bucket.as_deref()).await {
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
@@ -292,6 +315,21 @@ fn normalize_optional_filter(field: &str, value: Option<String>) -> Result<Optio
     Ok(Some(value.to_string()))
 }
 
+fn normalize_usage_timeseries_bucket(value: Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let normalized = value.to_ascii_lowercase();
+    if USAGE_TIMESERIES_BUCKETS.contains(&normalized.as_str()) {
+        return Ok(Some(normalized));
+    }
+    Err("bucket must be one of minute, hour, or day".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::to_bytes;
@@ -434,6 +472,30 @@ mod tests {
                 .unwrap_err();
 
         assert!(error.contains("user_id must be at most"));
+    }
+
+    #[test]
+    fn usage_timeseries_bucket_normalization_accepts_known_values() {
+        assert_eq!(normalize_usage_timeseries_bucket(None).unwrap(), None);
+        assert_eq!(
+            normalize_usage_timeseries_bucket(Some("   ".to_string())).unwrap(),
+            None
+        );
+        assert_eq!(
+            normalize_usage_timeseries_bucket(Some(" Hour ".to_string())).unwrap(),
+            Some("hour".to_string())
+        );
+        assert_eq!(
+            normalize_usage_timeseries_bucket(Some("day".to_string())).unwrap(),
+            Some("day".to_string())
+        );
+    }
+
+    #[test]
+    fn usage_timeseries_bucket_normalization_rejects_unknown_values() {
+        let error = normalize_usage_timeseries_bucket(Some("week".to_string())).unwrap_err();
+
+        assert!(error.contains("bucket must be one of"));
     }
 
     async fn response_body_json(response: Response) -> serde_json::Value {
