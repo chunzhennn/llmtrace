@@ -161,6 +161,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/stats", get(stats))
         .route("/config", get(runtime_config))
+        .route("/security/posture", get(security_posture_report))
         .route("/usage/summary", get(usage_summary))
         .route("/usage/api-keys", get(api_key_usage))
         .route("/usage/models", get(model_usage))
@@ -207,6 +208,10 @@ async fn stats(State(state): State<AppState>) -> Response {
 
 async fn runtime_config(State(state): State<AppState>) -> Response {
     Json(config_summary(state.config.as_ref())).into_response()
+}
+
+async fn security_posture_report(State(state): State<AppState>) -> Response {
+    Json(security_posture(state.config.as_ref())).into_response()
 }
 
 async fn usage_summary(
@@ -887,6 +892,198 @@ fn config_summary(config: &Config) -> Value {
     })
 }
 
+fn security_posture(config: &Config) -> Value {
+    let production = config.server.deployment.as_str() == "production";
+    let public_url_https = url::Url::parse(&config.server.public_url)
+        .is_ok_and(|url| url.scheme().eq_ignore_ascii_case("https"));
+    let local_plaintext_password = config
+        .auth
+        .local_admin
+        .password
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let local_password_hash = config
+        .auth
+        .local_admin
+        .password_hash
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let metrics_token = config
+        .observability
+        .metrics_bearer_token
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let oauth_allowlist = !config.auth.oauth.allowed_emails.is_empty()
+        || !config.auth.oauth.allowed_domains.is_empty();
+
+    let mut checks = Vec::new();
+    push_posture_check(
+        &mut checks,
+        "deployment_mode",
+        production,
+        "warn",
+        "server.deployment is production",
+        "server.deployment is development; set production before public deployment",
+    );
+    push_posture_check(
+        &mut checks,
+        "public_url_https",
+        public_url_https,
+        "warn",
+        "server.public_url uses HTTPS",
+        "server.public_url is not HTTPS; this can be acceptable behind an HTTP-only reverse proxy, but browser traffic should terminate at HTTPS",
+    );
+    push_posture_check(
+        &mut checks,
+        "secure_cookies",
+        config.auth.cookie_secure,
+        "warn",
+        "session cookies are marked Secure",
+        "session cookies are not marked Secure; enable auth.cookie_secure when browser traffic uses HTTPS",
+    );
+    push_posture_check(
+        &mut checks,
+        "body_redaction",
+        config.redaction.body_redaction != BodyRedaction::Disabled,
+        "warn",
+        "stored bodies are redacted before persistence",
+        "redaction.body_redaction is disabled; use drop or json_secrets when traces may contain sensitive payloads",
+    );
+    push_posture_check(
+        &mut checks,
+        "retention",
+        config.storage.retention_days.is_some(),
+        "warn",
+        "storage retention is configured",
+        "storage.retention_days is not configured; captured data will grow until manually pruned",
+    );
+    push_posture_check(
+        &mut checks,
+        "upstream_allowlist",
+        !config.proxy.allow_upstreams.is_empty(),
+        "warn",
+        "proxy upstream allowlist is configured",
+        "proxy.allow_upstreams is empty; restrict upstream overrides before public deployment",
+    );
+    push_posture_check(
+        &mut checks,
+        "metrics_auth",
+        metrics_token,
+        "warn",
+        "metrics endpoint requires a bearer token",
+        "metrics bearer token is not configured; protect /metrics before public deployment",
+    );
+    push_posture_check_with_status(
+        &mut checks,
+        "local_plaintext_password",
+        if local_plaintext_password {
+            if production { "fail" } else { "warn" }
+        } else {
+            "pass"
+        },
+        "local admin plaintext password is not configured",
+        "local admin plaintext password is configured; use auth.local_admin.password_hash before production",
+    );
+    push_posture_check(
+        &mut checks,
+        "local_password_hash",
+        local_password_hash || config.auth.oauth.enabled,
+        "warn",
+        "local password hash or OAuth authentication is configured",
+        "no local password hash or OAuth provider is configured for production authentication",
+    );
+    push_posture_check_with_status(
+        &mut checks,
+        "login_rate_limit",
+        if config.auth.login_rate_limit.enabled {
+            "pass"
+        } else if production {
+            "fail"
+        } else {
+            "warn"
+        },
+        "login rate limiting is enabled",
+        "login rate limiting is disabled; enable it before public deployment",
+    );
+    push_posture_check_with_status(
+        &mut checks,
+        "oauth_allowlist",
+        if !config.auth.oauth.enabled || oauth_allowlist {
+            "pass"
+        } else if production {
+            "fail"
+        } else {
+            "warn"
+        },
+        "OAuth is disabled or constrained by an allowlist",
+        "OAuth is enabled without allowed_emails or allowed_domains; constrain who can sign in",
+    );
+
+    let pass_count = posture_status_count(&checks, "pass");
+    let warn_count = posture_status_count(&checks, "warn");
+    let fail_count = posture_status_count(&checks, "fail");
+    let overall = if fail_count > 0 {
+        "fail"
+    } else if warn_count > 0 {
+        "attention"
+    } else {
+        "ready"
+    };
+
+    json!({
+        "overall": overall,
+        "counts": {
+            "pass": pass_count,
+            "warn": warn_count,
+            "fail": fail_count,
+        },
+        "checks": checks,
+    })
+}
+
+fn push_posture_check(
+    checks: &mut Vec<Value>,
+    id: &'static str,
+    passed: bool,
+    failing_status: &'static str,
+    pass_message: &'static str,
+    failing_message: &'static str,
+) {
+    push_posture_check_with_status(
+        checks,
+        id,
+        if passed { "pass" } else { failing_status },
+        pass_message,
+        failing_message,
+    );
+}
+
+fn push_posture_check_with_status(
+    checks: &mut Vec<Value>,
+    id: &'static str,
+    status: &'static str,
+    pass_message: &'static str,
+    failing_message: &'static str,
+) {
+    let message = if status == "pass" {
+        pass_message
+    } else {
+        failing_message
+    };
+    checks.push(json!({
+        "id": id,
+        "status": status,
+        "message": message,
+    }));
+}
+
+fn posture_status_count(checks: &[Value], status: &str) -> usize {
+    checks
+        .iter()
+        .filter(|check| check.get("status").and_then(Value::as_str) == Some(status))
+        .count()
+}
+
 fn local_admin_configured(config: &Config) -> bool {
     config
         .auth
@@ -940,6 +1137,9 @@ mod tests {
     use crate::config::{DeploymentMode, PluginConfig};
 
     use super::*;
+
+    const VALID_ARGON2_HASH: &str =
+        "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQ$k9wPtUZeX9pTvvFeUq1eYn5X2IN3QmEF7L7w8zZ3xIQ";
 
     #[tokio::test]
     async fn structured_query_validation_error_returns_bad_request_message() {
@@ -1084,6 +1284,96 @@ mod tests {
                 "{secret} leaked in {serialized}"
             );
         }
+    }
+
+    #[test]
+    fn security_posture_reports_ready_for_hardened_config_without_secret_values() {
+        let config = Config {
+            server: crate::config::ServerConfig {
+                listen: "0.0.0.0:3000".to_string(),
+                public_url: "https://llmtrace.example.com".to_string(),
+                deployment: DeploymentMode::Production,
+                ui_enabled: true,
+            },
+            proxy: crate::config::ProxyConfig {
+                allow_upstreams: vec!["api.openai.com".to_string()],
+                ..Default::default()
+            },
+            storage: crate::config::StorageConfig {
+                postgres_url: "postgres://db-user:db-pass@db.internal/llmtrace".to_string(),
+                retention_days: Some(30),
+                ..Default::default()
+            },
+            auth: crate::config::AuthConfig {
+                cookie_secure: true,
+                local_admin: crate::config::LocalAdminConfig {
+                    username: "admin-user".to_string(),
+                    password: None,
+                    password_hash: Some(VALID_ARGON2_HASH.to_string()),
+                },
+                ..Default::default()
+            },
+            observability: crate::config::ObservabilityConfig {
+                metrics_bearer_token: Some("metrics-secret".to_string()),
+            },
+            redaction: crate::config::RedactionConfig {
+                body_redaction: BodyRedaction::JsonSecrets,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let posture = security_posture(&config);
+
+        assert_eq!(posture["overall"], "ready");
+        assert_eq!(posture["counts"]["fail"], 0);
+        assert_eq!(posture["counts"]["warn"], 0);
+        assert!(
+            posture["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|check| check["status"] == "pass")
+        );
+
+        let serialized = serde_json::to_string(&posture).unwrap();
+        for secret in [
+            "postgres://",
+            "db-pass",
+            "admin-user",
+            VALID_ARGON2_HASH,
+            "metrics-secret",
+        ] {
+            assert!(
+                !serialized.contains(secret),
+                "{secret} leaked in {serialized}"
+            );
+        }
+    }
+
+    #[test]
+    fn security_posture_flags_development_defaults_without_failing_http_public_url() {
+        let posture = security_posture(&Config::default());
+
+        assert_eq!(posture["overall"], "attention");
+        assert_eq!(posture["counts"]["fail"], 0);
+        assert!(
+            posture["counts"]["warn"]
+                .as_u64()
+                .is_some_and(|count| count > 0)
+        );
+        assert_eq!(
+            posture_check_status(&posture, "deployment_mode"),
+            Some("warn")
+        );
+        assert_eq!(
+            posture_check_status(&posture, "public_url_https"),
+            Some("warn")
+        );
+        assert_eq!(
+            posture_check_status(&posture, "local_plaintext_password"),
+            Some("warn")
+        );
     }
 
     #[test]
@@ -1547,5 +1837,14 @@ mod tests {
     async fn response_body_string(response: Response) -> String {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    fn posture_check_status<'a>(posture: &'a Value, id: &str) -> Option<&'a str> {
+        posture["checks"]
+            .as_array()?
+            .iter()
+            .find(|check| check["id"] == id)?
+            .get("status")?
+            .as_str()
     }
 }
