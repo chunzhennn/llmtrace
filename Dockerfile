@@ -1,8 +1,8 @@
 FROM rust:1.96-bookworm AS build
 WORKDIR /app
-COPY Cargo.toml ./
+COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-RUN cargo build --release -p llmtrace
+RUN cargo build --locked --release -p llmtrace
 
 FROM debian:bookworm-slim
 RUN apt-get update \

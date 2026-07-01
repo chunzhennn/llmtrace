@@ -1,0 +1,17 @@
+.git/
+.agents/
+.codex/
+.cargo/
+target/
+
+# Local runtime state and secrets.
+.env
+.env.*
+llmtrace.toml
+spool/
+logs/
+*.log
+
+# Locally built plugin artifacts may contain environment-specific logic or secrets.
+plugins/
+*.wasm

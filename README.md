@@ -33,6 +33,8 @@ The Docker image includes a `HEALTHCHECK` against `/readyz`, and `docker-compose
 
 The runtime image runs as the unprivileged `llmtrace` user with UID/GID `10001`.
 
+Docker image builds use the committed `Cargo.lock` with `cargo build --locked` so dependency resolution is reproducible. The repository `.dockerignore` excludes local configs, `.env` files, logs, spool data, build output, and local plugin binaries from the image build context.
+
 ## Production mode
 
 Set `server.deployment = "production"` to make startup fail fast on insecure or ambiguous settings. Production mode allows `http` or `https` service URLs so deployments can run behind TLS-terminating reverse proxies or on private HTTP endpoints. It currently requires:
