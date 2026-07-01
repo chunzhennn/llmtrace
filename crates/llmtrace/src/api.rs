@@ -38,6 +38,7 @@ struct RequestListQuery {
     model: Option<String>,
     request_kind: Option<String>,
     session_id: Option<String>,
+    api_key_hash: Option<String>,
     since: Option<String>,
     until: Option<String>,
     min_duration_ms: Option<i64>,
@@ -492,6 +493,7 @@ fn request_list_filters(query: RequestListQuery) -> Result<storage::RequestListF
     let model = normalize_request_filter("model", query.model)?;
     let request_kind = normalize_request_kind_filter(query.request_kind)?;
     let session_id = normalize_optional_uuid_filter("session_id", query.session_id)?;
+    let api_key_hash = normalize_request_filter("api_key_hash", query.api_key_hash)?;
     let status_class = normalize_status_class_filter(query.status_class)?;
 
     Ok(storage::RequestListFilters {
@@ -503,6 +505,7 @@ fn request_list_filters(query: RequestListQuery) -> Result<storage::RequestListF
         model,
         request_kind,
         session_id,
+        api_key_hash,
         since: time_range.since,
         until: time_range.until,
         min_duration_ms: duration_range.min_duration_ms,
@@ -871,6 +874,30 @@ mod tests {
                 .unwrap_err();
 
         assert!(error.contains("model must be at most"));
+    }
+
+    #[test]
+    fn request_list_filters_include_api_key_hash() {
+        let filters = request_list_filters(RequestListQuery {
+            q: None,
+            status: None,
+            status_class: None,
+            has_error: None,
+            upstream_host: None,
+            model: None,
+            request_kind: None,
+            session_id: None,
+            api_key_hash: Some(" sha256:abc123 ".to_string()),
+            since: None,
+            until: None,
+            min_duration_ms: None,
+            max_duration_ms: None,
+            limit: None,
+            offset: None,
+        })
+        .unwrap();
+
+        assert_eq!(filters.api_key_hash, Some("sha256:abc123".to_string()));
     }
 
     #[test]

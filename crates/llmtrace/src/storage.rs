@@ -331,27 +331,28 @@ const LIST_REQUESTS_SQL: &str = r#"
           AND ($4::text IS NULL OR model = $4)
           AND ($5::text IS NULL OR request_kind = $5)
           AND ($6::uuid IS NULL OR session_id = $6)
-          AND ($7::timestamptz IS NULL OR started_at >= $7)
-          AND ($8::timestamptz IS NULL OR started_at <= $8)
-          AND ($9::bigint IS NULL OR duration_ms >= $9)
-          AND ($10::bigint IS NULL OR duration_ms <= $10)
+          AND ($7::text IS NULL OR api_key_hash = $7)
+          AND ($8::timestamptz IS NULL OR started_at >= $8)
+          AND ($9::timestamptz IS NULL OR started_at <= $9)
+          AND ($10::bigint IS NULL OR duration_ms >= $10)
+          AND ($11::bigint IS NULL OR duration_ms <= $11)
           AND (
-              $11::boolean IS NULL
-              OR ($11 = true AND (error IS NOT NULL OR status >= 500))
-              OR ($11 = false AND error IS NULL AND (status IS NULL OR status < 500))
+              $12::boolean IS NULL
+              OR ($12 = true AND (error IS NOT NULL OR status >= 500))
+              OR ($12 = false AND error IS NULL AND (status IS NULL OR status < 500))
           )
           AND (
-              $12::text IS NULL
-              OR ($12 = 'no_status' AND status IS NULL)
-              OR ($12 = '1xx' AND status BETWEEN 100 AND 199)
-              OR ($12 = '2xx' AND status BETWEEN 200 AND 299)
-              OR ($12 = '3xx' AND status BETWEEN 300 AND 399)
-              OR ($12 = '4xx' AND status BETWEEN 400 AND 499)
-              OR ($12 = '5xx' AND status BETWEEN 500 AND 599)
-              OR ($12 = 'other' AND status IS NOT NULL AND (status < 100 OR status > 599))
+              $13::text IS NULL
+              OR ($13 = 'no_status' AND status IS NULL)
+              OR ($13 = '1xx' AND status BETWEEN 100 AND 199)
+              OR ($13 = '2xx' AND status BETWEEN 200 AND 299)
+              OR ($13 = '3xx' AND status BETWEEN 300 AND 399)
+              OR ($13 = '4xx' AND status BETWEEN 400 AND 499)
+              OR ($13 = '5xx' AND status BETWEEN 500 AND 599)
+              OR ($13 = 'other' AND status IS NOT NULL AND (status < 100 OR status > 599))
           )
         ORDER BY started_at DESC, id DESC
-        LIMIT $13 OFFSET $14
+        LIMIT $14 OFFSET $15
         "#;
 const LIST_SESSION_REQUESTS_SQL: &str = r#"
         SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
@@ -479,6 +480,7 @@ pub struct RequestListFilters {
     pub model: Option<String>,
     pub request_kind: Option<String>,
     pub session_id: Option<Uuid>,
+    pub api_key_hash: Option<String>,
     pub since: Option<DateTime<Utc>>,
     pub until: Option<DateTime<Utc>>,
     pub min_duration_ms: Option<i64>,
@@ -1512,6 +1514,7 @@ pub async fn list_requests(pool: &PgPool, filters: RequestListFilters) -> anyhow
         .bind(filters.model)
         .bind(filters.request_kind)
         .bind(filters.session_id)
+        .bind(filters.api_key_hash)
         .bind(filters.since)
         .bind(filters.until)
         .bind(filters.min_duration_ms)
@@ -4011,7 +4014,7 @@ mod tests {
     #[test]
     fn list_requests_query_filters_then_pages_requests() {
         let where_clause = LIST_REQUESTS_SQL.find("WHERE (").unwrap();
-        let request_limit = LIST_REQUESTS_SQL.find("LIMIT $13 OFFSET $14").unwrap();
+        let request_limit = LIST_REQUESTS_SQL.find("LIMIT $14 OFFSET $15").unwrap();
 
         assert!(where_clause < request_limit);
         assert!(LIST_REQUESTS_SQL.contains("$1::text IS NULL"));
@@ -4023,24 +4026,25 @@ mod tests {
         assert!(LIST_REQUESTS_SQL.contains("AND ($4::text IS NULL OR model = $4)"));
         assert!(LIST_REQUESTS_SQL.contains("AND ($5::text IS NULL OR request_kind = $5)"));
         assert!(LIST_REQUESTS_SQL.contains("AND ($6::uuid IS NULL OR session_id = $6)"));
-        assert!(LIST_REQUESTS_SQL.contains("AND ($7::timestamptz IS NULL OR started_at >= $7)"));
-        assert!(LIST_REQUESTS_SQL.contains("AND ($8::timestamptz IS NULL OR started_at <= $8)"));
-        assert!(LIST_REQUESTS_SQL.contains("AND ($9::bigint IS NULL OR duration_ms >= $9)"));
-        assert!(LIST_REQUESTS_SQL.contains("AND ($10::bigint IS NULL OR duration_ms <= $10)"));
-        assert!(LIST_REQUESTS_SQL.contains("$11::boolean IS NULL"));
+        assert!(LIST_REQUESTS_SQL.contains("AND ($7::text IS NULL OR api_key_hash = $7)"));
+        assert!(LIST_REQUESTS_SQL.contains("AND ($8::timestamptz IS NULL OR started_at >= $8)"));
+        assert!(LIST_REQUESTS_SQL.contains("AND ($9::timestamptz IS NULL OR started_at <= $9)"));
+        assert!(LIST_REQUESTS_SQL.contains("AND ($10::bigint IS NULL OR duration_ms >= $10)"));
+        assert!(LIST_REQUESTS_SQL.contains("AND ($11::bigint IS NULL OR duration_ms <= $11)"));
+        assert!(LIST_REQUESTS_SQL.contains("$12::boolean IS NULL"));
         assert!(
-            LIST_REQUESTS_SQL.contains("OR ($11 = true AND (error IS NOT NULL OR status >= 500))")
+            LIST_REQUESTS_SQL.contains("OR ($12 = true AND (error IS NOT NULL OR status >= 500))")
         );
         assert!(
             LIST_REQUESTS_SQL.contains(
-                "OR ($11 = false AND error IS NULL AND (status IS NULL OR status < 500))"
+                "OR ($12 = false AND error IS NULL AND (status IS NULL OR status < 500))"
             )
         );
-        assert!(LIST_REQUESTS_SQL.contains("$12::text IS NULL"));
-        assert!(LIST_REQUESTS_SQL.contains("OR ($12 = 'no_status' AND status IS NULL)"));
-        assert!(LIST_REQUESTS_SQL.contains("OR ($12 = '5xx' AND status BETWEEN 500 AND 599)"));
+        assert!(LIST_REQUESTS_SQL.contains("$13::text IS NULL"));
+        assert!(LIST_REQUESTS_SQL.contains("OR ($13 = 'no_status' AND status IS NULL)"));
+        assert!(LIST_REQUESTS_SQL.contains("OR ($13 = '5xx' AND status BETWEEN 500 AND 599)"));
         assert!(LIST_REQUESTS_SQL.contains(
-            "OR ($12 = 'other' AND status IS NOT NULL AND (status < 100 OR status > 599))"
+            "OR ($13 = 'other' AND status IS NOT NULL AND (status < 100 OR status > 599))"
         ));
         assert!(LIST_REQUESTS_SQL.contains("ORDER BY started_at DESC, id DESC"));
     }
