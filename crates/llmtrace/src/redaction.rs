@@ -73,6 +73,8 @@ fn is_sensitive_header(name: &str, config: &RedactionConfig) -> bool {
         || name.contains("apikey")
         || name == "authorization"
         || name == "proxy-authorization"
+        || name == "cookie"
+        || name == "set-cookie"
 }
 
 fn header_name_matches(name: &str, candidate: &str) -> bool {
@@ -176,6 +178,7 @@ fn redact_upstream_header(value: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::{HeaderValue, header};
 
     #[test]
     fn redact_body_drop_clears_payload() {
@@ -219,5 +222,21 @@ mod tests {
         let body = br#" [{"token":"secret"} "#;
 
         assert!(redact_body(body, BodyRedaction::JsonSecrets).is_empty());
+    }
+
+    #[test]
+    fn redact_headers_masks_cookie_headers_by_default() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::COOKIE, HeaderValue::from_static("session=secret"));
+        headers.insert(
+            header::SET_COOKIE,
+            HeaderValue::from_static("upstream=secret; HttpOnly"),
+        );
+
+        let redacted = redact_headers(&headers, &RedactionConfig::default());
+
+        assert_eq!(redacted.json["cookie"]["redacted"], json!(true));
+        assert_eq!(redacted.json["set-cookie"]["redacted"], json!(true));
+        assert!(redacted.first_secret_hash.is_some());
     }
 }

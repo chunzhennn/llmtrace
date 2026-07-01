@@ -1137,6 +1137,8 @@ impl Default for RedactionConfig {
                 "openai-api-key".to_string(),
                 "anthropic-api-key".to_string(),
                 "x-goog-api-key".to_string(),
+                "cookie".to_string(),
+                "set-cookie".to_string(),
             ],
             store_header_hash: true,
             body_redaction: BodyRedaction::Disabled,
