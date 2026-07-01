@@ -9,9 +9,10 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::config::Config;
+use crate::plugins::PluginStatus;
 use crate::state::AppState;
 use crate::storage;
-use crate::types::BodyRedaction;
+use crate::types::{BodyRedaction, PluginHook};
 
 const MAX_REQUEST_SEARCH_BYTES: usize = 512;
 const MAX_REQUEST_FILTER_BYTES: usize = 1024;
@@ -484,7 +485,7 @@ async fn export_query_jsonl(
 }
 
 async fn plugins(State(state): State<AppState>) -> Response {
-    Json(json!({ "items": state.plugins.statuses() })).into_response()
+    Json(plugin_status_summary(state.plugins.statuses())).into_response()
 }
 
 fn bad_request(message: impl Into<String>) -> Response {
@@ -892,12 +893,34 @@ fn body_redaction_label(value: BodyRedaction) -> &'static str {
     }
 }
 
+fn plugin_status_summary(statuses: &[PluginStatus]) -> Value {
+    let loaded_count = statuses.iter().filter(|status| status.loaded).count();
+    json!({
+        "configured_count": statuses.len(),
+        "loaded_count": loaded_count,
+        "failed_count": statuses.len().saturating_sub(loaded_count),
+        "items": statuses.iter().map(plugin_status_item).collect::<Vec<_>>(),
+    })
+}
+
+fn plugin_status_item(status: &PluginStatus) -> Value {
+    json!({
+        "name": status.name,
+        "hooks": status.hooks.iter().copied().map(plugin_hook_label).collect::<Vec<_>>(),
+        "loaded": status.loaded,
+        "error": status.error.as_ref().map(|_| "plugin failed to load"),
+    })
+}
+
+fn plugin_hook_label(value: PluginHook) -> &'static str {
+    value.as_str()
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::to_bytes;
 
     use crate::config::{DeploymentMode, PluginConfig};
-    use crate::types::PluginHook;
 
     use super::*;
 
@@ -1044,6 +1067,42 @@ mod tests {
                 "{secret} leaked in {serialized}"
             );
         }
+    }
+
+    #[test]
+    fn plugin_status_summary_omits_paths_and_raw_errors() {
+        let statuses = vec![
+            PluginStatus {
+                name: "loaded-plugin".to_string(),
+                wasm_path: "/srv/secret/plugins/loaded.wasm".into(),
+                hooks: vec![PluginHook::RequestStart, PluginHook::ResponseEnd],
+                loaded: true,
+                error: None,
+            },
+            PluginStatus {
+                name: "failed-plugin".to_string(),
+                wasm_path: "/srv/secret/plugins/failed.wasm".into(),
+                hooks: vec![PluginHook::ResponseHeaders],
+                loaded: false,
+                error: Some("failed to read /srv/secret/plugins/failed.wasm".to_string()),
+            },
+        ];
+
+        let summary = plugin_status_summary(&statuses);
+
+        assert_eq!(summary["configured_count"], 2);
+        assert_eq!(summary["loaded_count"], 1);
+        assert_eq!(summary["failed_count"], 1);
+        assert_eq!(summary["items"][0]["hooks"][0], "on_request_start");
+        assert_eq!(summary["items"][0]["hooks"][1], "on_response_end");
+        assert_eq!(summary["items"][0]["error"], Value::Null);
+        assert_eq!(summary["items"][1]["error"], "plugin failed to load");
+
+        let serialized = serde_json::to_string(&summary).unwrap();
+        assert!(!serialized.contains("/srv/secret/plugins"));
+        assert!(!serialized.contains("failed to read"));
+        assert!(!serialized.contains("failed.wasm"));
+        assert!(!serialized.contains("loaded.wasm"));
     }
 
     #[tokio::test]
