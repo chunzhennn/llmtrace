@@ -41,9 +41,16 @@ struct AuditEventListQuery {
     offset: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct UsageSummaryQuery {
+    since_hours: Option<i64>,
+    limit: Option<i64>,
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/stats", get(stats))
+        .route("/usage/summary", get(usage_summary))
         .route("/requests", get(list_requests))
         .route("/requests/{id}", get(get_request))
         .route("/sessions", get(list_sessions))
@@ -66,6 +73,16 @@ async fn stats(State(state): State<AppState>) -> Response {
             }
             Json(value).into_response()
         }
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+async fn usage_summary(
+    State(state): State<AppState>,
+    Query(query): Query<UsageSummaryQuery>,
+) -> Response {
+    match storage::usage_summary(&state.pool, query.since_hours, query.limit).await {
+        Ok(value) => Json(value).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }

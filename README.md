@@ -184,6 +184,8 @@ curl http://127.0.0.1:3000/api/query/export.jsonl \
 
 `GET /api/stats` includes a `runtime` object with process-local background health counters. `runtime.trace_pipeline` reports enqueued, persisted, dropped, build-failed, and persist-failed trace events, plus the bounded queue capacity, available slots, and current depth. `runtime.retention` reports retention prune runs, failures, last success/failure timestamps, the last error, and the rows deleted by the most recent successful prune. These metrics reset on process restart and should be paired with logs or external metrics for long-term monitoring.
 
+`GET /api/usage/summary?since_hours=24&limit=10` returns dashboard-oriented traffic aggregates over a bounded lookback window: totals, top models, top upstream hosts, status classes, and request kinds. `since_hours` defaults to 24 and is capped at 2160 hours; `limit` defaults to 10 and is capped at 50.
+
 `GET /metrics` exposes the same low-sensitivity runtime counters in Prometheus text format, plus trace queue depth/capacity and database pool size/idle gauges. It intentionally avoids request URLs, headers, body content, user identifiers, API key hashes, and plugin metadata. Development mode may leave this endpoint unauthenticated for simple Prometheus scraping; production mode requires `observability.metrics_bearer_token` or `LLMTRACE_METRICS_BEARER_TOKEN`, and requests must send `Authorization: Bearer <token>`. Keep network-layer protections when deployment policy requires them.
 
 ## Proxying examples

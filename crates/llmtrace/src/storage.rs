@@ -20,6 +20,10 @@ const MAX_SESSION_MESSAGE_OFFSET: i64 = 1_000_000;
 const DEFAULT_AUDIT_EVENT_LIMIT: i64 = 100;
 const MAX_AUDIT_EVENT_LIMIT: i64 = 500;
 const MAX_AUDIT_EVENT_OFFSET: i64 = 1_000_000;
+const DEFAULT_USAGE_SUMMARY_SINCE_HOURS: i64 = 24;
+const MAX_USAGE_SUMMARY_SINCE_HOURS: i64 = 24 * 90;
+const DEFAULT_USAGE_SUMMARY_LIMIT: i64 = 10;
+const MAX_USAGE_SUMMARY_LIMIT: i64 = 50;
 const MAX_STRUCTURED_QUERY_FIELDS: usize = 64;
 const MAX_STRUCTURED_QUERY_FILTERS: usize = 32;
 const MAX_STRUCTURED_QUERY_ORDER_BY: usize = 8;
@@ -266,6 +270,12 @@ struct AuditEventPage {
     offset: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UsageSummaryWindow {
+    since_hours: i64,
+    limit: i64,
+}
+
 impl QueryField {
     fn name(&self) -> &str {
         match self {
@@ -330,6 +340,23 @@ impl AuditEventPage {
 
     fn next_offset(self, has_more: bool) -> Option<i64> {
         has_more.then_some(self.offset.saturating_add(self.limit))
+    }
+}
+
+impl UsageSummaryWindow {
+    fn from_query(since_hours: Option<i64>, limit: Option<i64>) -> Self {
+        Self {
+            since_hours: since_hours
+                .unwrap_or(DEFAULT_USAGE_SUMMARY_SINCE_HOURS)
+                .clamp(1, MAX_USAGE_SUMMARY_SINCE_HOURS),
+            limit: limit
+                .unwrap_or(DEFAULT_USAGE_SUMMARY_LIMIT)
+                .clamp(1, MAX_USAGE_SUMMARY_LIMIT),
+        }
+    }
+
+    fn cutoff(self, now: DateTime<Utc>) -> DateTime<Utc> {
+        now - ChronoDuration::hours(self.since_hours)
     }
 }
 
@@ -1105,6 +1132,160 @@ pub async fn list_audit_events(
             "next_offset": page.next_offset(has_more),
         },
     }))
+}
+
+pub async fn usage_summary(
+    pool: &PgPool,
+    since_hours: Option<i64>,
+    limit: Option<i64>,
+) -> anyhow::Result<Value> {
+    let window = UsageSummaryWindow::from_query(since_hours, limit);
+    let cutoff = window.cutoff(Utc::now());
+    let mut tx = begin_api_read_tx(pool).await?;
+
+    let totals = sqlx::query(
+        r#"
+        SELECT COUNT(*)::bigint AS request_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
+               COALESCE(SUM(bytes_in), 0)::bigint AS bytes_in,
+               COALESCE(SUM(bytes_out), 0)::bigint AS bytes_out,
+               COALESCE(SUM(request_body_bytes + response_body_bytes), 0)::bigint AS captured_bytes,
+               AVG(duration_ms)::bigint AS avg_duration_ms,
+               AVG(ttft_ms)::bigint AS avg_ttft_ms
+        FROM trace_requests
+        WHERE started_at >= $1
+        "#,
+    )
+    .bind(cutoff)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let top_models = sqlx::query(
+        r#"
+        SELECT COALESCE(NULLIF(model, ''), 'unknown') AS name,
+               COUNT(*)::bigint AS request_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
+               AVG(duration_ms)::bigint AS avg_duration_ms,
+               AVG(ttft_ms)::bigint AS avg_ttft_ms
+        FROM trace_requests
+        WHERE started_at >= $1
+        GROUP BY 1
+        ORDER BY request_count DESC, name ASC
+        LIMIT $2
+        "#,
+    )
+    .bind(cutoff)
+    .bind(window.limit)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let top_upstreams = sqlx::query(
+        r#"
+        SELECT COALESCE(NULLIF(upstream_host, ''), 'unknown') AS name,
+               COUNT(*)::bigint AS request_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
+               AVG(duration_ms)::bigint AS avg_duration_ms,
+               AVG(ttft_ms)::bigint AS avg_ttft_ms
+        FROM trace_requests
+        WHERE started_at >= $1
+        GROUP BY 1
+        ORDER BY request_count DESC, name ASC
+        LIMIT $2
+        "#,
+    )
+    .bind(cutoff)
+    .bind(window.limit)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let status_classes = sqlx::query(
+        r#"
+        SELECT CASE
+                   WHEN status IS NULL THEN 'no_status'
+                   WHEN status BETWEEN 100 AND 199 THEN '1xx'
+                   WHEN status BETWEEN 200 AND 299 THEN '2xx'
+                   WHEN status BETWEEN 300 AND 399 THEN '3xx'
+                   WHEN status BETWEEN 400 AND 499 THEN '4xx'
+                   WHEN status BETWEEN 500 AND 599 THEN '5xx'
+                   ELSE 'other'
+               END AS name,
+               COUNT(*)::bigint AS request_count
+        FROM trace_requests
+        WHERE started_at >= $1
+        GROUP BY 1
+        ORDER BY request_count DESC, name ASC
+        "#,
+    )
+    .bind(cutoff)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let request_kinds = sqlx::query(
+        r#"
+        SELECT request_kind AS name,
+               COUNT(*)::bigint AS request_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
+               AVG(duration_ms)::bigint AS avg_duration_ms,
+               AVG(ttft_ms)::bigint AS avg_ttft_ms
+        FROM trace_requests
+        WHERE started_at >= $1
+        GROUP BY request_kind
+        ORDER BY request_count DESC, name ASC
+        LIMIT $2
+        "#,
+    )
+    .bind(cutoff)
+    .bind(window.limit)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    Ok(json!({
+        "window": {
+            "since_hours": window.since_hours,
+            "started_at_gte": cutoff,
+            "limit": window.limit,
+        },
+        "totals": {
+            "request_count": totals.get::<i64, _>("request_count"),
+            "error_count": totals.get::<i64, _>("error_count"),
+            "bytes_in": totals.get::<i64, _>("bytes_in"),
+            "bytes_out": totals.get::<i64, _>("bytes_out"),
+            "captured_bytes": totals.get::<i64, _>("captured_bytes"),
+            "avg_duration_ms": totals.try_get::<Option<i64>, _>("avg_duration_ms").ok().flatten(),
+            "avg_ttft_ms": totals.try_get::<Option<i64>, _>("avg_ttft_ms").ok().flatten(),
+        },
+        "top_models": named_metric_rows(top_models),
+        "top_upstreams": named_metric_rows(top_upstreams),
+        "status_classes": count_rows(status_classes),
+        "request_kinds": named_metric_rows(request_kinds),
+    }))
+}
+
+fn named_metric_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
+    rows.into_iter()
+        .map(|row| {
+            json!({
+                "name": row.get::<String, _>("name"),
+                "request_count": row.get::<i64, _>("request_count"),
+                "error_count": row.get::<i64, _>("error_count"),
+                "avg_duration_ms": row.try_get::<Option<i64>, _>("avg_duration_ms").ok().flatten(),
+                "avg_ttft_ms": row.try_get::<Option<i64>, _>("avg_ttft_ms").ok().flatten(),
+            })
+        })
+        .collect()
+}
+
+fn count_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
+    rows.into_iter()
+        .map(|row| {
+            json!({
+                "name": row.get::<String, _>("name"),
+                "request_count": row.get::<i64, _>("request_count"),
+            })
+        })
+        .collect()
 }
 
 pub async fn stats(pool: &PgPool) -> anyhow::Result<Value> {
@@ -2244,6 +2425,45 @@ mod tests {
 
         assert_eq!(page.next_offset(true), Some(150));
         assert_eq!(page.next_offset(false), None);
+    }
+
+    #[test]
+    fn usage_summary_window_uses_safe_defaults() {
+        let window = UsageSummaryWindow::from_query(None, None);
+
+        assert_eq!(
+            window,
+            UsageSummaryWindow {
+                since_hours: DEFAULT_USAGE_SUMMARY_SINCE_HOURS,
+                limit: DEFAULT_USAGE_SUMMARY_LIMIT,
+            }
+        );
+    }
+
+    #[test]
+    fn usage_summary_window_clamps_bounds() {
+        let max = UsageSummaryWindow::from_query(Some(i64::MAX), Some(i64::MAX));
+        assert_eq!(max.since_hours, MAX_USAGE_SUMMARY_SINCE_HOURS);
+        assert_eq!(max.limit, MAX_USAGE_SUMMARY_LIMIT);
+
+        let min = UsageSummaryWindow::from_query(Some(-10), Some(-10));
+        assert_eq!(min.since_hours, 1);
+        assert_eq!(min.limit, 1);
+    }
+
+    #[test]
+    fn usage_summary_window_calculates_cutoff() {
+        let now = DateTime::parse_from_rfc3339("2026-07-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let window = UsageSummaryWindow::from_query(Some(6), Some(10));
+
+        assert_eq!(
+            window.cutoff(now),
+            DateTime::parse_from_rfc3339("2026-07-01T06:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
     }
 
     #[test]
