@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::io::Read;
 use std::time::Duration;
 
@@ -17,6 +18,7 @@ const DEFAULT_SESSION_MESSAGE_LIMIT: i64 = 100;
 const MAX_SESSION_MESSAGE_LIMIT: i64 = 500;
 const MAX_SESSION_MESSAGE_OFFSET: i64 = 1_000_000;
 const API_READ_STATEMENT_TIMEOUT_SQL: &str = "SET LOCAL statement_timeout = '5s'";
+const READINESS_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RetentionPruneResult {
@@ -233,10 +235,32 @@ pub async fn migrate(pool: &PgPool) -> anyhow::Result<()> {
 }
 
 pub async fn readiness_check(pool: &PgPool) -> anyhow::Result<()> {
-    sqlx::query_scalar::<_, i32>("SELECT 1")
-        .fetch_one(pool)
-        .await?;
-    Ok(())
+    readiness_check_with_timeout(
+        async {
+            sqlx::query_scalar::<_, i32>("SELECT 1")
+                .fetch_one(pool)
+                .await?;
+            Ok(())
+        },
+        READINESS_CHECK_TIMEOUT,
+    )
+    .await
+}
+
+async fn readiness_check_with_timeout<F>(
+    future: F,
+    timeout_duration: Duration,
+) -> anyhow::Result<()>
+where
+    F: Future<Output = anyhow::Result<()>>,
+{
+    match tokio::time::timeout(timeout_duration, future).await {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!(
+            "readiness check timed out after {} ms",
+            timeout_duration.as_millis()
+        ),
+    }
 }
 
 async fn begin_api_read_tx(pool: &PgPool) -> anyhow::Result<Transaction<'_, Postgres>> {
@@ -1844,6 +1868,26 @@ mod tests {
         };
 
         assert_eq!(result.total_deleted(), 21);
+    }
+
+    #[tokio::test]
+    async fn readiness_check_timeout_allows_fast_future() {
+        readiness_check_with_timeout(async { Ok(()) }, Duration::from_millis(1))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn readiness_check_timeout_rejects_slow_future() {
+        let error = readiness_check_with_timeout(
+            async { std::future::pending::<anyhow::Result<()>>().await },
+            Duration::from_millis(1),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("readiness check timed out"));
     }
 
     #[test]

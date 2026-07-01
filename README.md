@@ -27,7 +27,7 @@ Proxy traffic is sent to any non-`/api` and non-`/ui` route. HTTP requests are p
 The service exposes unauthenticated probes for production schedulers and load balancers:
 
 - `GET /healthz` returns process liveness and does not touch external dependencies.
-- `GET /readyz` verifies PostgreSQL connectivity with a lightweight `SELECT 1`. It returns `503 Service Unavailable` when storage is unavailable.
+- `GET /readyz` verifies PostgreSQL connectivity with a lightweight `SELECT 1`. The storage check is bounded to 2 seconds and returns `503 Service Unavailable` when storage is unavailable or too slow.
 
 The Docker image includes a `HEALTHCHECK` against `/readyz`, and `docker-compose.yml` waits for Postgres `pg_isready` before starting `llmtrace`. When running in a container, bind the service to `0.0.0.0:3000`; the compose file sets `LLMTRACE_LISTEN` for that.
 
