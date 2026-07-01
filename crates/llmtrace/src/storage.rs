@@ -314,6 +314,28 @@ const LATENCY_SUMMARY_REQUEST_KINDS_SQL: &str = r#"
         ORDER BY p95_duration_ms DESC NULLS LAST, request_count DESC, name ASC
         LIMIT $2
         "#;
+const API_KEY_USAGE_SQL: &str = r#"
+        SELECT api_key_hash,
+               COUNT(*)::bigint AS request_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
+               COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::bigint AS session_count,
+               COALESCE(SUM(bytes_in), 0)::bigint AS bytes_in,
+               COALESCE(SUM(bytes_out), 0)::bigint AS bytes_out,
+               COALESCE(SUM(request_body_bytes + response_body_bytes), 0)::bigint AS captured_bytes,
+               AVG(duration_ms)::bigint AS avg_duration_ms,
+               MAX(duration_ms)::bigint AS max_duration_ms,
+               AVG(ttft_ms)::bigint AS avg_ttft_ms,
+               MAX(ttft_ms)::bigint AS max_ttft_ms,
+               MIN(started_at) AS first_seen_at,
+               MAX(started_at) AS last_seen_at
+        FROM trace_requests
+        WHERE started_at >= $1
+          AND api_key_hash IS NOT NULL
+          AND api_key_hash <> ''
+        GROUP BY api_key_hash
+        ORDER BY request_count DESC, api_key_hash ASC
+        LIMIT $2
+        "#;
 const LIST_REQUESTS_SQL: &str = r#"
         SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
                status, error, request_kind, model, api_key_hash, session_id, ttft_ms,
@@ -2243,6 +2265,31 @@ pub async fn latency_summary(
     }))
 }
 
+pub async fn api_key_usage(
+    pool: &PgPool,
+    since_hours: Option<i64>,
+    limit: Option<i64>,
+) -> anyhow::Result<Value> {
+    let window = UsageSummaryWindow::from_query(since_hours, limit);
+    let cutoff = window.cutoff(Utc::now());
+    let mut tx = begin_api_read_tx(pool).await?;
+    let rows = sqlx::query(API_KEY_USAGE_SQL)
+        .bind(cutoff)
+        .bind(window.limit)
+        .fetch_all(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    Ok(json!({
+        "window": {
+            "since_hours": window.since_hours,
+            "started_at_gte": cutoff,
+            "limit": window.limit,
+        },
+        "items": api_key_usage_rows(rows),
+    }))
+}
+
 pub async fn usage_timeseries(
     pool: &PgPool,
     since_hours: Option<i64>,
@@ -2400,6 +2447,28 @@ fn latency_metric_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
                 "p90_ttft_ms": row.try_get::<Option<i64>, _>("p90_ttft_ms").ok().flatten(),
                 "p95_ttft_ms": row.try_get::<Option<i64>, _>("p95_ttft_ms").ok().flatten(),
                 "p99_ttft_ms": row.try_get::<Option<i64>, _>("p99_ttft_ms").ok().flatten(),
+            })
+        })
+        .collect()
+}
+
+fn api_key_usage_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
+    rows.into_iter()
+        .map(|row| {
+            json!({
+                "api_key_hash": row.get::<String, _>("api_key_hash"),
+                "request_count": row.get::<i64, _>("request_count"),
+                "error_count": row.get::<i64, _>("error_count"),
+                "session_count": row.get::<i64, _>("session_count"),
+                "bytes_in": row.get::<i64, _>("bytes_in"),
+                "bytes_out": row.get::<i64, _>("bytes_out"),
+                "captured_bytes": row.get::<i64, _>("captured_bytes"),
+                "avg_duration_ms": row.try_get::<Option<i64>, _>("avg_duration_ms").ok().flatten(),
+                "max_duration_ms": row.try_get::<Option<i64>, _>("max_duration_ms").ok().flatten(),
+                "avg_ttft_ms": row.try_get::<Option<i64>, _>("avg_ttft_ms").ok().flatten(),
+                "max_ttft_ms": row.try_get::<Option<i64>, _>("max_ttft_ms").ok().flatten(),
+                "first_seen_at": row.try_get::<Option<DateTime<Utc>>, _>("first_seen_at").ok().flatten(),
+                "last_seen_at": row.try_get::<Option<DateTime<Utc>>, _>("last_seen_at").ok().flatten(),
             })
         })
         .collect()
@@ -4209,6 +4278,33 @@ mod tests {
             assert!(!query.contains("request_headers"));
             assert!(!query.contains("response_headers"));
         }
+    }
+
+    #[test]
+    fn api_key_usage_query_groups_nonempty_hashes() {
+        assert!(API_KEY_USAGE_SQL.contains("FROM trace_requests"));
+        assert!(API_KEY_USAGE_SQL.contains("WHERE started_at >= $1"));
+        assert!(API_KEY_USAGE_SQL.contains("AND api_key_hash IS NOT NULL"));
+        assert!(API_KEY_USAGE_SQL.contains("AND api_key_hash <> ''"));
+        assert!(API_KEY_USAGE_SQL.contains("GROUP BY api_key_hash"));
+        assert!(API_KEY_USAGE_SQL.contains("ORDER BY request_count DESC, api_key_hash ASC"));
+        assert!(API_KEY_USAGE_SQL.contains("LIMIT $2"));
+        assert!(API_KEY_USAGE_SQL.contains("COUNT(*)::bigint AS request_count"));
+        assert!(API_KEY_USAGE_SQL.contains(
+            "COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count"
+        ));
+        assert!(API_KEY_USAGE_SQL.contains(
+            "COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::bigint AS session_count"
+        ));
+        assert!(API_KEY_USAGE_SQL.contains(
+            "COALESCE(SUM(request_body_bytes + response_body_bytes), 0)::bigint AS captured_bytes"
+        ));
+        assert!(API_KEY_USAGE_SQL.contains("MIN(started_at) AS first_seen_at"));
+        assert!(API_KEY_USAGE_SQL.contains("MAX(started_at) AS last_seen_at"));
+        assert!(!API_KEY_USAGE_SQL.contains("request_headers"));
+        assert!(!API_KEY_USAGE_SQL.contains("response_headers"));
+        assert!(!API_KEY_USAGE_SQL.contains("request_body_compressed"));
+        assert!(!API_KEY_USAGE_SQL.contains("response_body_compressed"));
     }
 
     #[test]
