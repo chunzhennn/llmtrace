@@ -16,9 +16,14 @@ pub struct RedactedHeaders {
     pub first_secret_hash: Option<String>,
 }
 
-pub fn redact_headers(headers: &HeaderMap, config: &RedactionConfig) -> RedactedHeaders {
+pub fn redact_headers(
+    headers: &HeaderMap,
+    config: &RedactionConfig,
+    upstream_header: &str,
+) -> RedactedHeaders {
     let mut map = Map::new();
     let mut first_secret_hash = None;
+    let upstream_header = upstream_header.trim().to_ascii_lowercase();
 
     for (name, value) in headers {
         let name_text = name.as_str().to_ascii_lowercase();
@@ -35,7 +40,7 @@ pub fn redact_headers(headers: &HeaderMap, config: &RedactionConfig) -> Redacted
                 first_secret_hash = value_hash.clone();
             }
             map.insert(name_text, redacted_value(&value_text, value_hash));
-        } else if name_text == "x-llmtrace-upstream" {
+        } else if name_text == upstream_header {
             map.insert(name_text, redact_upstream_header(&value_text));
         } else {
             map.insert(name_text, json!(value_text));
@@ -93,6 +98,9 @@ fn is_sensitive_header(name: &str, config: &RedactionConfig) -> bool {
         .any(|candidate| header_name_matches(name, &candidate.to_ascii_lowercase()))
         || name.contains("api-key")
         || name.contains("apikey")
+        || name.contains("token")
+        || name.contains("secret")
+        || name.contains("password")
         || name == "authorization"
         || name == "proxy-authorization"
         || name == "cookie"
@@ -194,18 +202,17 @@ fn is_secret_key(key: &str) -> bool {
 
 fn redact_upstream_header(value: &str) -> Value {
     match Url::parse(value) {
-        Ok(mut url) => {
+        Ok(url) => {
             let had_secret = !url.username().is_empty() || url.password().is_some();
-            let _ = url.set_username("");
-            let _ = url.set_password(None);
+            let redacted_url = redact_uri_query_values(value);
             if had_secret {
                 json!({
                     "redacted": true,
-                    "url": url.to_string(),
+                    "url": redacted_url,
                     "sha256": sha256_hex(value.as_bytes())
                 })
             } else {
-                json!(url.to_string())
+                json!(redacted_url)
             }
         }
         Err(_) => json!(value),
@@ -270,11 +277,61 @@ mod tests {
             HeaderValue::from_static("upstream=secret; HttpOnly"),
         );
 
-        let redacted = redact_headers(&headers, &RedactionConfig::default());
+        let redacted = redact_headers(&headers, &RedactionConfig::default(), "x-llmtrace-upstream");
 
         assert_eq!(redacted.json["cookie"]["redacted"], json!(true));
         assert_eq!(redacted.json["set-cookie"]["redacted"], json!(true));
         assert!(redacted.first_secret_hash.is_some());
+    }
+
+    #[test]
+    fn redact_headers_masks_token_secret_and_password_headers_by_default() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-auth-token", HeaderValue::from_static("token-secret"));
+        headers.insert("x-client-secret", HeaderValue::from_static("client-secret"));
+        headers.insert("x-password", HeaderValue::from_static("password-secret"));
+
+        let redacted = redact_headers(&headers, &RedactionConfig::default(), "x-llmtrace-upstream");
+
+        assert_eq!(redacted.json["x-auth-token"]["redacted"], json!(true));
+        assert_eq!(redacted.json["x-client-secret"]["redacted"], json!(true));
+        assert_eq!(redacted.json["x-password"]["redacted"], json!(true));
+    }
+
+    #[test]
+    fn redact_headers_redacts_configured_upstream_header_url_query_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-target-upstream",
+            HeaderValue::from_static(
+                "https://api.example.com/v1/messages?api_key=sk-secret&debug=true",
+            ),
+        );
+
+        let redacted = redact_headers(&headers, &RedactionConfig::default(), "x-target-upstream");
+
+        assert_eq!(
+            redacted.json["x-target-upstream"],
+            json!("https://api.example.com/v1/messages?api_key=REDACTED&debug=REDACTED")
+        );
+    }
+
+    #[test]
+    fn redact_headers_hashes_credentialed_upstream_header_url() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-target-upstream",
+            HeaderValue::from_static("https://user:secret@api.example.com/v1?token=secret"),
+        );
+
+        let redacted = redact_headers(&headers, &RedactionConfig::default(), "x-target-upstream");
+
+        assert_eq!(redacted.json["x-target-upstream"]["redacted"], json!(true));
+        assert_eq!(
+            redacted.json["x-target-upstream"]["url"],
+            json!("https://api.example.com/v1?token=REDACTED")
+        );
+        assert!(redacted.json["x-target-upstream"]["sha256"].is_string());
     }
 
     #[test]

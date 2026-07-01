@@ -135,7 +135,11 @@ async fn proxy_http(
     let max_request_body_bytes = state.config.proxy.max_request_body_bytes;
 
     let request_capture = SharedBodyCapture::default();
-    let redacted_request_headers = redact_headers(&parts.headers, &state.config.redaction);
+    let redacted_request_headers = redact_headers(
+        &parts.headers,
+        &state.config.redaction,
+        &state.config.proxy.upstream_header,
+    );
     let plugin_request_headers = headers_to_json(&parts.headers);
     let request_secret_hash = redacted_request_headers.first_secret_hash.clone();
 
@@ -219,7 +223,11 @@ async fn proxy_http(
 
     let status = upstream_response.status();
     let response_headers = upstream_response.headers().clone();
-    let redacted_response_headers = redact_headers(&response_headers, &state.config.redaction);
+    let redacted_response_headers = redact_headers(
+        &response_headers,
+        &state.config.redaction,
+        &state.config.proxy.upstream_header,
+    );
     let content_type = response_headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -451,7 +459,11 @@ async fn proxy_websocket(
             return error.into_response();
         }
     };
-    let redacted_headers = redact_headers(&parts.headers, &state.config.redaction);
+    let redacted_headers = redact_headers(
+        &parts.headers,
+        &state.config.redaction,
+        &state.config.proxy.upstream_header,
+    );
     let upstream_host = upstream_url.host_str().map(str::to_string);
 
     let mut response = ws.on_upgrade(move |socket| async move {
