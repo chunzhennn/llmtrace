@@ -569,7 +569,11 @@ async fn handle_websocket(
         }
     };
 
-    let response_headers = headers_to_json_axum_compat(upstream_response.headers());
+    let response_headers = redact_websocket_response_headers(
+        upstream_response.headers(),
+        &state.config.redaction,
+        &state.config.proxy.upstream_header,
+    );
     let stats = Arc::new(AsyncMutex::new(WsStats::default()));
     let (mut client_tx, mut client_rx) = socket.split();
     let (mut upstream_tx, mut upstream_rx) = upstream_socket.split();
@@ -1094,16 +1098,12 @@ fn is_websocket(headers: &HeaderMap) -> bool {
             .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
 }
 
-fn headers_to_json_axum_compat(headers: &tokio_tungstenite::tungstenite::http::HeaderMap) -> Value {
-    let mut map = serde_json::Map::new();
-    for (name, value) in headers {
-        let value = value
-            .to_str()
-            .map(str::to_string)
-            .unwrap_or_else(|_| "<non-utf8>".to_string());
-        map.insert(name.as_str().to_ascii_lowercase(), json!(value));
-    }
-    Value::Object(map)
+fn redact_websocket_response_headers(
+    headers: &tokio_tungstenite::tungstenite::http::HeaderMap,
+    redaction: &crate::config::RedactionConfig,
+    upstream_header: &str,
+) -> Value {
+    redact_headers(headers, redaction, upstream_header).json
 }
 
 #[cfg(test)]
@@ -1494,5 +1494,24 @@ mod tests {
 
         assert_eq!(body.len(), 12);
         assert!(truncated);
+    }
+
+    #[test]
+    fn websocket_response_headers_are_redacted_before_storage() {
+        let mut headers = tokio_tungstenite::tungstenite::http::HeaderMap::new();
+        headers.insert(
+            tokio_tungstenite::tungstenite::http::header::SET_COOKIE,
+            "session=secret".parse().unwrap(),
+        );
+        headers.insert("x-auth-token", "token-secret".parse().unwrap());
+
+        let redacted = redact_websocket_response_headers(
+            &headers,
+            &crate::config::RedactionConfig::default(),
+            "x-llmtrace-upstream",
+        );
+
+        assert_eq!(redacted["set-cookie"]["redacted"], json!(true));
+        assert_eq!(redacted["x-auth-token"]["redacted"], json!(true));
     }
 }
