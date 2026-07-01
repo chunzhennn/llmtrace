@@ -910,8 +910,7 @@ fn add_ws_bytes(
 }
 
 fn resolve_upstream(state: &AppState, uri: &Uri, headers: &HeaderMap) -> anyhow::Result<Url> {
-    if let Some(value) = headers.get(state.config.proxy.upstream_header.as_str()) {
-        let value = value.to_str()?;
+    if let Some(value) = upstream_override_header(headers, &state.config.proxy.upstream_header)? {
         let mut url = Url::parse(value)?;
         if url.path() == "/"
             && let Some(path_and_query) = uri.path_and_query()
@@ -932,6 +931,20 @@ fn resolve_upstream(state: &AppState, uri: &Uri, headers: &HeaderMap) -> anyhow:
         base.set_query(path_and_query.query());
     }
     Ok(base)
+}
+
+fn upstream_override_header<'a>(
+    headers: &'a HeaderMap,
+    header_name: &str,
+) -> anyhow::Result<Option<&'a str>> {
+    let mut values = headers.get_all(header_name).iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        anyhow::bail!("multiple upstream override headers are not allowed");
+    }
+    Ok(Some(value.to_str()?))
 }
 
 fn enforce_upstream_policy(
@@ -1280,6 +1293,43 @@ mod tests {
             .to_string();
 
         assert!(error.contains("scheme \"ws\" is not allowed"));
+    }
+
+    #[test]
+    fn upstream_override_header_reads_single_value() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-llmtrace-upstream"),
+            HeaderValue::from_static("https://api.example.com"),
+        );
+
+        assert_eq!(
+            upstream_override_header(&headers, "x-llmtrace-upstream").unwrap(),
+            Some("https://api.example.com")
+        );
+        assert_eq!(
+            upstream_override_header(&headers, "x-other-upstream").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn upstream_override_header_rejects_multiple_values() {
+        let mut headers = HeaderMap::new();
+        headers.append(
+            HeaderName::from_static("x-llmtrace-upstream"),
+            HeaderValue::from_static("https://api-a.example.com"),
+        );
+        headers.append(
+            HeaderName::from_static("x-llmtrace-upstream"),
+            HeaderValue::from_static("https://api-b.example.com"),
+        );
+
+        let error = upstream_override_header(&headers, "x-llmtrace-upstream")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("multiple upstream override headers"));
     }
 
     #[test]
