@@ -140,9 +140,17 @@ async fn login(
             .unwrap_or_else(invalid_login_response);
     }
 
-    let admin = &state.config.auth.local_admin;
-    let valid_password =
-        verify_local_admin_credentials(admin, &payload.username, &payload.password);
+    let admin = state.config.auth.local_admin.clone();
+    let valid_password = match verify_local_admin_credentials_blocking(
+        admin.clone(),
+        payload.username.clone(),
+        payload.password.clone(),
+    )
+    .await
+    {
+        Ok(valid) => valid,
+        Err(error) => return server_error(error),
+    };
 
     if !valid_password {
         let retry_after = state
@@ -583,6 +591,18 @@ fn verify_local_admin_credentials(
     password_valid & username_valid
 }
 
+async fn verify_local_admin_credentials_blocking(
+    admin: LocalAdminConfig,
+    username: String,
+    password: String,
+) -> anyhow::Result<bool> {
+    tokio::task::spawn_blocking(move || {
+        verify_local_admin_credentials(&admin, &username, &password)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("local admin credential verification task failed: {error}"))
+}
+
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     let max_len = left.len().max(right.len());
     let mut diff = left.len() ^ right.len();
@@ -990,6 +1010,34 @@ mod tests {
             "admin",
             "wrong-password"
         ));
+    }
+
+    #[tokio::test]
+    async fn local_admin_credentials_blocking_matches_sync_verifier() {
+        let admin = LocalAdminConfig {
+            username: "admin".to_string(),
+            password: None,
+            password_hash: Some(test_password_hash("correct-password")),
+        };
+
+        assert!(
+            verify_local_admin_credentials_blocking(
+                admin.clone(),
+                "admin".to_string(),
+                "correct-password".to_string(),
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            !verify_local_admin_credentials_blocking(
+                admin,
+                "admin".to_string(),
+                "wrong-password".to_string(),
+            )
+            .await
+            .unwrap()
+        );
     }
 
     #[test]
