@@ -13,7 +13,7 @@ use crate::parsers;
 use crate::plugins::{HookInput, PluginEffects, PluginManager};
 use crate::redaction;
 use crate::storage::{self, ParsedMessage, TraceRecord};
-use crate::types::{BodyRedaction, PluginHook, RequestKind};
+use crate::types::{PluginHook, RequestKind};
 
 const MAX_SESSION_MESSAGES_PER_TRACE: usize = 128;
 const MAX_SESSION_MESSAGE_ROLE_BYTES: usize = 64;
@@ -143,7 +143,7 @@ impl TraceRecorder {
     pub fn spawn(
         pool: PgPool,
         plugins: Arc<PluginManager>,
-        body_redaction: BodyRedaction,
+        archive: crate::config::ArchiveConfig,
         queue_capacity: usize,
         worker_count: usize,
         metrics: RuntimeMetrics,
@@ -156,7 +156,7 @@ impl TraceRecorder {
         let handle = tokio::spawn(run_dispatcher(
             pool,
             plugins,
-            body_redaction,
+            archive,
             receiver,
             worker_count,
             metrics.clone(),
@@ -201,7 +201,7 @@ impl TraceRecorder {
 async fn run_dispatcher(
     pool: PgPool,
     plugins: Arc<PluginManager>,
-    body_redaction: BodyRedaction,
+    archive: crate::config::ArchiveConfig,
     mut receiver: mpsc::Receiver<TraceEvent>,
     worker_count: usize,
     metrics: RuntimeMetrics,
@@ -215,7 +215,7 @@ async fn run_dispatcher(
         workers.spawn(process_trace(
             pool.clone(),
             plugins.clone(),
-            body_redaction,
+            archive.clone(),
             event,
             metrics.clone(),
         ));
@@ -227,13 +227,12 @@ async fn run_dispatcher(
 async fn process_trace(
     pool: PgPool,
     plugins: Arc<PluginManager>,
-    body_redaction: BodyRedaction,
+    archive: crate::config::ArchiveConfig,
     event: TraceEvent,
     metrics: RuntimeMetrics,
 ) {
     let trace_id = event.id;
-    let built =
-        tokio::task::spawn_blocking(move || build_trace(event, &plugins, body_redaction)).await;
+    let built = tokio::task::spawn_blocking(move || build_trace(event, &plugins)).await;
     let result = match built {
         Ok(result) => result,
         Err(error) => {
@@ -251,7 +250,9 @@ async fn process_trace(
         }
     };
 
-    if let Err(error) = storage::insert_trace(&pool, trace, messages, user_id, user_name).await {
+    if let Err(error) =
+        storage::insert_trace(&pool, &archive, trace, messages, user_id, user_name).await
+    {
         metrics.trace_persist_failed();
         tracing::error!(%trace_id, error = %error, "failed to persist trace");
     } else {
@@ -259,11 +260,7 @@ async fn process_trace(
     }
 }
 
-fn build_trace(
-    event: TraceEvent,
-    plugins: &PluginManager,
-    body_redaction: BodyRedaction,
-) -> anyhow::Result<BuiltTrace> {
+fn build_trace(event: TraceEvent, plugins: &PluginManager) -> anyhow::Result<BuiltTrace> {
     let parsed = parsers::parse_trace(
         &event.original_uri,
         &event.request_body,
@@ -378,14 +375,8 @@ fn build_trace(
         bytes_out: event.response_body_bytes,
         request_headers: event.request_headers,
         response_headers: event.response_headers,
-        request_body_compressed: storage::compress(&redaction::redact_body(
-            &event.request_body,
-            body_redaction,
-        ))?,
-        response_body_compressed: storage::compress(&redaction::redact_body(
-            &event.response_body,
-            body_redaction,
-        ))?,
+        request_body: event.request_body,
+        response_body: event.response_body,
         request_body_bytes: event.request_body_bytes,
         response_body_bytes: event.response_body_bytes,
         request_body_truncated: event.request_body_truncated,
@@ -652,7 +643,7 @@ mod tests {
             "https://api.example.com/v1/messages?api_key=sk-secret&debug=true".to_string();
         event.upstream_host = Some("api.example.com".to_string());
 
-        let (trace, _, _, _) = build_trace(event, &plugins, BodyRedaction::Disabled).unwrap();
+        let (trace, _, _, _) = build_trace(event, &plugins).unwrap();
 
         assert_eq!(
             trace.original_uri,

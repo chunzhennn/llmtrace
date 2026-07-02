@@ -10,17 +10,19 @@ use http::HeaderName;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::types::{BodyRedaction, PluginHook};
+use crate::types::PluginHook;
 
 const DEFAULT_LOCAL_ADMIN_PASSWORD: &str = "admin";
 const MAX_SESSION_TTL_HOURS: i64 = 24 * 30;
 const MAX_RETENTION_DAYS: i64 = 36500;
 const MAX_RETENTION_PRUNE_BATCH_SIZE: i64 = 100_000;
 const MAX_PROXY_TIMEOUT_SECS: u64 = 60 * 60;
-const MAX_BODY_CAPTURE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_RESPONSE_BODY_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_WEBSOCKET_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_WEBSOCKET_SESSION_BYTES: usize = 2 * 1024 * 1024 * 1024;
+const MAX_ARCHIVE_SEGMENT_UNCOMPRESSED_BYTES: usize = 2 * 1024 * 1024 * 1024;
+const MAX_ARCHIVE_COMPRESSION_LEVEL: i32 = 10;
 const MAX_STORAGE_CONNECTIONS: u32 = 1024;
 const MAX_STORAGE_ACQUIRE_TIMEOUT_SECS: u64 = 300;
 const MAX_TRACE_QUEUE_CAPACITY: usize = 1_000_000;
@@ -42,6 +44,7 @@ pub struct Config {
     pub server: ServerConfig,
     pub proxy: ProxyConfig,
     pub storage: StorageConfig,
+    pub archive: ArchiveConfig,
     pub auth: AuthConfig,
     pub observability: ObservabilityConfig,
     pub redaction: RedactionConfig,
@@ -64,8 +67,8 @@ pub struct ProxyConfig {
     pub allow_upstreams: Vec<String>,
     pub upstream_header: String,
     pub timeout_secs: u64,
-    pub max_body_capture_bytes: usize,
     pub max_request_body_bytes: usize,
+    pub max_response_body_bytes: usize,
     pub max_websocket_message_bytes: usize,
     pub max_websocket_session_bytes: usize,
 }
@@ -81,6 +84,15 @@ pub struct StorageConfig {
     pub retention_days: Option<i64>,
     pub retention_prune_interval_secs: u64,
     pub retention_prune_batch_size: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ArchiveConfig {
+    pub storage_backend: ArchiveStorageBackend,
+    pub filesystem_root: PathBuf,
+    pub segment_uncompressed_bytes: usize,
+    pub compression_level: i32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -136,7 +148,6 @@ pub struct ObservabilityConfig {
 pub struct RedactionConfig {
     pub sensitive_headers: Vec<String>,
     pub store_header_hash: bool,
-    pub body_redaction: BodyRedaction,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -173,6 +184,43 @@ pub enum DeploymentMode {
     #[default]
     Development,
     Production,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchiveStorageBackend {
+    #[default]
+    Filesystem,
+    Postgres,
+}
+
+impl ArchiveStorageBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Filesystem => "filesystem",
+            Self::Postgres => "postgres",
+        }
+    }
+}
+
+impl FromStr for ArchiveStorageBackend {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "filesystem" | "fs" => Ok(Self::Filesystem),
+            "postgres" | "pg" => Ok(Self::Postgres),
+            other => anyhow::bail!(
+                "archive.storage_backend must be one of filesystem or postgres, got {other:?}"
+            ),
+        }
+    }
+}
+
+impl fmt::Display for ArchiveStorageBackend {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 impl DeploymentMode {
@@ -292,6 +340,7 @@ impl Config {
         self.validate_server(&mut errors);
         self.validate_proxy(&mut errors);
         self.validate_storage(&mut errors);
+        self.validate_archive(&mut errors);
         self.validate_auth(&mut errors);
         self.validate_observability(&mut errors);
         self.validate_redaction(&mut errors);
@@ -367,15 +416,15 @@ impl Config {
         );
         validate_usize_range(
             errors,
-            "proxy.max_body_capture_bytes",
-            self.proxy.max_body_capture_bytes,
-            MAX_BODY_CAPTURE_BYTES,
-        );
-        validate_usize_range(
-            errors,
             "proxy.max_request_body_bytes",
             self.proxy.max_request_body_bytes,
             MAX_REQUEST_BODY_BYTES,
+        );
+        validate_usize_range(
+            errors,
+            "proxy.max_response_body_bytes",
+            self.proxy.max_response_body_bytes,
+            MAX_RESPONSE_BODY_BYTES,
         );
         validate_usize_range(
             errors,
@@ -467,6 +516,30 @@ impl Config {
         } else if self.storage.retention_prune_batch_size > MAX_RETENTION_PRUNE_BATCH_SIZE {
             errors.push(format!(
                 "storage.retention_prune_batch_size must be at most {MAX_RETENTION_PRUNE_BATCH_SIZE}"
+            ));
+        }
+    }
+
+    fn validate_archive(&self, errors: &mut Vec<String>) {
+        if self.archive.storage_backend == ArchiveStorageBackend::Filesystem
+            && self.archive.filesystem_root.as_os_str().is_empty()
+        {
+            errors.push(
+                "archive.filesystem_root must not be empty when archive.storage_backend is filesystem"
+                    .to_string(),
+            );
+        }
+        validate_usize_range(
+            errors,
+            "archive.segment_uncompressed_bytes",
+            self.archive.segment_uncompressed_bytes,
+            MAX_ARCHIVE_SEGMENT_UNCOMPRESSED_BYTES,
+        );
+        if self.archive.compression_level <= 0 {
+            errors.push("archive.compression_level must be greater than 0".to_string());
+        } else if self.archive.compression_level > MAX_ARCHIVE_COMPRESSION_LEVEL {
+            errors.push(format!(
+                "archive.compression_level must be at most {MAX_ARCHIVE_COMPRESSION_LEVEL}"
             ));
         }
     }
@@ -703,14 +776,6 @@ impl Config {
                 ));
             }
         }
-        if self.server.deployment.is_production()
-            && self.redaction.body_redaction == BodyRedaction::Disabled
-        {
-            errors.push(
-                "redaction.body_redaction must be drop or json_secrets when server.deployment is production"
-                    .to_string(),
-            );
-        }
     }
 
     fn validate_plugins(&self, errors: &mut Vec<String>) {
@@ -832,13 +897,13 @@ fn apply_env_overrides(
     if let Some(value) = env("LLMTRACE_PROXY_TIMEOUT_SECS") {
         config.proxy.timeout_secs = parse_u64_env("LLMTRACE_PROXY_TIMEOUT_SECS", &value)?;
     }
-    if let Some(value) = env("LLMTRACE_MAX_BODY_CAPTURE_BYTES") {
-        config.proxy.max_body_capture_bytes =
-            parse_usize_env("LLMTRACE_MAX_BODY_CAPTURE_BYTES", &value)?;
-    }
     if let Some(value) = env("LLMTRACE_MAX_REQUEST_BODY_BYTES") {
         config.proxy.max_request_body_bytes =
             parse_usize_env("LLMTRACE_MAX_REQUEST_BODY_BYTES", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_MAX_RESPONSE_BODY_BYTES") {
+        config.proxy.max_response_body_bytes =
+            parse_usize_env("LLMTRACE_MAX_RESPONSE_BODY_BYTES", &value)?;
     }
     if let Some(value) = env("LLMTRACE_MAX_WEBSOCKET_MESSAGE_BYTES") {
         config.proxy.max_websocket_message_bytes =
@@ -847,6 +912,20 @@ fn apply_env_overrides(
     if let Some(value) = env("LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES") {
         config.proxy.max_websocket_session_bytes =
             parse_usize_env("LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_ARCHIVE_STORAGE_BACKEND") {
+        config.archive.storage_backend = value.parse()?;
+    }
+    if let Some(value) = env("LLMTRACE_ARCHIVE_FILESYSTEM_ROOT") {
+        config.archive.filesystem_root = PathBuf::from(value);
+    }
+    if let Some(value) = env("LLMTRACE_ARCHIVE_SEGMENT_UNCOMPRESSED_BYTES") {
+        config.archive.segment_uncompressed_bytes =
+            parse_usize_env("LLMTRACE_ARCHIVE_SEGMENT_UNCOMPRESSED_BYTES", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_ARCHIVE_COMPRESSION_LEVEL") {
+        config.archive.compression_level =
+            parse_i32_env("LLMTRACE_ARCHIVE_COMPRESSION_LEVEL", &value)?;
     }
     if let Some(value) = env("LLMTRACE_AUTH_COOKIE_SECURE") {
         config.auth.cookie_secure = parse_bool_env("LLMTRACE_AUTH_COOKIE_SECURE", &value)?;
@@ -920,10 +999,6 @@ fn apply_env_overrides(
     }
     if let Some(value) = env("LLMTRACE_STORE_HEADER_HASH") {
         config.redaction.store_header_hash = parse_bool_env("LLMTRACE_STORE_HEADER_HASH", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_BODY_REDACTION") {
-        config.redaction.body_redaction =
-            parse_body_redaction_env("LLMTRACE_BODY_REDACTION", &value)?;
     }
     Ok(())
 }
@@ -1135,6 +1210,12 @@ fn parse_i64_env(name: &str, value: &str) -> anyhow::Result<i64> {
         .with_context(|| format!("{name} must be an integer"))
 }
 
+fn parse_i32_env(name: &str, value: &str) -> anyhow::Result<i32> {
+    value
+        .parse()
+        .with_context(|| format!("{name} must be an integer"))
+}
+
 fn parse_u64_env(name: &str, value: &str) -> anyhow::Result<u64> {
     value
         .parse()
@@ -1162,17 +1243,6 @@ fn parse_csv_env(name: &str, value: &str) -> anyhow::Result<Vec<String>> {
     Ok(items)
 }
 
-fn parse_body_redaction_env(name: &str, value: &str) -> anyhow::Result<BodyRedaction> {
-    match value {
-        "disabled" => Ok(BodyRedaction::Disabled),
-        "drop" => Ok(BodyRedaction::Drop),
-        "json_secrets" => Ok(BodyRedaction::JsonSecrets),
-        other => {
-            anyhow::bail!("{name} must be one of disabled, drop, or json_secrets, got {other:?}")
-        }
-    }
-}
-
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -1191,8 +1261,8 @@ impl Default for ProxyConfig {
             allow_upstreams: Vec::new(),
             upstream_header: "x-llmtrace-upstream".to_string(),
             timeout_secs: 300,
-            max_body_capture_bytes: 1024 * 1024,
             max_request_body_bytes: 64 * 1024 * 1024,
+            max_response_body_bytes: 64 * 1024 * 1024,
             max_websocket_message_bytes: 16 * 1024 * 1024,
             max_websocket_session_bytes: 512 * 1024 * 1024,
         }
@@ -1210,6 +1280,17 @@ impl Default for StorageConfig {
             retention_days: None,
             retention_prune_interval_secs: 3600,
             retention_prune_batch_size: 1000,
+        }
+    }
+}
+
+impl Default for ArchiveConfig {
+    fn default() -> Self {
+        Self {
+            storage_backend: ArchiveStorageBackend::Filesystem,
+            filesystem_root: PathBuf::from("spool/archive"),
+            segment_uncompressed_bytes: 32 * 1024 * 1024,
+            compression_level: 1,
         }
     }
 }
@@ -1279,7 +1360,6 @@ impl Default for RedactionConfig {
                 "set-cookie".to_string(),
             ],
             store_header_hash: true,
-            body_redaction: BodyRedaction::Disabled,
         }
     }
 }
@@ -1318,7 +1398,6 @@ mod tests {
         assert!(error.contains("storage.retention_days is required"));
         assert!(error.contains("auth.local_admin.password must not be used"));
         assert!(error.contains("observability.metrics_bearer_token is required"));
-        assert!(error.contains("redaction.body_redaction must be drop or json_secrets"));
     }
 
     #[test]
@@ -1332,7 +1411,6 @@ mod tests {
         config.auth.local_admin.password = None;
         config.auth.local_admin.password_hash = Some(VALID_ARGON2_HASH.to_string());
         config.auth.login_rate_limit.enabled = false;
-        config.redaction.body_redaction = BodyRedaction::JsonSecrets;
 
         let error = config.validate().unwrap_err().to_string();
 
@@ -1348,7 +1426,6 @@ mod tests {
         config.auth.cookie_secure = true;
         config.auth.local_admin.password = None;
         config.auth.local_admin.password_hash = Some(VALID_ARGON2_HASH.to_string());
-        config.redaction.body_redaction = BodyRedaction::JsonSecrets;
 
         let error = config.validate().unwrap_err().to_string();
 
@@ -1566,7 +1643,10 @@ mod tests {
                 "LLMTRACE_METRICS_BEARER_TOKEN" => Some("metrics-secret"),
                 "LLMTRACE_SENSITIVE_HEADERS" => Some("authorization, x-custom-secret"),
                 "LLMTRACE_STORE_HEADER_HASH" => Some("false"),
-                "LLMTRACE_BODY_REDACTION" => Some("drop"),
+                "LLMTRACE_ARCHIVE_STORAGE_BACKEND" => Some("postgres"),
+                "LLMTRACE_ARCHIVE_FILESYSTEM_ROOT" => Some("/var/lib/llmtrace/archive"),
+                "LLMTRACE_ARCHIVE_SEGMENT_UNCOMPRESSED_BYTES" => Some("8388608"),
+                "LLMTRACE_ARCHIVE_COMPRESSION_LEVEL" => Some("2"),
                 _ => None,
             }
             .map(str::to_string)
@@ -1606,7 +1686,16 @@ mod tests {
             vec!["authorization".to_string(), "x-custom-secret".to_string()]
         );
         assert!(!config.redaction.store_header_hash);
-        assert_eq!(config.redaction.body_redaction, BodyRedaction::Drop);
+        assert_eq!(
+            config.archive.storage_backend,
+            ArchiveStorageBackend::Postgres
+        );
+        assert_eq!(
+            config.archive.filesystem_root,
+            PathBuf::from("/var/lib/llmtrace/archive")
+        );
+        assert_eq!(config.archive.segment_uncompressed_bytes, 8_388_608);
+        assert_eq!(config.archive.compression_level, 2);
     }
 
     #[test]
@@ -1639,31 +1728,6 @@ mod tests {
     }
 
     #[test]
-    fn body_redaction_env_parser_accepts_known_values() {
-        assert_eq!(
-            parse_body_redaction_env("LLMTRACE_BODY_REDACTION", "disabled").unwrap(),
-            BodyRedaction::Disabled
-        );
-        assert_eq!(
-            parse_body_redaction_env("LLMTRACE_BODY_REDACTION", "drop").unwrap(),
-            BodyRedaction::Drop
-        );
-        assert_eq!(
-            parse_body_redaction_env("LLMTRACE_BODY_REDACTION", "json_secrets").unwrap(),
-            BodyRedaction::JsonSecrets
-        );
-    }
-
-    #[test]
-    fn body_redaction_env_parser_rejects_unknown_values() {
-        let error = parse_body_redaction_env("LLMTRACE_BODY_REDACTION", "mask")
-            .unwrap_err()
-            .to_string();
-
-        assert!(error.contains("must be one of disabled, drop, or json_secrets"));
-    }
-
-    #[test]
     fn production_config_accepts_hardened_settings() {
         let config = production_ready_config();
 
@@ -1684,10 +1748,12 @@ mod tests {
     fn validation_rejects_bad_operational_bounds() {
         let mut config = Config::default();
         config.proxy.timeout_secs = 0;
-        config.proxy.max_body_capture_bytes = 0;
         config.proxy.max_request_body_bytes = 0;
+        config.proxy.max_response_body_bytes = 0;
         config.proxy.max_websocket_message_bytes = 0;
         config.proxy.max_websocket_session_bytes = 0;
+        config.archive.segment_uncompressed_bytes = 0;
+        config.archive.compression_level = 0;
         config.storage.max_connections = 0;
         config.storage.acquire_timeout_secs = 0;
         config.storage.trace_queue_capacity = 0;
@@ -1701,10 +1767,12 @@ mod tests {
         let error = config.validate().unwrap_err().to_string();
 
         assert!(error.contains("proxy.timeout_secs must be greater than 0"));
-        assert!(error.contains("proxy.max_body_capture_bytes must be greater than 0"));
         assert!(error.contains("proxy.max_request_body_bytes must be greater than 0"));
+        assert!(error.contains("proxy.max_response_body_bytes must be greater than 0"));
         assert!(error.contains("proxy.max_websocket_message_bytes must be greater than 0"));
         assert!(error.contains("proxy.max_websocket_session_bytes must be greater than 0"));
+        assert!(error.contains("archive.segment_uncompressed_bytes must be greater than 0"));
+        assert!(error.contains("archive.compression_level must be greater than 0"));
         assert!(error.contains("storage.max_connections must be greater than 0"));
         assert!(error.contains("storage.acquire_timeout_secs must be greater than 0"));
         assert!(error.contains("storage.trace_queue_capacity must be greater than 0"));
@@ -1720,10 +1788,12 @@ mod tests {
     fn validation_rejects_excessive_operational_bounds() {
         let mut config = Config::default();
         config.proxy.timeout_secs = MAX_PROXY_TIMEOUT_SECS + 1;
-        config.proxy.max_body_capture_bytes = MAX_BODY_CAPTURE_BYTES + 1;
         config.proxy.max_request_body_bytes = MAX_REQUEST_BODY_BYTES + 1;
+        config.proxy.max_response_body_bytes = MAX_RESPONSE_BODY_BYTES + 1;
         config.proxy.max_websocket_message_bytes = MAX_WEBSOCKET_MESSAGE_BYTES + 1;
         config.proxy.max_websocket_session_bytes = MAX_WEBSOCKET_SESSION_BYTES + 1;
+        config.archive.segment_uncompressed_bytes = MAX_ARCHIVE_SEGMENT_UNCOMPRESSED_BYTES + 1;
+        config.archive.compression_level = MAX_ARCHIVE_COMPRESSION_LEVEL + 1;
         config.storage.max_connections = MAX_STORAGE_CONNECTIONS + 1;
         config.storage.acquire_timeout_secs = MAX_STORAGE_ACQUIRE_TIMEOUT_SECS + 1;
         config.storage.trace_queue_capacity = MAX_TRACE_QUEUE_CAPACITY + 1;
@@ -1737,10 +1807,12 @@ mod tests {
         let error = config.validate().unwrap_err().to_string();
 
         assert!(error.contains("proxy.timeout_secs must be at most"));
-        assert!(error.contains("proxy.max_body_capture_bytes must be at most"));
         assert!(error.contains("proxy.max_request_body_bytes must be at most"));
+        assert!(error.contains("proxy.max_response_body_bytes must be at most"));
         assert!(error.contains("proxy.max_websocket_message_bytes must be at most"));
         assert!(error.contains("proxy.max_websocket_session_bytes must be at most"));
+        assert!(error.contains("archive.segment_uncompressed_bytes must be at most"));
+        assert!(error.contains("archive.compression_level must be at most"));
         assert!(error.contains("storage.max_connections must be at most"));
         assert!(error.contains("storage.acquire_timeout_secs must be at most"));
         assert!(error.contains("storage.trace_queue_capacity must be at most"));
@@ -1935,7 +2007,6 @@ mod tests {
         config.auth.local_admin.password = None;
         config.auth.local_admin.password_hash = Some(VALID_ARGON2_HASH.to_string());
         config.observability.metrics_bearer_token = Some("metrics-secret".to_string());
-        config.redaction.body_redaction = BodyRedaction::JsonSecrets;
         config
     }
 

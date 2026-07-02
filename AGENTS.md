@@ -7,8 +7,8 @@ This is a Rust workspace with one binary crate in `crates/llmtrace`. The root `C
 Application code lives in `crates/llmtrace/src`:
 
 - `main.rs` loads config, runs migrations, builds the Axum router, starts graceful shutdown, and drains the trace pipeline.
-- `proxy.rs` handles HTTP, SSE-style streaming responses, and WebSocket reverse proxying. It captures bounded request/response body samples while preserving streaming behavior.
-- `trace.rs` owns the bounded background trace pipeline. It parses captured traffic, applies body redaction, runs WASM plugins, compresses bodies, and persists traces outside the live proxy path.
+- `proxy.rs` handles HTTP, SSE-style streaming responses, and WebSocket reverse proxying. It captures request/response bodies up to live audit limits while preserving streaming behavior.
+- `trace.rs` owns the bounded background trace pipeline. It parses captured traffic, runs WASM plugins, appends bodies into compressed archive segments, and persists traces outside the live proxy path.
 - `storage.rs` owns Postgres access, migrations, trace/session writes, rollups, and the structured `/api/query` implementation over allowlisted datasets and fields.
 - `api.rs` exposes authenticated JSON API routes for stats, requests, sessions, structured queries, and plugin statuses.
 - `auth.rs` implements local admin login, optional OAuth/OIDC login, session cookies, and UI audit events.
@@ -34,7 +34,7 @@ Useful config overrides are `LLMTRACE_CONFIG`, `DATABASE_URL`, `LLMTRACE_LISTEN`
 
 Use Rust 2024 edition conventions and rustfmt defaults: four-space indentation, `snake_case` for functions/modules, `PascalCase` for types, and `SCREAMING_SNAKE_CASE` for constants. Follow the existing error style with `anyhow`, `thiserror`, contextual messages, and explicit API error translation.
 
-Keep proxy latency and streaming behavior central. Do not move Postgres writes, compression, parsing, or plugin execution back onto the live request/response path. The proxy should continue to stream upstream bodies while only retaining the first `proxy.max_body_capture_bytes` bytes for trace storage and analysis. The trace recorder intentionally uses a bounded `try_send` queue and drops trace events when saturated instead of delaying proxied traffic.
+Keep proxy latency and streaming behavior central. Do not move Postgres writes, compression, parsing, or plugin execution back onto the live request/response path. The proxy should continue to stream upstream bodies while retaining audit payloads only up to `proxy.max_request_body_bytes`, `proxy.max_response_body_bytes`, and WebSocket limits. The trace recorder intentionally uses a bounded `try_send` queue and drops trace events when saturated instead of delaying proxied traffic.
 
 Use SQLx bind parameters and `QueryBuilder` for dynamic SQL. Public analytics must stay on the structured `/api/query` surface backed by allowlisted datasets, fields, filters, and sort keys. Do not add generic raw-SQL API endpoints. When adding queryable fields, update the relevant `FieldSpec`, default field lists if needed, filter validation, and unit tests.
 
@@ -50,7 +50,7 @@ Queryable plugin metadata paths are supported only on the `requests` dataset usi
 
 ## Testing Guidelines
 
-Current tests are Rust unit tests colocated with implementation, especially structured query validation in `storage.rs` and body redaction behavior in `redaction.rs`. Add tests near changed code and name them after behavior, for example `structured_query_rejects_unknown_field` or `redact_body_json_secrets_masks_nested_secret_strings`.
+Current tests are Rust unit tests colocated with implementation, especially structured query validation in `storage.rs`, archive segment helpers in `storage.rs`, and header/URI redaction behavior in `redaction.rs`. Add tests near changed code and name them after behavior, for example `structured_query_rejects_unknown_field` or `archive_frame_round_trips_body`.
 
 For parser, query-builder, redaction, and validation changes, prefer focused unit tests that do not need Postgres. For database-sensitive work, run `docker compose up -d postgres` and verify migrations with `cargo run -p llmtrace -- --config llmtrace.toml --migrate-only`. Run `cargo test --workspace` before submitting changes; run `cargo clippy --workspace --all-targets -- -D warnings` for changes touching shared proxy, auth, storage, trace, or API behavior.
 
@@ -60,6 +60,6 @@ This repository has no established commit history, so use short, imperative subj
 
 ## Security & Configuration Tips
 
-Do not commit `llmtrace.toml`, `.env`, logs, `spool/`, captured trace dumps, or local plugin binaries containing secrets. The example config uses development credentials and stores request/response bodies unredacted by default. Set `redaction.body_redaction` to `drop` or `json_secrets` when captured bodies may contain sensitive data.
+Do not commit `llmtrace.toml`, `.env`, logs, `spool/`, captured trace dumps, or local plugin binaries containing secrets. The example config uses development credentials and stores request/response bodies unredacted in archive segments for internal audit.
 
 Stored headers redact configured credential-like header values and may keep SHA-256 hashes when `redaction.store_header_hash` is enabled. WASM plugins receive captured request/response data before persistence redaction, so plugin code and plugin metadata must be treated as sensitive. Prefer `auth.local_admin.password_hash` over plaintext `password` outside local development, set `auth.cookie_secure = true` behind HTTPS, and configure OAuth `allowed_emails` or `allowed_domains` when enabling OAuth for non-local deployments.

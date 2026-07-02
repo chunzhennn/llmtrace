@@ -13,13 +13,23 @@ default_upstream = "https://api.openai.com"
 allow_upstreams = []
 upstream_header = "x-llmtrace-upstream"
 timeout_secs = 300
-# Stored request/response samples are capped by this value. Startup validation
-# rejects resource limits that exceed documented production safety ceilings.
-max_body_capture_bytes = 1048576
 # Live proxy traffic limits. Oversized HTTP request bodies are rejected with 413.
+# Response capture is preserved for auditing until max_response_body_bytes.
 max_request_body_bytes = 67108864
+max_response_body_bytes = 67108864
 max_websocket_message_bytes = 16777216
 max_websocket_session_bytes = 536870912
+
+[archive]
+# Payload segments are written to the filesystem first. Use "postgres" only
+# when filesystem storage is unavailable. S3 storage is intentionally not
+# implemented yet.
+storage_backend = "filesystem"
+filesystem_root = "spool/archive"
+# Target uncompressed segment size before starting the next session segment.
+segment_uncompressed_bytes = 33554432
+# Fast zstd compression; level 1 favors throughput for stream audit capture.
+compression_level = 1
 
 [storage]
 postgres_url = "postgres://postgres:postgres@localhost:5432/llmtrace"
@@ -90,10 +100,8 @@ sensitive_headers = [
   "set-cookie"
 ]
 store_header_hash = true
-# Body storage mode: "disabled" (store as-is), "drop" (store nothing),
-# or "json_secrets" (mask secret-looking JSON string values). Production
-# mode requires "drop" or "json_secrets".
-body_redaction = "disabled"
+# Request and response bodies are stored unredacted in archive segments.
+# Header credentials and upstream/URI query values are still redacted.
 
 # [[plugins]]
 # Up to 64 plugins. Names must be printable ASCII and at most 128 bytes.

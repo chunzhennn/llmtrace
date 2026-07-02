@@ -1,12 +1,9 @@
-use std::borrow::Cow;
-
 use axum::http::HeaderMap;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use url::Url;
 
 use crate::config::RedactionConfig;
-use crate::types::BodyRedaction;
 
 const REDACTED_QUERY_VALUE: &str = "REDACTED";
 
@@ -144,62 +141,6 @@ fn redacted_value(value: &str, hash: Option<String>) -> Value {
     })
 }
 
-/// Applies the configured redaction mode to a captured body before persistence.
-pub fn redact_body(body: &[u8], mode: BodyRedaction) -> Cow<'_, [u8]> {
-    match mode {
-        BodyRedaction::Disabled => Cow::Borrowed(body),
-        BodyRedaction::Drop => Cow::Borrowed(&[]),
-        BodyRedaction::JsonSecrets => match redact_json_secrets(body) {
-            Some(redacted) => Cow::Owned(redacted),
-            None if body_looks_like_json(body) => Cow::Borrowed(&[]),
-            None => Cow::Borrowed(body),
-        },
-    }
-}
-
-fn redact_json_secrets(body: &[u8]) -> Option<Vec<u8>> {
-    let mut value: Value = serde_json::from_slice(body).ok()?;
-    redact_json_value(&mut value);
-    serde_json::to_vec(&value).ok()
-}
-
-fn body_looks_like_json(body: &[u8]) -> bool {
-    body.iter()
-        .copied()
-        .find(|byte| !byte.is_ascii_whitespace())
-        .is_some_and(|byte| matches!(byte, b'{' | b'['))
-}
-
-fn redact_json_value(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            for (key, entry) in map.iter_mut() {
-                if entry.is_string() && is_secret_key(key) {
-                    *entry = json!("[redacted]");
-                } else {
-                    redact_json_value(entry);
-                }
-            }
-        }
-        Value::Array(items) => items.iter_mut().for_each(redact_json_value),
-        _ => {}
-    }
-}
-
-fn is_secret_key(key: &str) -> bool {
-    const SECRET_HINTS: &[&str] = &[
-        "authorization",
-        "api_key",
-        "apikey",
-        "api-key",
-        "secret",
-        "password",
-        "token",
-    ];
-    let key = key.to_ascii_lowercase();
-    SECRET_HINTS.iter().any(|hint| key.contains(hint))
-}
-
 fn redact_upstream_header(value: &str) -> Value {
     match Url::parse(value) {
         Ok(url) => {
@@ -223,50 +164,6 @@ fn redact_upstream_header(value: &str) -> Value {
 mod tests {
     use super::*;
     use axum::http::{HeaderValue, header};
-
-    #[test]
-    fn redact_body_drop_clears_payload() {
-        assert!(redact_body(b"{\"a\":1}", BodyRedaction::Drop).is_empty());
-    }
-
-    #[test]
-    fn redact_body_disabled_is_passthrough() {
-        let body = b"{\"a\":1}";
-        assert_eq!(redact_body(body, BodyRedaction::Disabled).as_ref(), body);
-    }
-
-    #[test]
-    fn redact_body_json_secrets_masks_nested_secret_strings() {
-        let body =
-            br#"{"model":"x","headers":{"Authorization":"Bearer sk"},"api_key":"abc","n":1}"#;
-        let redacted = redact_body(body, BodyRedaction::JsonSecrets);
-        let value: Value = serde_json::from_slice(&redacted).unwrap();
-
-        assert_eq!(value["model"], json!("x"));
-        assert_eq!(value["n"], json!(1));
-        assert_eq!(value["api_key"], json!("[redacted]"));
-        assert_eq!(value["headers"]["Authorization"], json!("[redacted]"));
-    }
-
-    #[test]
-    fn redact_body_json_secrets_passthrough_on_non_json() {
-        let body = b"not json";
-        assert_eq!(redact_body(body, BodyRedaction::JsonSecrets).as_ref(), body);
-    }
-
-    #[test]
-    fn redact_body_json_secrets_drops_malformed_json_like_body() {
-        let body = br#" {"api_key":"sk-example""#;
-
-        assert!(redact_body(body, BodyRedaction::JsonSecrets).is_empty());
-    }
-
-    #[test]
-    fn redact_body_json_secrets_drops_malformed_json_arrays() {
-        let body = br#" [{"token":"secret"} "#;
-
-        assert!(redact_body(body, BodyRedaction::JsonSecrets).is_empty());
-    }
 
     #[test]
     fn redact_headers_masks_cookie_headers_by_default() {

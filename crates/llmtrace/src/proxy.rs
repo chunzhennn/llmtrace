@@ -131,8 +131,8 @@ async fn proxy_http(
         .map_err(ProxySetupError::bad_request)?;
     enforce_upstream_policy(&state, &upstream_url, HTTP_UPSTREAM_SCHEMES)?;
     let upstream_host = upstream_url.host_str().map(str::to_string);
-    let capture_limit = state.config.proxy.max_body_capture_bytes;
     let max_request_body_bytes = state.config.proxy.max_request_body_bytes;
+    let max_response_body_bytes = state.config.proxy.max_response_body_bytes;
 
     let request_capture = SharedBodyCapture::default();
     let redacted_request_headers = redact_headers(
@@ -166,7 +166,7 @@ async fn proxy_http(
     let request_body = RequestCaptureStream::new(
         body,
         request_capture.clone(),
-        capture_limit,
+        max_request_body_bytes,
         max_request_body_bytes,
     );
 
@@ -262,7 +262,7 @@ async fn proxy_http(
         request_capture,
         event,
         started,
-        capture_limit,
+        max_response_body_bytes,
     );
     let mut response = response_builder
         .body(Body::from_stream(response_body))
@@ -581,7 +581,7 @@ async fn handle_websocket(
     let u2c_stats = stats.clone();
     let max_ws_message_bytes = state.config.proxy.max_websocket_message_bytes;
     let max_ws_session_bytes = state.config.proxy.max_websocket_session_bytes;
-    let capture_limit = state.config.proxy.max_body_capture_bytes;
+    let capture_limit = state.config.proxy.max_websocket_session_bytes;
 
     let client_to_upstream = async move {
         while let Some(message) = client_rx.next().await {

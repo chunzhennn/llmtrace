@@ -1,20 +1,27 @@
 use std::future::Future;
 use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
+use std::{fs, io};
 
+use anyhow::Context;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Postgres, QueryBuilder, Row, Transaction};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-use crate::config::StorageConfig;
+use crate::config::{ArchiveConfig, ArchiveStorageBackend, StorageConfig};
 use crate::metrics::RuntimeMetrics;
 use crate::types::RequestKind;
 
 const DEFAULT_REQUEST_LIST_LIMIT: i64 = 100;
+const MAX_ARCHIVE_SEGMENT_DECODE_BYTES: usize = 2 * 1024 * 1024 * 1024;
+const ARCHIVE_DIRECTION_REQUEST_BODY: &str = "request_body";
+const ARCHIVE_DIRECTION_RESPONSE_BODY: &str = "response_body";
 const MAX_REQUEST_LIST_LIMIT: i64 = 500;
 const MAX_REQUEST_LIST_OFFSET: i64 = 1_000_000;
 const DEFAULT_REQUEST_FACET_SINCE_HOURS: i64 = 24;
@@ -912,12 +919,15 @@ const STORAGE_SUMMARY_SQL: &str = r#"
         WITH tracked_relations(display_order, name) AS (
             VALUES
                 (1, 'request_traces'),
-                (2, 'trace_rollups_minute'),
-                (3, 'trace_sessions'),
-                (4, 'session_messages'),
-                (5, 'ui_audit_events'),
-                (6, 'ui_sessions'),
-                (7, 'oauth_states')
+                (2, 'payload_archive_segments'),
+                (3, 'payload_archive_segment_blobs'),
+                (4, 'payload_archive_records'),
+                (5, 'trace_rollups_minute'),
+                (6, 'trace_sessions'),
+                (7, 'session_messages'),
+                (8, 'ui_audit_events'),
+                (9, 'ui_sessions'),
+                (10, 'oauth_states')
         ),
         current_schema_oid AS (
             SELECT oid
@@ -1007,8 +1017,8 @@ pub struct TraceRecord {
     pub bytes_out: i64,
     pub request_headers: Value,
     pub response_headers: Value,
-    pub request_body_compressed: Vec<u8>,
-    pub response_body_compressed: Vec<u8>,
+    pub request_body: Vec<u8>,
+    pub response_body: Vec<u8>,
     pub request_body_bytes: i64,
     pub response_body_bytes: i64,
     pub request_body_truncated: bool,
@@ -1016,6 +1026,40 @@ pub struct TraceRecord {
     pub content_type: Option<String>,
     pub plugin_metadata: Value,
     pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PayloadDirection {
+    RequestBody,
+    ResponseBody,
+}
+
+impl PayloadDirection {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::RequestBody => ARCHIVE_DIRECTION_REQUEST_BODY,
+            Self::ResponseBody => ARCHIVE_DIRECTION_RESPONSE_BODY,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ArchiveSegment {
+    id: Uuid,
+    segment_index: i64,
+    uncompressed_bytes: i64,
+    record_count: i64,
+    storage_backend: String,
+    storage_key: String,
+}
+
+#[derive(Debug)]
+struct ArchiveRecordWrite {
+    direction: PayloadDirection,
+    content_type: Option<String>,
+    uncompressed_offset: i64,
+    uncompressed_len: i64,
+    body_sha256: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2069,11 +2113,16 @@ async fn delete_expired_oauth_states(
     Ok(result.rows_affected())
 }
 
-pub fn compress(data: &[u8]) -> anyhow::Result<Vec<u8>> {
+#[cfg(test)]
+fn compress(data: &[u8]) -> anyhow::Result<Vec<u8>> {
+    compress_with_level(data, 3)
+}
+
+fn compress_with_level(data: &[u8], level: i32) -> anyhow::Result<Vec<u8>> {
     if data.is_empty() {
         return Ok(Vec::new());
     }
-    Ok(zstd::stream::encode_all(data, 3)?)
+    Ok(zstd::stream::encode_all(data, level)?)
 }
 
 pub fn decompress_with_limit(data: &[u8], limit: usize) -> anyhow::Result<Vec<u8>> {
@@ -2095,8 +2144,545 @@ pub fn decompress_with_limit(data: &[u8], limit: usize) -> anyhow::Result<Vec<u8
     Ok(output)
 }
 
+async fn archive_trace_payloads(
+    tx: &mut Transaction<'_, Postgres>,
+    archive: &ArchiveConfig,
+    trace: &TraceRecord,
+) -> anyhow::Result<()> {
+    let prepared = prepare_archive_records(trace)?;
+    if prepared.is_empty() {
+        return Ok(());
+    }
+    let append_bytes = prepared
+        .iter()
+        .try_fold(0usize, |total, record| {
+            total.checked_add(record.frame.len())
+        })
+        .ok_or_else(|| anyhow::anyhow!("archive segment append is too large"))?;
+    if prepared.len() > 1 && append_bytes > archive.segment_uncompressed_bytes {
+        for record in prepared {
+            archive_prepared_payloads(tx, archive, trace, vec![record]).await?;
+        }
+        return Ok(());
+    }
+
+    archive_prepared_payloads(tx, archive, trace, prepared).await
+}
+
+async fn archive_prepared_payloads(
+    tx: &mut Transaction<'_, Postgres>,
+    archive: &ArchiveConfig,
+    trace: &TraceRecord,
+    prepared: Vec<PreparedArchiveRecord>,
+) -> anyhow::Result<()> {
+    if prepared.is_empty() {
+        return Ok(());
+    }
+
+    let lock_key = trace
+        .session_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| trace.id.to_string());
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(lock_key)
+        .execute(&mut **tx)
+        .await?;
+
+    let mut segment = load_open_archive_segment(tx, trace.session_id).await?;
+    let mut existing_uncompressed = match segment.as_ref() {
+        Some(segment) if segment.uncompressed_bytes > 0 => {
+            load_archive_segment_uncompressed(tx, archive, segment).await?
+        }
+        _ => Vec::new(),
+    };
+
+    let append_bytes = prepared
+        .iter()
+        .try_fold(0usize, |total, record| {
+            total.checked_add(record.frame.len())
+        })
+        .ok_or_else(|| anyhow::anyhow!("archive segment append is too large"))?;
+    let target_segment_bytes = archive.segment_uncompressed_bytes;
+    if !existing_uncompressed.is_empty()
+        && existing_uncompressed
+            .len()
+            .checked_add(append_bytes)
+            .is_none_or(|bytes| bytes > target_segment_bytes)
+        && let Some(open_segment) = segment.take()
+    {
+        seal_archive_segment(tx, open_segment.id).await?;
+        existing_uncompressed.clear();
+    }
+
+    let (segment_id, segment_index, storage_key, existing_record_count) = match segment.as_ref() {
+        Some(segment) => (
+            segment.id,
+            segment.segment_index,
+            segment.storage_key.clone(),
+            segment.record_count,
+        ),
+        None => {
+            let segment_id = Uuid::new_v4();
+            let segment_index = next_archive_segment_index(tx, trace.session_id).await?;
+            (
+                segment_id,
+                segment_index,
+                archive_storage_key(trace.session_id, segment_id, segment_index),
+                0,
+            )
+        }
+    };
+
+    let mut writes = Vec::with_capacity(prepared.len());
+    for record in prepared {
+        let offset = usize_to_i64_checked(existing_uncompressed.len(), "archive segment offset")?;
+        let uncompressed_len = record.uncompressed_len;
+        existing_uncompressed.extend_from_slice(&record.frame);
+        writes.push(ArchiveRecordWrite {
+            direction: record.direction,
+            content_type: record.content_type,
+            uncompressed_offset: offset,
+            uncompressed_len,
+            body_sha256: record.body_sha256,
+        });
+    }
+
+    let compressed = compress_with_level(&existing_uncompressed, archive.compression_level)?;
+    let checksum = sha256_hex(&compressed);
+    let (storage_backend, storage_key) =
+        persist_archive_segment(tx, archive, segment_id, &storage_key, &compressed).await?;
+    let uncompressed_bytes =
+        usize_to_i64_checked(existing_uncompressed.len(), "archive segment size")?;
+    let compressed_bytes = usize_to_i64_checked(compressed.len(), "archive compressed size")?;
+    let record_count = existing_record_count
+        .checked_add(i64::try_from(writes.len()).context("archive record count overflow")?)
+        .ok_or_else(|| anyhow::anyhow!("archive record count overflow"))?;
+
+    upsert_archive_segment(
+        tx,
+        segment_id,
+        trace.session_id,
+        segment_index,
+        uncompressed_bytes,
+        compressed_bytes,
+        record_count,
+        archive.compression_level,
+        &storage_backend,
+        &storage_key,
+        &checksum,
+    )
+    .await?;
+
+    for (index, write) in writes.into_iter().enumerate() {
+        let record_index = existing_record_count
+            .checked_add(i64::try_from(index).context("archive record index overflow")?)
+            .ok_or_else(|| anyhow::anyhow!("archive record index overflow"))?;
+        insert_archive_record(tx, trace, segment_id, record_index, write).await?;
+    }
+
+    Ok(())
+}
+
+struct PreparedArchiveRecord {
+    direction: PayloadDirection,
+    content_type: Option<String>,
+    uncompressed_len: i64,
+    body_sha256: String,
+    frame: Vec<u8>,
+}
+
+fn prepare_archive_records(trace: &TraceRecord) -> anyhow::Result<Vec<PreparedArchiveRecord>> {
+    Ok(vec![
+        prepare_archive_record(
+            trace.id,
+            PayloadDirection::RequestBody,
+            None,
+            &trace.request_body,
+        )?,
+        prepare_archive_record(
+            trace.id,
+            PayloadDirection::ResponseBody,
+            trace.content_type.clone(),
+            &trace.response_body,
+        )?,
+    ])
+}
+
+fn prepare_archive_record(
+    trace_id: Uuid,
+    direction: PayloadDirection,
+    content_type: Option<String>,
+    body: &[u8],
+) -> anyhow::Result<PreparedArchiveRecord> {
+    let frame = encode_archive_frame(trace_id, direction, content_type.as_deref(), body)?;
+    Ok(PreparedArchiveRecord {
+        direction,
+        content_type,
+        uncompressed_len: usize_to_i64_checked(body.len(), "archive body size")?,
+        body_sha256: sha256_hex(body),
+        frame,
+    })
+}
+
+fn encode_archive_frame(
+    trace_id: Uuid,
+    direction: PayloadDirection,
+    content_type: Option<&str>,
+    body: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    let header = json!({
+        "trace_id": trace_id,
+        "direction": direction.as_str(),
+        "content_type": content_type,
+    });
+    let header = serde_json::to_vec(&header)?;
+    let header_len = u32::try_from(header.len()).context("archive frame header is too large")?;
+    let body_len = u64::try_from(body.len()).context("archive frame body is too large")?;
+    let mut frame = Vec::with_capacity(4 + header.len() + 8 + body.len());
+    frame.extend_from_slice(&header_len.to_be_bytes());
+    frame.extend_from_slice(&header);
+    frame.extend_from_slice(&body_len.to_be_bytes());
+    frame.extend_from_slice(body);
+    Ok(frame)
+}
+
+fn decode_archive_frame_body(segment: &[u8], offset: i64) -> anyhow::Result<Vec<u8>> {
+    if offset < 0 {
+        anyhow::bail!("archive frame offset must not be negative");
+    }
+    let mut cursor = usize::try_from(offset).context("archive frame offset is too large")?;
+    let header_len_end = cursor
+        .checked_add(4)
+        .ok_or_else(|| anyhow::anyhow!("archive frame header length overflows"))?;
+    let header_len_bytes = segment
+        .get(cursor..header_len_end)
+        .ok_or_else(|| anyhow::anyhow!("archive frame header length is out of bounds"))?;
+    let header_len = u32::from_be_bytes(header_len_bytes.try_into().unwrap()) as usize;
+    cursor = header_len_end;
+    let header_end = cursor
+        .checked_add(header_len)
+        .ok_or_else(|| anyhow::anyhow!("archive frame header length overflows"))?;
+    segment
+        .get(cursor..header_end)
+        .ok_or_else(|| anyhow::anyhow!("archive frame header is out of bounds"))?;
+    cursor = header_end;
+    let body_len_end = cursor
+        .checked_add(8)
+        .ok_or_else(|| anyhow::anyhow!("archive frame body length overflows"))?;
+    let body_len_bytes = segment
+        .get(cursor..body_len_end)
+        .ok_or_else(|| anyhow::anyhow!("archive frame body length is out of bounds"))?;
+    let body_len = u64::from_be_bytes(body_len_bytes.try_into().unwrap());
+    let body_len = usize::try_from(body_len).context("archive frame body is too large")?;
+    cursor = body_len_end;
+    let body_end = cursor
+        .checked_add(body_len)
+        .ok_or_else(|| anyhow::anyhow!("archive frame body length overflows"))?;
+    let body = segment
+        .get(cursor..body_end)
+        .ok_or_else(|| anyhow::anyhow!("archive frame body is out of bounds"))?;
+    Ok(body.to_vec())
+}
+
+async fn load_open_archive_segment(
+    tx: &mut Transaction<'_, Postgres>,
+    session_id: Option<Uuid>,
+) -> anyhow::Result<Option<ArchiveSegment>> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, segment_index, uncompressed_bytes, record_count, storage_backend, storage_key
+        FROM payload_archive_segments
+        WHERE (($1::uuid IS NULL AND session_id IS NULL) OR session_id = $1)
+          AND sealed = false
+        ORDER BY segment_index DESC
+        LIMIT 1
+        FOR UPDATE
+        "#,
+    )
+    .bind(session_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    Ok(row.map(|row| ArchiveSegment {
+        id: row.get("id"),
+        segment_index: row.get("segment_index"),
+        uncompressed_bytes: row.get("uncompressed_bytes"),
+        record_count: row.get("record_count"),
+        storage_backend: row.get("storage_backend"),
+        storage_key: row.get("storage_key"),
+    }))
+}
+
+async fn next_archive_segment_index(
+    tx: &mut Transaction<'_, Postgres>,
+    session_id: Option<Uuid>,
+) -> anyhow::Result<i64> {
+    let row = sqlx::query(
+        r#"
+        SELECT COALESCE(MAX(segment_index), -1)::bigint AS max_segment_index
+        FROM payload_archive_segments
+        WHERE (($1::uuid IS NULL AND session_id IS NULL) OR session_id = $1)
+        "#,
+    )
+    .bind(session_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let max_segment_index: i64 = row.get("max_segment_index");
+    max_segment_index
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("archive segment index overflow"))
+}
+
+async fn seal_archive_segment(
+    tx: &mut Transaction<'_, Postgres>,
+    segment_id: Uuid,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE payload_archive_segments
+        SET sealed = true,
+            sealed_at = COALESCE(sealed_at, now()),
+            updated_at = now()
+        WHERE id = $1
+        "#,
+    )
+    .bind(segment_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn load_archive_segment_uncompressed(
+    tx: &mut Transaction<'_, Postgres>,
+    archive: &ArchiveConfig,
+    segment: &ArchiveSegment,
+) -> anyhow::Result<Vec<u8>> {
+    let compressed = match segment.storage_backend.as_str() {
+        "filesystem" => read_archive_file(&archive.filesystem_root, &segment.storage_key)
+            .with_context(|| format!("failed to read archive segment {}", segment.id))?,
+        "postgres" => {
+            let row = sqlx::query(
+                r#"
+                SELECT compressed_payload
+                FROM payload_archive_segment_blobs
+                WHERE segment_id = $1
+                "#,
+            )
+            .bind(segment.id)
+            .fetch_one(&mut **tx)
+            .await?;
+            row.get::<Vec<u8>, _>("compressed_payload")
+        }
+        other => anyhow::bail!("unknown archive storage backend {other:?}"),
+    };
+    let limit = archive_decode_limit(segment.uncompressed_bytes)?;
+    decompress_with_limit(&compressed, limit)
+}
+
+async fn persist_archive_segment(
+    tx: &mut Transaction<'_, Postgres>,
+    archive: &ArchiveConfig,
+    segment_id: Uuid,
+    preferred_storage_key: &str,
+    compressed: &[u8],
+) -> anyhow::Result<(String, String)> {
+    if archive.storage_backend == ArchiveStorageBackend::Filesystem {
+        match write_archive_file(
+            &archive.filesystem_root,
+            preferred_storage_key,
+            segment_id,
+            compressed,
+        ) {
+            Ok(()) => {
+                sqlx::query("DELETE FROM payload_archive_segment_blobs WHERE segment_id = $1")
+                    .bind(segment_id)
+                    .execute(&mut **tx)
+                    .await?;
+                return Ok((
+                    ArchiveStorageBackend::Filesystem.as_str().to_string(),
+                    preferred_storage_key.to_string(),
+                ));
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %segment_id,
+                    error = %error,
+                    "filesystem archive write failed; falling back to postgres"
+                );
+            }
+        }
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO payload_archive_segment_blobs (segment_id, compressed_payload)
+        VALUES ($1, $2)
+        ON CONFLICT (segment_id) DO UPDATE
+        SET compressed_payload = EXCLUDED.compressed_payload
+        "#,
+    )
+    .bind(segment_id)
+    .bind(compressed)
+    .execute(&mut **tx)
+    .await?;
+    Ok((
+        ArchiveStorageBackend::Postgres.as_str().to_string(),
+        segment_id.to_string(),
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn upsert_archive_segment(
+    tx: &mut Transaction<'_, Postgres>,
+    segment_id: Uuid,
+    session_id: Option<Uuid>,
+    segment_index: i64,
+    uncompressed_bytes: i64,
+    compressed_bytes: i64,
+    record_count: i64,
+    compression_level: i32,
+    storage_backend: &str,
+    storage_key: &str,
+    checksum_sha256: &str,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO payload_archive_segments (
+            id, session_id, segment_index, uncompressed_bytes, compressed_bytes, record_count,
+            compression_codec, compression_level, storage_backend, storage_key, checksum_sha256,
+            sealed
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,'zstd',$7,$8,$9,$10,false)
+        ON CONFLICT (id) DO UPDATE
+        SET updated_at = now(),
+            uncompressed_bytes = EXCLUDED.uncompressed_bytes,
+            compressed_bytes = EXCLUDED.compressed_bytes,
+            record_count = EXCLUDED.record_count,
+            compression_codec = EXCLUDED.compression_codec,
+            compression_level = EXCLUDED.compression_level,
+            storage_backend = EXCLUDED.storage_backend,
+            storage_key = EXCLUDED.storage_key,
+            checksum_sha256 = EXCLUDED.checksum_sha256,
+            sealed = false,
+            sealed_at = NULL
+        "#,
+    )
+    .bind(segment_id)
+    .bind(session_id)
+    .bind(segment_index)
+    .bind(uncompressed_bytes)
+    .bind(compressed_bytes)
+    .bind(record_count)
+    .bind(compression_level)
+    .bind(storage_backend)
+    .bind(storage_key)
+    .bind(checksum_sha256)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn insert_archive_record(
+    tx: &mut Transaction<'_, Postgres>,
+    trace: &TraceRecord,
+    segment_id: Uuid,
+    record_index: i64,
+    write: ArchiveRecordWrite,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO payload_archive_records (
+            id, trace_id, session_id, segment_id, record_index, direction, content_type,
+            uncompressed_offset, uncompressed_len, body_sha256, complete
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true)
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(trace.id)
+    .bind(trace.session_id)
+    .bind(segment_id)
+    .bind(record_index)
+    .bind(write.direction.as_str())
+    .bind(&write.content_type)
+    .bind(write.uncompressed_offset)
+    .bind(write.uncompressed_len)
+    .bind(&write.body_sha256)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+fn archive_storage_key(session_id: Option<Uuid>, segment_id: Uuid, segment_index: i64) -> String {
+    let owner = session_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| format!("unscoped/{segment_id}"));
+    format!("{owner}/{segment_index:020}.zst")
+}
+
+fn write_archive_file(
+    root: &Path,
+    storage_key: &str,
+    segment_id: Uuid,
+    compressed: &[u8],
+) -> io::Result<()> {
+    let path = archive_file_path(root, storage_key)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp_path = path.with_extension(format!("zst.tmp-{segment_id}"));
+    fs::write(&tmp_path, compressed)?;
+    fs::rename(tmp_path, path)
+}
+
+fn read_archive_file(root: &Path, storage_key: &str) -> io::Result<Vec<u8>> {
+    fs::read(archive_file_path(root, storage_key)?)
+}
+
+fn archive_file_path(root: &Path, storage_key: &str) -> io::Result<PathBuf> {
+    let key = Path::new(storage_key);
+    if key.is_absolute()
+        || key.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "archive storage key must be a relative path without parent components",
+        ));
+    }
+    Ok(root.join(key))
+}
+
+fn archive_decode_limit(uncompressed_bytes: i64) -> anyhow::Result<usize> {
+    if uncompressed_bytes < 0 {
+        anyhow::bail!("archive segment size must not be negative");
+    }
+    let limit = usize::try_from(uncompressed_bytes).context("archive segment size is too large")?;
+    if limit > MAX_ARCHIVE_SEGMENT_DECODE_BYTES {
+        anyhow::bail!(
+            "archive segment exceeds decode limit of {MAX_ARCHIVE_SEGMENT_DECODE_BYTES} bytes"
+        );
+    }
+    Ok(limit)
+}
+
+fn usize_to_i64_checked(value: usize, label: &str) -> anyhow::Result<i64> {
+    i64::try_from(value).with_context(|| format!("{label} exceeds i64 range"))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
 pub async fn insert_trace(
     pool: &PgPool,
+    archive: &ArchiveConfig,
     mut trace: TraceRecord,
     messages: Vec<ParsedMessage>,
     user_id: Option<String>,
@@ -2145,8 +2731,8 @@ pub async fn insert_trace(
     .bind(trace.bytes_out)
     .bind(&trace.request_headers)
     .bind(&trace.response_headers)
-    .bind(&trace.request_body_compressed)
-    .bind(&trace.response_body_compressed)
+    .bind(Vec::<u8>::new())
+    .bind(Vec::<u8>::new())
     .bind(trace.request_body_bytes)
     .bind(trace.response_body_bytes)
     .bind(trace.request_body_truncated)
@@ -2156,6 +2742,8 @@ pub async fn insert_trace(
     .bind(&trace.tags)
     .execute(&mut *tx)
     .await?;
+
+    archive_trace_payloads(&mut tx, archive, &trace).await?;
 
     update_rollup(&mut tx, &trace).await?;
 
@@ -2487,7 +3075,7 @@ pub async fn request_facets(
 pub async fn get_request(
     pool: &PgPool,
     id: Uuid,
-    body_decode_limit: usize,
+    archive: &ArchiveConfig,
 ) -> anyhow::Result<Option<Value>> {
     let mut tx = begin_api_read_tx(pool).await?;
     let row = sqlx::query(
@@ -2495,8 +3083,8 @@ pub async fn get_request(
         SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
                status, error, request_kind, model, api_key_hash, session_key, session_id,
                ttft_ms, duration_ms, bytes_in, bytes_out, request_headers, response_headers,
-               request_body_compressed, response_body_compressed, request_body_bytes, response_body_bytes,
-               request_body_truncated, response_body_truncated, content_type, plugin_metadata, tags
+               request_body_bytes, response_body_bytes, request_body_truncated, response_body_truncated,
+               content_type, plugin_metadata, tags
         FROM request_traces
         WHERE id = $1
         "#,
@@ -2509,14 +3097,14 @@ pub async fn get_request(
     let Some(row) = row else {
         return Ok(None);
     };
-    let request_body: Vec<u8> = row.get("request_body_compressed");
-    let response_body: Vec<u8> = row.get("response_body_compressed");
-    let request_body =
-        String::from_utf8_lossy(&decompress_with_limit(&request_body, body_decode_limit)?)
-            .to_string();
-    let response_body =
-        String::from_utf8_lossy(&decompress_with_limit(&response_body, body_decode_limit)?)
-            .to_string();
+    let request_body = load_archived_trace_body(pool, archive, id, PayloadDirection::RequestBody)
+        .await?
+        .unwrap_or_default();
+    let response_body = load_archived_trace_body(pool, archive, id, PayloadDirection::ResponseBody)
+        .await?
+        .unwrap_or_default();
+    let request_body = String::from_utf8_lossy(&request_body).to_string();
+    let response_body = String::from_utf8_lossy(&response_body).to_string();
 
     Ok(Some(json!({
         "id": row.get::<Uuid, _>("id"),
@@ -2549,6 +3137,65 @@ pub async fn get_request(
         "plugin_metadata": row.get::<Value, _>("plugin_metadata"),
         "tags": row.get::<Vec<String>, _>("tags"),
     })))
+}
+
+async fn load_archived_trace_body(
+    pool: &PgPool,
+    archive: &ArchiveConfig,
+    trace_id: Uuid,
+    direction: PayloadDirection,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let mut tx = begin_api_read_tx(pool).await?;
+    let row = sqlx::query(
+        r#"
+        SELECT r.uncompressed_offset, r.uncompressed_len, r.body_sha256,
+               s.id AS segment_id, s.uncompressed_bytes, s.storage_backend, s.storage_key,
+               s.checksum_sha256, b.compressed_payload
+        FROM payload_archive_records r
+        JOIN payload_archive_segments s ON s.id = r.segment_id
+        LEFT JOIN payload_archive_segment_blobs b ON b.segment_id = s.id
+        WHERE r.trace_id = $1
+          AND r.direction = $2
+        "#,
+    )
+    .bind(trace_id)
+    .bind(direction.as_str())
+    .fetch_optional(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    let segment_id: Uuid = row.get("segment_id");
+    let storage_backend: String = row.get("storage_backend");
+    let storage_key: String = row.get("storage_key");
+    let compressed = match storage_backend.as_str() {
+        "filesystem" => read_archive_file(&archive.filesystem_root, &storage_key)
+            .with_context(|| format!("failed to read archive segment {segment_id}"))?,
+        "postgres" => row
+            .try_get::<Option<Vec<u8>>, _>("compressed_payload")?
+            .ok_or_else(|| anyhow::anyhow!("archive postgres blob is missing for {segment_id}"))?,
+        other => anyhow::bail!("unknown archive storage backend {other:?}"),
+    };
+    let checksum: String = row.get("checksum_sha256");
+    let actual_checksum = sha256_hex(&compressed);
+    if actual_checksum != checksum {
+        anyhow::bail!("archive segment {segment_id} checksum mismatch");
+    }
+    let uncompressed_bytes: i64 = row.get("uncompressed_bytes");
+    let segment = decompress_with_limit(&compressed, archive_decode_limit(uncompressed_bytes)?)?;
+    let body = decode_archive_frame_body(&segment, row.get("uncompressed_offset"))?;
+    let expected_len: i64 = row.get("uncompressed_len");
+    if usize_to_i64_checked(body.len(), "archive body size")? != expected_len {
+        anyhow::bail!("archive body length mismatch for trace {trace_id}");
+    }
+    let body_sha256: String = row.get("body_sha256");
+    if sha256_hex(&body) != body_sha256 {
+        anyhow::bail!("archive body checksum mismatch for trace {trace_id}");
+    }
+    Ok(Some(body))
 }
 
 fn request_summary_row(row: sqlx::postgres::PgRow) -> Value {
@@ -4935,6 +5582,32 @@ mod tests {
     }
 
     #[test]
+    fn archive_frame_round_trips_body() {
+        let trace_id = Uuid::new_v4();
+        let body = br#"{"messages":[{"role":"user","content":"hello"}]}"#;
+        let frame = encode_archive_frame(
+            trace_id,
+            PayloadDirection::RequestBody,
+            Some("application/json"),
+            body,
+        )
+        .unwrap();
+
+        let decoded = decode_archive_frame_body(&frame, 0).unwrap();
+
+        assert_eq!(decoded, body);
+    }
+
+    #[test]
+    fn archive_file_path_rejects_unsafe_keys() {
+        let root = Path::new("spool/archive");
+
+        assert!(archive_file_path(root, "session/00000000000000000000.zst").is_ok());
+        assert!(archive_file_path(root, "../escape.zst").is_err());
+        assert!(archive_file_path(root, "/tmp/escape.zst").is_err());
+    }
+
+    #[test]
     fn request_list_page_uses_safe_defaults() {
         let page = RequestListPage::from_query(None, None);
 
@@ -5646,6 +6319,9 @@ mod tests {
     fn storage_summary_query_uses_fixed_catalog_allowlist_without_sensitive_columns() {
         for relation in [
             "request_traces",
+            "payload_archive_segments",
+            "payload_archive_segment_blobs",
+            "payload_archive_records",
             "trace_rollups_minute",
             "trace_sessions",
             "session_messages",

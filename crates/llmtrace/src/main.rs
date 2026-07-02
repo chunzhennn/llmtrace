@@ -91,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
     let (recorder, pipeline) = TraceRecorder::spawn(
         pool.clone(),
         plugins.clone(),
-        config.redaction.body_redaction,
+        config.archive.clone(),
         config.storage.trace_queue_capacity,
         config.storage.trace_worker_count,
         runtime_metrics.clone(),

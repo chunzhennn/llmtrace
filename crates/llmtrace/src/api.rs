@@ -16,7 +16,7 @@ use crate::plugins::PluginStatus;
 use crate::redaction;
 use crate::state::AppState;
 use crate::storage;
-use crate::types::{BodyRedaction, PluginHook};
+use crate::types::PluginHook;
 
 const MAX_REQUEST_SEARCH_BYTES: usize = 512;
 const MAX_REQUEST_FILTER_BYTES: usize = 1024;
@@ -477,7 +477,7 @@ async fn slow_requests(
 }
 
 async fn get_request(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
-    match storage::get_request(&state.pool, id, state.config.proxy.max_body_capture_bytes).await {
+    match storage::get_request(&state.pool, id, &state.config.archive).await {
         Ok(Some(value)) => Json(value).into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -700,7 +700,6 @@ fn build_redaction_preview(
 ) -> Result<Value, String> {
     Ok(json!({
         "redaction": {
-            "body_redaction": body_redaction_label(config.redaction.body_redaction),
             "store_header_hash": config.redaction.store_header_hash,
             "sensitive_header_count": config.redaction.sensitive_headers.len(),
             "upstream_header": &config.proxy.upstream_header,
@@ -714,7 +713,7 @@ fn build_redaction_preview(
         },
         "headers": redaction_preview_headers(config, payload.headers)?,
         "uri": redaction_preview_uri(payload.uri)?,
-        "body": redaction_preview_body(payload.body, config.redaction.body_redaction)?,
+        "body": redaction_preview_body(payload.body)?,
     }))
 }
 
@@ -801,7 +800,7 @@ fn redaction_preview_uri(uri: Option<String>) -> Result<Value, String> {
     }))
 }
 
-fn redaction_preview_body(body: Option<String>, mode: BodyRedaction) -> Result<Value, String> {
+fn redaction_preview_body(body: Option<String>) -> Result<Value, String> {
     let Some(body) = body else {
         return Ok(json!({
             "provided": false,
@@ -814,17 +813,13 @@ fn redaction_preview_body(body: Option<String>, mode: BodyRedaction) -> Result<V
         ));
     }
 
-    let redacted = redaction::redact_body(body.as_bytes(), mode);
-    let output = redacted.as_ref();
-    let changed = output != body.as_bytes();
-
     Ok(json!({
         "provided": true,
         "input_bytes": body.len(),
-        "output_bytes": output.len(),
-        "changed": changed,
-        "dropped": !body.is_empty() && output.is_empty(),
-        "redacted": String::from_utf8_lossy(output),
+        "output_bytes": body.len(),
+        "changed": false,
+        "dropped": false,
+        "redacted": body,
     }))
 }
 
@@ -1183,10 +1178,16 @@ fn config_summary(config: &Config) -> Value {
             "allow_upstreams_count": config.proxy.allow_upstreams.len(),
             "upstream_header": &config.proxy.upstream_header,
             "timeout_secs": config.proxy.timeout_secs,
-            "max_body_capture_bytes": config.proxy.max_body_capture_bytes,
             "max_request_body_bytes": config.proxy.max_request_body_bytes,
+            "max_response_body_bytes": config.proxy.max_response_body_bytes,
             "max_websocket_message_bytes": config.proxy.max_websocket_message_bytes,
             "max_websocket_session_bytes": config.proxy.max_websocket_session_bytes,
+        },
+        "archive": {
+            "storage_backend": config.archive.storage_backend.as_str(),
+            "filesystem_root": &config.archive.filesystem_root,
+            "segment_uncompressed_bytes": config.archive.segment_uncompressed_bytes,
+            "compression_level": config.archive.compression_level,
         },
         "storage": {
             "max_connections": config.storage.max_connections,
@@ -1230,7 +1231,7 @@ fn config_summary(config: &Config) -> Value {
         "redaction": {
             "sensitive_header_count": config.redaction.sensitive_headers.len(),
             "store_header_hash": config.redaction.store_header_hash,
-            "body_redaction": body_redaction_label(config.redaction.body_redaction),
+            "body_storage": "unredacted_archive",
         },
         "plugins": {
             "configured_count": config.plugins.len(),
@@ -1286,14 +1287,6 @@ fn security_posture(config: &Config) -> Value {
         "warn",
         "session cookies are marked Secure",
         "session cookies are not marked Secure; enable auth.cookie_secure when browser traffic uses HTTPS",
-    );
-    push_posture_check(
-        &mut checks,
-        "body_redaction",
-        config.redaction.body_redaction != BodyRedaction::Disabled,
-        "warn",
-        "stored bodies are redacted before persistence",
-        "redaction.body_redaction is disabled; use drop or json_secrets when traces may contain sensitive payloads",
     );
     push_posture_check(
         &mut checks,
@@ -1445,14 +1438,6 @@ fn local_admin_configured(config: &Config) -> bool {
             .is_some_and(|value| !value.trim().is_empty())
 }
 
-fn body_redaction_label(value: BodyRedaction) -> &'static str {
-    match value {
-        BodyRedaction::Disabled => "disabled",
-        BodyRedaction::Drop => "drop",
-        BodyRedaction::JsonSecrets => "json_secrets",
-    }
-}
-
 fn plugin_status_summary(statuses: &[PluginStatus]) -> Value {
     let loaded_count = statuses.iter().filter(|status| status.loaded).count();
     json!({
@@ -1542,8 +1527,8 @@ mod tests {
                 allow_upstreams: vec!["api.openai.com".to_string()],
                 upstream_header: "x-llmtrace-upstream".to_string(),
                 timeout_secs: 120,
-                max_body_capture_bytes: 4096,
                 max_request_body_bytes: 8192,
+                max_response_body_bytes: 4096,
                 max_websocket_message_bytes: 16384,
                 max_websocket_session_bytes: 32768,
             },
@@ -1552,6 +1537,7 @@ mod tests {
                 retention_days: Some(30),
                 ..Default::default()
             },
+            archive: Default::default(),
             auth: crate::config::AuthConfig {
                 cookie_secure: true,
                 local_admin: crate::config::LocalAdminConfig {
@@ -1575,10 +1561,7 @@ mod tests {
             observability: crate::config::ObservabilityConfig {
                 metrics_bearer_token: Some("metrics-secret".to_string()),
             },
-            redaction: crate::config::RedactionConfig {
-                body_redaction: BodyRedaction::JsonSecrets,
-                ..Default::default()
-            },
+            redaction: Default::default(),
             plugins: vec![PluginConfig {
                 name: "classifier".to_string(),
                 wasm_path: "/secret/plugin/classifier.wasm".into(),
@@ -1608,7 +1591,8 @@ mod tests {
             summary["observability"]["metrics_bearer_token_configured"],
             true
         );
-        assert_eq!(summary["redaction"]["body_redaction"], "json_secrets");
+        assert_eq!(summary["archive"]["storage_backend"], "filesystem");
+        assert_eq!(summary["redaction"]["body_storage"], "unredacted_archive");
         assert_eq!(summary["plugins"]["configured_count"], 1);
 
         let serialized = serde_json::to_string(&summary).unwrap();
@@ -1661,10 +1645,6 @@ mod tests {
             },
             observability: crate::config::ObservabilityConfig {
                 metrics_bearer_token: Some("metrics-secret".to_string()),
-            },
-            redaction: crate::config::RedactionConfig {
-                body_redaction: BodyRedaction::JsonSecrets,
-                ..Default::default()
             },
             ..Default::default()
         };
@@ -1759,9 +1739,8 @@ mod tests {
     }
 
     #[test]
-    fn redaction_preview_applies_configured_header_uri_and_body_redaction() {
+    fn redaction_preview_applies_header_and_uri_redaction_and_leaves_body_unchanged() {
         let mut config = Config::default();
-        config.redaction.body_redaction = BodyRedaction::JsonSecrets;
         config.redaction.store_header_hash = true;
 
         let mut headers = std::collections::BTreeMap::new();
@@ -1790,7 +1769,6 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(preview["redaction"]["body_redaction"], "json_secrets");
         assert_eq!(preview["headers"]["provided"], true);
         assert_eq!(
             preview["headers"]["redacted"]["authorization"]["redacted"],
@@ -1818,16 +1796,15 @@ mod tests {
             "https://api.example.com/v1?api_key=REDACTED&n=REDACTED"
         );
 
-        let redacted_body: Value =
+        let preview_body: Value =
             serde_json::from_str(preview["body"]["redacted"].as_str().unwrap()).unwrap();
-        assert_eq!(redacted_body["api_key"], "[redacted]");
-        assert_eq!(redacted_body["messages"][0]["content"], "hello");
-        assert_eq!(preview["body"]["changed"], true);
+        assert_eq!(preview_body["api_key"], "sk-body-secret");
+        assert_eq!(preview_body["messages"][0]["content"], "hello");
+        assert_eq!(preview["body"]["changed"], false);
 
         let serialized = serde_json::to_string(&preview).unwrap();
         for secret in [
             "sk-redaction-preview",
-            "sk-body-secret",
             "proxy-user:proxy-pass",
             "upstream-secret",
             "url-user:url-pass",
@@ -1841,9 +1818,8 @@ mod tests {
     }
 
     #[test]
-    fn redaction_preview_body_reports_drop_mode() {
-        let mut config = Config::default();
-        config.redaction.body_redaction = BodyRedaction::Drop;
+    fn redaction_preview_body_reports_unmodified_payload() {
+        let config = Config::default();
 
         let preview = build_redaction_preview(
             &config,
@@ -1855,12 +1831,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(preview["redaction"]["body_redaction"], "drop");
         assert_eq!(preview["body"]["provided"], true);
-        assert_eq!(preview["body"]["changed"], true);
-        assert_eq!(preview["body"]["dropped"], true);
-        assert_eq!(preview["body"]["output_bytes"], 0);
-        assert_eq!(preview["body"]["redacted"], "");
+        assert_eq!(preview["body"]["changed"], false);
+        assert_eq!(preview["body"]["dropped"], false);
+        assert_eq!(preview["body"]["output_bytes"], "secret body".len());
+        assert_eq!(preview["body"]["redacted"], "secret body");
     }
 
     #[test]

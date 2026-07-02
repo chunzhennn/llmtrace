@@ -99,13 +99,3 @@ impl fmt::Display for LoginMethod {
         formatter.write_str(self.as_str())
     }
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BodyRedaction {
-    #[serde(rename = "disabled")]
-    Disabled,
-    #[serde(rename = "drop")]
-    Drop,
-    #[serde(rename = "json_secrets")]
-    JsonSecrets,
-}
