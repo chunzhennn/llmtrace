@@ -556,42 +556,6 @@ const SLOW_REQUESTS_SQL: &str = r#"
         ORDER BY duration_ms DESC, started_at DESC, id DESC
         LIMIT $3 OFFSET $4
         "#;
-const DELETE_REQUEST_TRACE_SQL: &str = r#"
-        DELETE FROM request_traces
-        WHERE id = $1
-        RETURNING id,
-                  started_at,
-                  status,
-                  error,
-                  request_kind,
-                  model,
-                  upstream_host,
-                  session_id,
-                  request_body_bytes,
-                  response_body_bytes,
-                  duration_ms,
-                  ttft_ms
-        "#;
-const DECREMENT_REQUEST_ROLLUP_SQL: &str = r#"
-        UPDATE trace_rollups_minute
-        SET total = GREATEST(total - 1, 0),
-            errors = GREATEST(errors - $2, 0),
-            captured_bytes = GREATEST(captured_bytes - $3, 0),
-            duration_count = GREATEST(duration_count - $4, 0),
-            duration_sum_ms = GREATEST(duration_sum_ms - $5, 0),
-            ttft_count = GREATEST(ttft_count - $6, 0),
-            ttft_sum_ms = GREATEST(ttft_sum_ms - $7, 0)
-        WHERE bucket = date_trunc('minute', $1::timestamptz)
-        "#;
-const DELETE_EMPTY_TRACE_SESSION_SQL: &str = r#"
-        DELETE FROM trace_sessions s
-        WHERE s.id = $1
-          AND NOT EXISTS (
-              SELECT 1
-              FROM request_traces r
-              WHERE r.session_id = s.id
-          )
-        "#;
 const DATA_OVERVIEW_ROLLUPS_SQL: &str = r#"
         SELECT COALESCE(SUM(total), 0)::bigint AS request_count,
                COALESCE(SUM(errors), 0)::bigint AS error_count,
@@ -2461,77 +2425,6 @@ pub async fn slow_requests(
             "next_offset": page.next_offset(has_more),
         },
     }))
-}
-
-pub async fn delete_request_trace(pool: &PgPool, id: Uuid) -> anyhow::Result<Option<Value>> {
-    let mut tx = pool.begin().await?;
-    let row = sqlx::query(DELETE_REQUEST_TRACE_SQL)
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?;
-    let Some(row) = row else {
-        tx.commit().await?;
-        return Ok(None);
-    };
-
-    let started_at = row.get::<DateTime<Utc>, _>("started_at");
-    let status = row.try_get::<Option<i32>, _>("status").ok().flatten();
-    let error = row.try_get::<Option<String>, _>("error").ok().flatten();
-    let session_id = row.try_get::<Option<Uuid>, _>("session_id").ok().flatten();
-    let duration_ms = row.try_get::<Option<i64>, _>("duration_ms").ok().flatten();
-    let ttft_ms = row.try_get::<Option<i64>, _>("ttft_ms").ok().flatten();
-    let request_body_bytes = nonnegative_i64(row.get::<i64, _>("request_body_bytes"));
-    let response_body_bytes = nonnegative_i64(row.get::<i64, _>("response_body_bytes"));
-    let captured_bytes = saturating_add_i64(request_body_bytes, response_body_bytes);
-    let error_count = i64::from(error.is_some() || status.is_some_and(|status| status >= 500));
-    let duration_count = i64::from(duration_ms.is_some());
-    let duration_sum_ms = duration_ms.map(nonnegative_i64).unwrap_or_default();
-    let ttft_count = i64::from(ttft_ms.is_some());
-    let ttft_sum_ms = ttft_ms.map(nonnegative_i64).unwrap_or_default();
-
-    let rollup_updated = sqlx::query(DECREMENT_REQUEST_ROLLUP_SQL)
-        .bind(started_at)
-        .bind(error_count)
-        .bind(captured_bytes)
-        .bind(duration_count)
-        .bind(duration_sum_ms)
-        .bind(ttft_count)
-        .bind(ttft_sum_ms)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected()
-        > 0;
-
-    let empty_session_deleted = if let Some(session_id) = session_id {
-        sqlx::query(DELETE_EMPTY_TRACE_SESSION_SQL)
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected()
-            > 0
-    } else {
-        false
-    };
-
-    tx.commit().await?;
-
-    Ok(Some(json!({
-        "id": row.get::<Uuid, _>("id"),
-        "started_at": started_at,
-        "status": status,
-        "had_error": error_count == 1,
-        "request_kind": row.get::<String, _>("request_kind"),
-        "model": row.try_get::<Option<String>, _>("model").ok().flatten(),
-        "upstream_host": row.try_get::<Option<String>, _>("upstream_host").ok().flatten(),
-        "session_id": session_id,
-        "request_body_bytes": request_body_bytes,
-        "response_body_bytes": response_body_bytes,
-        "captured_bytes": captured_bytes,
-        "duration_ms": duration_ms,
-        "ttft_ms": ttft_ms,
-        "rollup_updated": rollup_updated,
-        "empty_session_deleted": empty_session_deleted,
-    })))
 }
 
 pub async fn request_facets(
@@ -6130,51 +6023,6 @@ mod tests {
         assert!(SLOW_REQUESTS_SQL.contains("plugin_metadata, tags"));
         assert!(!SLOW_REQUESTS_SQL.contains("request_headers"));
         assert!(!SLOW_REQUESTS_SQL.contains("response_headers"));
-    }
-
-    #[test]
-    fn delete_request_trace_queries_remove_trace_and_reconcile_rollup_safely() {
-        assert!(DELETE_REQUEST_TRACE_SQL.contains("DELETE FROM request_traces"));
-        assert!(DELETE_REQUEST_TRACE_SQL.contains("WHERE id = $1"));
-        assert!(DELETE_REQUEST_TRACE_SQL.contains("RETURNING id"));
-        assert!(DELETE_REQUEST_TRACE_SQL.contains("started_at"));
-        assert!(DELETE_REQUEST_TRACE_SQL.contains("request_body_bytes"));
-        assert!(DELETE_REQUEST_TRACE_SQL.contains("response_body_bytes"));
-        assert!(!DELETE_REQUEST_TRACE_SQL.contains("original_uri"));
-        assert!(!DELETE_REQUEST_TRACE_SQL.contains("upstream_url"));
-        assert!(!DELETE_REQUEST_TRACE_SQL.contains("api_key_hash"));
-        assert!(!DELETE_REQUEST_TRACE_SQL.contains("request_headers"));
-        assert!(!DELETE_REQUEST_TRACE_SQL.contains("response_headers"));
-        assert!(!DELETE_REQUEST_TRACE_SQL.contains("request_body_compressed"));
-        assert!(!DELETE_REQUEST_TRACE_SQL.contains("response_body_compressed"));
-        assert!(!DELETE_REQUEST_TRACE_SQL.contains("plugin_metadata"));
-        assert!(!DELETE_REQUEST_TRACE_SQL.contains("tags"));
-
-        assert!(DECREMENT_REQUEST_ROLLUP_SQL.contains("UPDATE trace_rollups_minute"));
-        assert!(DECREMENT_REQUEST_ROLLUP_SQL.contains("total = GREATEST(total - 1, 0)"));
-        assert!(DECREMENT_REQUEST_ROLLUP_SQL.contains("errors = GREATEST(errors - $2, 0)"));
-        assert!(
-            DECREMENT_REQUEST_ROLLUP_SQL
-                .contains("captured_bytes = GREATEST(captured_bytes - $3, 0)")
-        );
-        assert!(
-            DECREMENT_REQUEST_ROLLUP_SQL
-                .contains("duration_count = GREATEST(duration_count - $4, 0)")
-        );
-        assert!(
-            DECREMENT_REQUEST_ROLLUP_SQL
-                .contains("duration_sum_ms = GREATEST(duration_sum_ms - $5, 0)")
-        );
-        assert!(
-            DECREMENT_REQUEST_ROLLUP_SQL
-                .contains("WHERE bucket = date_trunc('minute', $1::timestamptz)")
-        );
-
-        assert!(DELETE_EMPTY_TRACE_SESSION_SQL.contains("DELETE FROM trace_sessions s"));
-        assert!(DELETE_EMPTY_TRACE_SESSION_SQL.contains("WHERE s.id = $1"));
-        assert!(DELETE_EMPTY_TRACE_SESSION_SQL.contains("NOT EXISTS"));
-        assert!(DELETE_EMPTY_TRACE_SESSION_SQL.contains("FROM request_traces r"));
-        assert!(DELETE_EMPTY_TRACE_SESSION_SQL.contains("WHERE r.session_id = s.id"));
     }
 
     #[test]
