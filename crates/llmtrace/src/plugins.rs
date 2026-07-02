@@ -27,9 +27,8 @@ pub struct HookInput {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HookOutput {
-    #[serde(default)]
-    pub metadata: Map<String, Value>,
     #[serde(default)]
     pub custom_fields: Map<String, Value>,
     #[serde(default)]
@@ -160,11 +159,9 @@ impl PluginManager {
 
 impl PluginEffects {
     fn merge(&mut self, plugin_name: &str, output: HookOutput) {
-        let mut metadata = output.metadata;
-        metadata.extend(output.custom_fields);
-        if !metadata.is_empty() {
+        if !output.custom_fields.is_empty() {
             self.metadata
-                .insert(plugin_name.to_string(), Value::Object(metadata));
+                .insert(plugin_name.to_string(), Value::Object(output.custom_fields));
         }
         self.tags.extend(output.tags);
         self.warnings.extend(output.warnings);
@@ -279,6 +276,7 @@ impl Drop for EpochTicker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn unpack_plugin_output_treats_zero_pointer_or_length_as_no_output() {
@@ -316,6 +314,43 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("invalid output length"));
+    }
+
+    #[test]
+    fn hook_output_accepts_custom_fields() {
+        let output: HookOutput = serde_json::from_value(json!({
+            "custom_fields": {
+                "customer_tier": "enterprise",
+                "billing": {"plan": "annual"}
+            },
+            "tags": ["paid"]
+        }))
+        .unwrap();
+        let mut effects = PluginEffects::default();
+
+        effects.merge("api-key-user-mapper", output);
+
+        assert_eq!(
+            effects.metadata.get("api-key-user-mapper"),
+            Some(&json!({
+                "customer_tier": "enterprise",
+                "billing": {"plan": "annual"}
+            }))
+        );
+        assert_eq!(effects.tags, vec!["paid"]);
+    }
+
+    #[test]
+    fn hook_output_rejects_legacy_metadata_field() {
+        let error = serde_json::from_value::<HookOutput>(json!({
+            "metadata": {
+                "customer_tier": "enterprise"
+            }
+        }))
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("unknown field `metadata`"));
     }
 
     fn pack_output(ptr: i32, len: i32) -> i64 {

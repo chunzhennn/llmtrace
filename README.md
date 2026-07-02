@@ -283,7 +283,7 @@ The proxy does not forward the inbound `Host`, `Cookie`, or `x-llmtrace-*` contr
 
 ## WASM plugin custom fields
 
-WASM hook functions receive a JSON `HookInput` and may return a JSON object with trace enrichment fields. Custom fields can be returned as either `custom_fields` or the older `metadata` field:
+WASM hook functions receive a JSON `HookInput` and may return a JSON object with trace enrichment fields. Custom trace fields must be returned under `custom_fields`; unknown output fields are rejected so plugin schema mistakes fail visibly during trace enrichment:
 
 ```json
 {
