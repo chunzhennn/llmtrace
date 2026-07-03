@@ -1,0 +1,27 @@
+node_modules
+
+# Output
+.output
+.vercel
+.netlify
+.wrangler
+/.svelte-kit
+# Ignore the built SPA, but keep a committed placeholder index.html so the
+# rust-embed folder (crates/llmtrace/ui/build) exists and cargo build/test/clippy
+# succeed without a Node build. Local/CI builds overwrite it with real assets.
+/build/*
+!/build/index.html
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+!.env.example
+!.env.test
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*

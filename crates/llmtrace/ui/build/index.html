@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en" class="dark">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="robots" content="noindex, nofollow" />
+		<title>llmtrace</title>
+		<script>
+			// Apply the persisted theme before first paint to avoid a flash.
+			try {
+				const stored = localStorage.getItem('llmtrace:theme');
+				const dark = stored ? stored === 'dark' : true;
+				document.documentElement.classList.toggle('dark', dark);
+			} catch (e) {
+				// ignore storage access errors
+			}
+		</script>
+		<link href="/ui/_app/immutable/entry/start.Bs1HXcac.js" rel="modulepreload">
+		<link href="/ui/_app/immutable/chunks/BlHRLY1K.js" rel="modulepreload">
+		<link href="/ui/_app/immutable/chunks/Bj9ySJ__.js" rel="modulepreload">
+		<link href="/ui/_app/immutable/entry/app.DJwicjn4.js" rel="modulepreload">
+		<link href="/ui/_app/immutable/chunks/DYl5dUZ5.js" rel="modulepreload">
+		<link href="/ui/_app/immutable/chunks/xihTtKlq.js" rel="modulepreload">
+		<link href="/ui/_app/immutable/nodes/0.DmhKZI58.js" rel="modulepreload">
+		<link href="/ui/_app/immutable/chunks/BRjOA8GG.js" rel="modulepreload">
+		<link href="/ui/_app/immutable/chunks/D45HA-bl.js" rel="modulepreload">
+		
+		<link href="/ui/_app/immutable/assets/0.zbMLc8gT.css" rel="stylesheet">
+	</head>
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">
+			<script>
+				{
+					__sveltekit_le6esx = {
+						base: "/ui",
+						assets: "/ui"
+					};
+
+					const element = document.currentScript.parentElement;
+
+					Promise.all([
+						import("/ui/_app/immutable/entry/start.Bs1HXcac.js"),
+						import("/ui/_app/immutable/entry/app.DJwicjn4.js")
+					]).then(([kit, app]) => {
+						kit.start(app, element);
+					});
+				}
+			</script>
+		</div>
+	</body>
+</html>
