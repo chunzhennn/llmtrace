@@ -2,6 +2,7 @@
 .agents/
 .codex/
 .cargo/
+.cursor/
 target/
 crates/llmtrace/ui/node_modules/
 
