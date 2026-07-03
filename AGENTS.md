@@ -51,7 +51,7 @@ Keep module boundaries narrow. Avoid broad refactors in `proxy.rs`, `storage.rs`
 
 ## Proxy, Auth, and Plugin Notes
 
-Non-`/api` and non-`/ui` routes fall through to the proxy. `/api/auth/*` is public for login/logout/session/OAuth flows; other `/api/*` routes are protected by `auth::require_auth`. Per-request upstream overrides use the configured `proxy.upstream_header` (`x-llmtrace-upstream` by default) and should continue to respect `proxy.allow_upstreams`.
+Non-`/api` and non-`/ui` routes fall through to the proxy only when the request path matches one of `proxy.path_prefixes`; other paths return `404` locally without upstream forwarding or trace recording. `/api/auth/*` is public for login/logout/session/OAuth flows; other `/api/*` routes are protected by `auth::require_auth`. Per-request upstream overrides use the configured `proxy.upstream_header` (`x-llmtrace-upstream` by default) and should continue to respect `proxy.allow_upstreams`. Upstream override headers do not bypass `proxy.path_prefixes`.
 
 WASM plugins are loaded through `plugins.rs` and invoked asynchronously from `trace.rs`; they enrich traces only and must not mutate live traffic. The ABI expects exported hook functions named `llmtrace_on_request_start`, `llmtrace_on_response_headers`, and/or `llmtrace_on_response_end`, plus `memory` and `llmtrace_alloc`. Plugin output may use `custom_fields` or legacy `metadata`; persisted fields are nested under the plugin name in `request_traces.plugin_metadata`.
 

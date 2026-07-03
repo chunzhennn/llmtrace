@@ -13,6 +13,9 @@ default_upstream = "https://api.openai.com"
 # Supported entries include "api.openai.com", "api.openai.com:443",
 # "https://api.openai.com", and "https://api.example.com/v1".
 allow_upstreams = []
+# Only incoming paths matching one of these prefixes are proxied to upstream.
+# Other paths (for example /favicon.ico or /.well-known/*) return 404 locally.
+path_prefixes = ["/v1"]
 upstream_header = "x-llmtrace-upstream"
 timeout_secs = 300
 # Live proxy traffic limits. Oversized HTTP request bodies are rejected with 413.

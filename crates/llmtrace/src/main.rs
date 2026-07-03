@@ -64,6 +64,7 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let config = Config::load(args.config.as_deref()).context("failed to load config")?;
     config.validate().context("invalid config")?;
+    config.log_startup_warnings();
     if args.check_config {
         tracing::info!("config is valid");
         return Ok(());

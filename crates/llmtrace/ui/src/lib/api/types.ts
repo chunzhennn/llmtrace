@@ -574,6 +574,7 @@ export interface RuntimeConfig {
 		default_upstream: string;
 		allow_upstreams: string[];
 		allow_upstreams_count: number;
+		path_prefixes: string[];
 		upstream_header: string;
 		timeout_secs: number;
 		max_request_body_bytes: number;

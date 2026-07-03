@@ -65,6 +65,7 @@ pub struct ServerConfig {
 pub struct ProxyConfig {
     pub default_upstream: String,
     pub allow_upstreams: Vec<String>,
+    pub path_prefixes: Vec<String>,
     pub upstream_header: String,
     pub timeout_secs: u64,
     pub max_request_body_bytes: usize,
@@ -178,6 +179,11 @@ pub struct UpstreamAllowlist {
     entries: Vec<UpstreamAllowEntry>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct PathPrefixAllowlist {
+    prefixes: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeploymentMode {
@@ -260,6 +266,10 @@ impl ProxyConfig {
     pub fn upstream_allowlist(&self) -> Result<UpstreamAllowlist, String> {
         UpstreamAllowlist::parse(&self.allow_upstreams)
     }
+
+    pub fn path_prefix_allowlist(&self) -> Result<PathPrefixAllowlist, String> {
+        PathPrefixAllowlist::parse(&self.path_prefixes)
+    }
 }
 
 impl UpstreamAllowlist {
@@ -284,6 +294,26 @@ impl UpstreamAllowlist {
         }
 
         self.entries.iter().any(|entry| entry.matches(upstream_url))
+    }
+}
+
+impl PathPrefixAllowlist {
+    fn parse(entries: &[String]) -> Result<Self, String> {
+        let prefixes = entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                parse_proxy_path_prefix(&format!("proxy.path_prefixes[{index}]"), entry)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Self { prefixes })
+    }
+
+    pub fn allows(&self, path: &str) -> bool {
+        self.prefixes
+            .iter()
+            .any(|prefix| path_prefix_matches(prefix, path))
     }
 }
 
@@ -332,6 +362,12 @@ impl Config {
         config.normalize_sensitive_defaults();
 
         Ok(config)
+    }
+
+    pub fn log_startup_warnings(&self) {
+        if !self.server.deployment.is_production() && self.proxy.path_prefixes.is_empty() {
+            tracing::warn!("proxy.path_prefixes is empty; non-platform paths will not be proxied");
+        }
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
@@ -444,6 +480,21 @@ impl Config {
                 "proxy.allow_upstreams must not be empty when server.deployment is production"
                     .to_string(),
             );
+        }
+
+        if self.server.deployment.is_production() && self.proxy.path_prefixes.is_empty() {
+            errors.push(
+                "proxy.path_prefixes must not be empty when server.deployment is production"
+                    .to_string(),
+            );
+        }
+
+        for (index, prefix) in self.proxy.path_prefixes.iter().enumerate() {
+            if let Err(error) =
+                parse_proxy_path_prefix(&format!("proxy.path_prefixes[{index}]"), prefix)
+            {
+                errors.push(error);
+            }
         }
 
         for (index, upstream) in self.proxy.allow_upstreams.iter().enumerate() {
@@ -891,6 +942,9 @@ fn apply_env_overrides(
     if let Some(value) = env("LLMTRACE_ALLOW_UPSTREAMS") {
         config.proxy.allow_upstreams = parse_csv_env("LLMTRACE_ALLOW_UPSTREAMS", &value)?;
     }
+    if let Some(value) = env("LLMTRACE_PROXY_PATH_PREFIXES") {
+        config.proxy.path_prefixes = parse_csv_env("LLMTRACE_PROXY_PATH_PREFIXES", &value)?;
+    }
     if let Some(value) = env("LLMTRACE_UPSTREAM_HEADER") {
         config.proxy.upstream_header = value;
     }
@@ -1119,6 +1173,26 @@ fn normalize_allowlist_path(path: &str) -> String {
     format!("/{}", path.trim_matches('/'))
 }
 
+fn parse_proxy_path_prefix(field: &str, value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!("{field} must not be empty"));
+    }
+    if !value.starts_with('/') {
+        return Err(format!("{field} must start with '/', got {value:?}"));
+    }
+    if value.split('/').any(|segment| segment == "..") {
+        return Err(format!("{field} must not contain '..', got {value:?}"));
+    }
+    let normalized = normalize_allowlist_path(value);
+    if normalized == "/" {
+        return Err(format!(
+            "{field} must not be '/', which would allow all paths to be proxied"
+        ));
+    }
+    Ok(normalized)
+}
+
 fn path_prefix_matches(prefix: &str, path: &str) -> bool {
     if prefix == "/" {
         return true;
@@ -1259,6 +1333,7 @@ impl Default for ProxyConfig {
         Self {
             default_upstream: "https://api.openai.com".to_string(),
             allow_upstreams: Vec::new(),
+            path_prefixes: vec!["/v1".to_string()],
             upstream_header: "x-llmtrace-upstream".to_string(),
             timeout_secs: 300,
             max_request_body_bytes: 64 * 1024 * 1024,
@@ -1995,6 +2070,73 @@ mod tests {
         let error = config.validate().unwrap_err().to_string();
 
         assert!(error.contains("proxy.default_upstream must not contain credentials"));
+    }
+
+    #[test]
+    fn proxy_path_prefixes_default_allows_v1_paths() {
+        let allowlist = ProxyConfig::default().path_prefix_allowlist().unwrap();
+
+        assert!(allowlist.allows("/v1"));
+        assert!(allowlist.allows("/v1/chat/completions"));
+        assert!(!allowlist.allows("/v10/chat"));
+        assert!(!allowlist.allows("/favicon.ico"));
+        assert!(!allowlist.allows("/.well-known/acme-challenge/token"));
+    }
+
+    #[test]
+    fn proxy_path_prefixes_use_path_boundaries() {
+        let allowlist = ProxyConfig {
+            path_prefixes: vec!["/v1".to_string(), "/llm".to_string()],
+            ..ProxyConfig::default()
+        }
+        .path_prefix_allowlist()
+        .unwrap();
+
+        assert!(allowlist.allows("/llm/chat"));
+        assert!(!allowlist.allows("/llmtrace"));
+    }
+
+    #[test]
+    fn production_config_rejects_empty_path_prefixes() {
+        let mut config = production_ready_config();
+        config.proxy.path_prefixes.clear();
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("proxy.path_prefixes must not be empty"));
+    }
+
+    #[test]
+    fn validation_rejects_root_path_prefix() {
+        let mut config = Config::default();
+        config.proxy.path_prefixes = vec!["/".to_string()];
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("must not be '/'"));
+    }
+
+    #[test]
+    fn validation_rejects_invalid_path_prefix_entries() {
+        let mut config = Config::default();
+        config.proxy.path_prefixes = vec!["v1".to_string()];
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("must start with '/'"));
+    }
+
+    #[test]
+    fn path_prefix_allowlist_normalizes_trailing_slashes() {
+        let allowlist = ProxyConfig {
+            path_prefixes: vec!["/v1/".to_string()],
+            ..ProxyConfig::default()
+        }
+        .path_prefix_allowlist()
+        .unwrap();
+
+        assert!(allowlist.allows("/v1"));
+        assert!(allowlist.allows("/v1/chat"));
     }
 
     fn production_ready_config() -> Config {

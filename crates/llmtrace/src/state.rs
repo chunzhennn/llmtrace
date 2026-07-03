@@ -5,7 +5,7 @@ use anyhow::Context;
 use reqwest::Client;
 use sqlx::PgPool;
 
-use crate::config::{Config, UpstreamAllowlist};
+use crate::config::{Config, PathPrefixAllowlist, UpstreamAllowlist};
 use crate::login_throttle::LoginThrottle;
 use crate::metrics::RuntimeMetrics;
 use crate::plugins::PluginManager;
@@ -19,6 +19,7 @@ pub struct AppState {
     pub plugins: Arc<PluginManager>,
     pub traces: TraceRecorder,
     pub upstream_allowlist: UpstreamAllowlist,
+    pub path_prefixes: PathPrefixAllowlist,
     pub login_throttle: LoginThrottle,
     pub runtime_metrics: RuntimeMetrics,
 }
@@ -36,6 +37,11 @@ impl AppState {
             .upstream_allowlist()
             .map_err(|error| anyhow::anyhow!(error))
             .context("failed to build upstream allowlist")?;
+        let path_prefixes = config
+            .proxy
+            .path_prefix_allowlist()
+            .map_err(|error| anyhow::anyhow!(error))
+            .context("failed to build proxy path prefixes")?;
         let http = Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .read_timeout(Duration::from_secs(config.proxy.timeout_secs))
@@ -51,6 +57,7 @@ impl AppState {
             plugins,
             traces,
             upstream_allowlist,
+            path_prefixes,
             login_throttle,
             runtime_metrics,
         })

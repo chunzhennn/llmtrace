@@ -20,7 +20,7 @@ Validate configuration without connecting to Postgres or running migrations:
 cargo run -p llmtrace -- --config llmtrace.toml --check-config
 ```
 
-Proxy traffic is sent to any non-`/api` and non-`/ui` route. HTTP requests are proxied as HTTP, and requests that negotiate a standard WebSocket upgrade with `Upgrade: websocket` and a `Connection: upgrade` token are proxied as WebSocket traffic on the original path. `/ui/*` currently returns a backend placeholder until a new frontend is provided. Set `server.ui_enabled = false` to make both `/` and `/ui/*` return `404`.
+Proxy traffic is proxied only when the request path matches one of `proxy.path_prefixes` (default `["/v1"]`). Paths outside `/api`, `/ui`, health probes, and the configured prefixes return `404` locally and are not forwarded upstream. HTTP requests on allowed paths are proxied as HTTP, and requests that negotiate a standard WebSocket upgrade with `Upgrade: websocket` and a `Connection: upgrade` token are proxied as WebSocket traffic on the original path. Set `server.ui_enabled = false` to make both `/` and `/ui/*` return `404`.
 
 ## Health and readiness probes
 
@@ -40,6 +40,7 @@ Docker image builds use the committed `Cargo.lock` with `cargo build --locked` s
 Set `server.deployment = "production"` to make startup fail fast on insecure or ambiguous settings. Production mode allows `http` or `https` for `server.public_url`, proxy upstream URLs, allowlist URL entries, and OAuth endpoints so deployments can run behind TLS-terminating reverse proxies or on private HTTP endpoints. It currently requires:
 
 - `proxy.allow_upstreams` is non-empty, so the service cannot run as an unrestricted open proxy.
+- `proxy.path_prefixes` is non-empty, so only configured API path prefixes are proxied.
 - `storage.retention_days` is set, so trace and audit storage growth is bounded.
 - `auth.cookie_secure = true` when `server.public_url` uses `https`; HTTP public URLs may set it to `false` for private or reverse-proxy deployments that intentionally terminate without browser-facing HTTPS.
 - `auth.login_rate_limit.enabled = true`.
@@ -60,6 +61,7 @@ deployment = "production"
 [proxy]
 default_upstream = "https://api.openai.com"
 allow_upstreams = ["api.openai.com"]
+path_prefixes = ["/v1"]
 max_request_body_bytes = 67108864
 max_response_body_bytes = 67108864
 max_websocket_message_bytes = 16777216
@@ -132,7 +134,7 @@ Useful environment overrides include:
 
 - Core: `LLMTRACE_DEPLOYMENT`, `LLMTRACE_PUBLIC_URL`, `LLMTRACE_LISTEN`, and `LLMTRACE_UI_ENABLED`.
 - Storage: `DATABASE_URL`, `LLMTRACE_STORAGE_MAX_CONNECTIONS`, `LLMTRACE_DB_ACQUIRE_TIMEOUT_SECS`, `LLMTRACE_TRACE_QUEUE_CAPACITY`, `LLMTRACE_TRACE_WORKER_COUNT`, `LLMTRACE_RETENTION_DAYS`, `LLMTRACE_RETENTION_PRUNE_INTERVAL_SECS`, and `LLMTRACE_RETENTION_PRUNE_BATCH_SIZE`.
-- Proxy: `LLMTRACE_DEFAULT_UPSTREAM`, `LLMTRACE_ALLOW_UPSTREAMS`, `LLMTRACE_UPSTREAM_HEADER`, `LLMTRACE_PROXY_TIMEOUT_SECS`, `LLMTRACE_MAX_REQUEST_BODY_BYTES`, `LLMTRACE_MAX_RESPONSE_BODY_BYTES`, `LLMTRACE_MAX_WEBSOCKET_MESSAGE_BYTES`, and `LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES`. `LLMTRACE_ALLOW_UPSTREAMS` is a comma-separated list using the same syntax as `proxy.allow_upstreams`.
+- Proxy: `LLMTRACE_DEFAULT_UPSTREAM`, `LLMTRACE_ALLOW_UPSTREAMS`, `LLMTRACE_PROXY_PATH_PREFIXES`, `LLMTRACE_UPSTREAM_HEADER`, `LLMTRACE_PROXY_TIMEOUT_SECS`, `LLMTRACE_MAX_REQUEST_BODY_BYTES`, `LLMTRACE_MAX_RESPONSE_BODY_BYTES`, `LLMTRACE_MAX_WEBSOCKET_MESSAGE_BYTES`, and `LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES`. `LLMTRACE_ALLOW_UPSTREAMS` and `LLMTRACE_PROXY_PATH_PREFIXES` are comma-separated lists using the same syntax as `proxy.allow_upstreams` and `proxy.path_prefixes`.
 - Archive: `LLMTRACE_ARCHIVE_STORAGE_BACKEND`, `LLMTRACE_ARCHIVE_FILESYSTEM_ROOT`, `LLMTRACE_ARCHIVE_SEGMENT_UNCOMPRESSED_BYTES`, and `LLMTRACE_ARCHIVE_COMPRESSION_LEVEL`. `storage_backend` may be `filesystem` or `postgres`; filesystem is preferred and failed filesystem writes fall back to Postgres blobs. S3 archive storage is not implemented.
 - Auth: `LLMTRACE_AUTH_COOKIE_SECURE`, `LLMTRACE_SESSION_TTL_HOURS`, `LLMTRACE_LOGIN_RATE_LIMIT_ENABLED`, `LLMTRACE_LOGIN_RATE_LIMIT_MAX_FAILURES`, `LLMTRACE_LOGIN_RATE_LIMIT_WINDOW_SECS`, `LLMTRACE_LOGIN_RATE_LIMIT_LOCKOUT_SECS`, `LLMTRACE_LOGIN_RATE_LIMIT_MAX_TRACKED_ENTRIES`, `LLMTRACE_ADMIN_USERNAME`, `LLMTRACE_ADMIN_PASSWORD`, and `LLMTRACE_ADMIN_PASSWORD_HASH`.
 - OAuth: `LLMTRACE_OAUTH_ENABLED`, `LLMTRACE_OAUTH_ISSUER_URL`, `LLMTRACE_OAUTH_CLIENT_ID`, `LLMTRACE_OAUTH_CLIENT_SECRET`, `LLMTRACE_OAUTH_REDIRECT_URL`, `LLMTRACE_OAUTH_TIMEOUT_SECS`, `LLMTRACE_OAUTH_REQUIRE_EMAIL_VERIFIED`, `LLMTRACE_OAUTH_ALLOWED_EMAILS`, and `LLMTRACE_OAUTH_ALLOWED_DOMAINS`. The allowed email/domain variables are comma-separated lists and use the same validation as the toml fields.
@@ -157,6 +159,16 @@ allow_upstreams = [
 Host entries match the host across supported upstream schemes and paths. `host:port` entries also constrain the effective port, so `api.openai.com:443` matches `https://api.openai.com/...` but not `http://api.openai.com/...`. URL origins match only the same scheme, host, and effective port. URL path prefixes also require a path boundary, so `https://api.example.com/v1` matches `/v1` and `/v1/chat`, but not `/v10/chat`.
 
 Allowlist entries do not support wildcards. URL entries must not contain credentials, query strings, or fragments. Runtime upstream URLs from `proxy.default_upstream`, absolute-form request URIs, or the configured upstream override header must also omit embedded credentials. HTTP proxying accepts only `http` and `https` upstream URLs; WebSocket proxying accepts only `ws` and `wss` after HTTP(S) URLs are converted for the upgrade path.
+
+## Proxy path prefixes
+
+`proxy.path_prefixes` controls which incoming request paths are forwarded to upstream. Only paths matching one configured prefix are proxied; everything else (including browser requests such as `/favicon.ico` or `/.well-known/*`) returns `404` locally without upstream forwarding or trace recording. Prefix matching uses path boundaries, so `/v1` matches `/v1/chat/completions` but not `/v10/chat`. The root prefix `/` is rejected at startup because it would allow all paths to be proxied. In production mode, `path_prefixes` must be non-empty.
+
+```toml
+path_prefixes = ["/v1", "/llm"]
+```
+
+Per-request upstream override headers change the upstream target but do not bypass `path_prefixes`.
 
 ## API pagination
 

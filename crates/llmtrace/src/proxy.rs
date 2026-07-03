@@ -97,6 +97,10 @@ pub async fn proxy(
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
     request: Request<Body>,
 ) -> axum::response::Response {
+    if !state.path_prefixes.allows(request.uri().path()) {
+        return not_proxied_response();
+    }
+
     if is_websocket(request.headers()) {
         return match ws {
             Ok(ws) => proxy_websocket(state, ws, request).await,
@@ -115,6 +119,14 @@ pub async fn proxy(
             error.into_response()
         }
     }
+}
+
+fn not_proxied_response() -> axum::response::Response {
+    (
+        StatusCode::NOT_FOUND,
+        axum::Json(json!({"error": "path is not proxied"})),
+    )
+        .into_response()
 }
 
 async fn proxy_http(
@@ -1389,6 +1401,13 @@ mod tests {
             .to_string();
 
         assert!(error.contains("multiple upstream override headers"));
+    }
+
+    #[test]
+    fn not_proxied_response_returns_json_404() {
+        let response = not_proxied_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]

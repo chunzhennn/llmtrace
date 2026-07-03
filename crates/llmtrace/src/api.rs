@@ -1176,6 +1176,7 @@ fn config_summary(config: &Config) -> Value {
             "default_upstream": &config.proxy.default_upstream,
             "allow_upstreams": &config.proxy.allow_upstreams,
             "allow_upstreams_count": config.proxy.allow_upstreams.len(),
+            "path_prefixes": &config.proxy.path_prefixes,
             "upstream_header": &config.proxy.upstream_header,
             "timeout_secs": config.proxy.timeout_secs,
             "max_request_body_bytes": config.proxy.max_request_body_bytes,
@@ -1525,6 +1526,7 @@ mod tests {
             proxy: crate::config::ProxyConfig {
                 default_upstream: "https://api.openai.com".to_string(),
                 allow_upstreams: vec!["api.openai.com".to_string()],
+                path_prefixes: vec!["/v1".to_string()],
                 upstream_header: "x-llmtrace-upstream".to_string(),
                 timeout_secs: 120,
                 max_request_body_bytes: 8192,
@@ -1574,6 +1576,7 @@ mod tests {
 
         assert_eq!(summary["server"]["deployment"], "production");
         assert_eq!(summary["proxy"]["allow_upstreams_count"], 1);
+        assert_eq!(summary["proxy"]["path_prefixes"], json!(["/v1"]));
         assert_eq!(summary["storage"]["retention_days"], 30);
         assert_eq!(
             summary["auth"]["local_admin"]["password_hash_configured"],
