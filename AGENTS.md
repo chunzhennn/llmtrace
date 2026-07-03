@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This is a Rust workspace with one binary crate in `crates/llmtrace`. The root `Cargo.toml` holds workspace metadata and dependency versions; `crates/llmtrace/Cargo.toml` wires those dependencies into the application. The service is currently backend-only. The previous frontend was removed, and `crates/llmtrace/src/ui.rs` only serves a placeholder for `/ui/*`.
+This is a Rust workspace with one binary crate in `crates/llmtrace`. The root `Cargo.toml` holds workspace metadata and dependency versions; `crates/llmtrace/Cargo.toml` wires those dependencies into the application. The admin frontend is a SvelteKit SPA in `crates/llmtrace/ui` (Svelte 5 runes, Tailwind v4, `@sveltejs/adapter-static` with base path `/ui`). It is built to `crates/llmtrace/ui/build` and embedded into the binary via `rust-embed`; `crates/llmtrace/src/ui.rs` serves those assets under `/ui/*` (gated by `server.ui_enabled`) with an SPA fallback to `index.html`.
 
 Application code lives in `crates/llmtrace/src`:
 
@@ -14,7 +14,9 @@ Application code lives in `crates/llmtrace/src`:
 - `auth.rs` implements local admin login, optional OAuth/OIDC login, session cookies, and UI audit events.
 - `config.rs`, `types.rs`, `parsers.rs`, `plugins.rs`, `redaction.rs`, and `state.rs` provide configuration, shared enums, LLM trace parsing, the Wasmtime plugin ABI, sensitive-data handling, and shared application state.
 
-Database migrations are in `crates/llmtrace/migrations` and are embedded with `sqlx::migrate!("./migrations")`. Update migrations, storage row mappings, query field allowlists, and tests together when changing persisted schema. There is no frontend asset tree in this repository.
+Database migrations are in `crates/llmtrace/migrations` and are embedded with `sqlx::migrate!("./migrations")`. Update migrations, storage row mappings, query field allowlists, and tests together when changing persisted schema.
+
+The frontend lives in `crates/llmtrace/ui`. Source is under `ui/src` (`lib/api` for the typed client and endpoint wrappers, `lib/components` for shared UI, `lib/state` for auth/theme/toast rune stores, `lib/utils` for formatting/query helpers, and `routes` for pages). The built output in `ui/build` is git-ignored except for a placeholder `index.html` so the `rust-embed` folder always exists; local and Docker builds overwrite it with real hashed assets. When adding API surface, keep `ui/src/lib/api/types.ts` and the endpoint wrappers in sync with the Rust JSON shapes.
 
 ## Build, Test, and Development Commands
 
@@ -27,6 +29,13 @@ Database migrations are in `crates/llmtrace/migrations` and are embedded with `s
 - `cargo fmt --all`: format Rust code with rustfmt.
 - `cargo clippy --workspace --all-targets -- -D warnings`: run lint checks with warnings treated as errors.
 - `docker compose up --build llmtrace`: build and run the service container with Postgres.
+
+Frontend commands run from `crates/llmtrace/ui` (uses `pnpm`):
+
+- `pnpm install`: install frontend dependencies.
+- `pnpm run dev`: start the Vite dev server (proxies `/api`, `/healthz`, `/readyz` to `http://127.0.0.1:3000` and rewrites `Origin` so the backend same-origin check passes). Override the target with `LLMTRACE_BACKEND`.
+- `pnpm run build`: build the SPA into `ui/build` (embedded by the backend). Rebuild after UI changes before running a release binary.
+- `pnpm run check`: run `svelte-check` type/diagnostics.
 
 Useful config overrides are `LLMTRACE_CONFIG`, `DATABASE_URL`, `LLMTRACE_LISTEN`, `LLMTRACE_DEFAULT_UPSTREAM`, `LLMTRACE_ADMIN_USERNAME`, `LLMTRACE_ADMIN_PASSWORD`, and `LLMTRACE_ADMIN_PASSWORD_HASH`.
 
