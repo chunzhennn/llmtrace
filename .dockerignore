@@ -3,6 +3,7 @@
 .codex/
 .cargo/
 target/
+crates/llmtrace/ui/node_modules/
 
 # Local runtime state and secrets.
 .env

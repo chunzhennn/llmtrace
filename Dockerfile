@@ -1,7 +1,17 @@
+FROM node:22-bookworm AS ui
+WORKDIR /ui
+ENV CI=true
+RUN corepack enable
+COPY crates/llmtrace/ui/package.json crates/llmtrace/ui/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY crates/llmtrace/ui ./
+RUN pnpm run build
+
 FROM rust:1.96-bookworm AS build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY --from=ui /ui/build ./crates/llmtrace/ui/build
 RUN cargo build --locked --release -p llmtrace
 
 FROM debian:bookworm-slim
