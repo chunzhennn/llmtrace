@@ -3,6 +3,8 @@ listen = "127.0.0.1:3000"
 public_url = "http://127.0.0.1:3000"
 # Use "production" to enable stricter startup validation for secure deployments.
 deployment = "development"
+# Serve the embedded SvelteKit admin dashboard under /ui (build with
+# `pnpm --dir crates/llmtrace/ui build`). Set false to disable the UI entirely.
 ui_enabled = true
 
 [proxy]

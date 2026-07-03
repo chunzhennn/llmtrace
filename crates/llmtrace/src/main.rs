@@ -162,9 +162,9 @@ fn build_router(state: AppState) -> Router {
         .nest("/api/auth", auth::router())
         .nest("/api", protected_api)
         .route("/", axum::routing::get(ui::redirect_to_ui))
-        .route("/ui", axum::routing::get(ui::serve_ui))
-        .route("/ui/", axum::routing::get(ui::serve_ui))
-        .route("/ui/{*path}", axum::routing::get(ui::serve_ui))
+        .route("/ui", axum::routing::get(ui::serve_ui_index))
+        .route("/ui/", axum::routing::get(ui::serve_ui_index))
+        .route("/ui/{*path}", axum::routing::get(ui::serve_ui_path))
         .layer(DefaultBodyLimit::max(PRIVATE_JSON_BODY_LIMIT_BYTES))
         .layer(middleware::from_fn_with_state(
             state.clone(),
