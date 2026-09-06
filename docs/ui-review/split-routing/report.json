@@ -1,0 +1,82 @@
+{
+  "synthetic": true,
+  "screenshots": [
+    {
+      "name": "desktop-login",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1440,
+      "clientWidth": 1440,
+      "title": "Sign in · llmtrace",
+      "text": "llmtrace\n\nLLM proxy observability\n\nUSERNAME\nPASSWORD\nSign in"
+    },
+    {
+      "name": "desktop-system",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1430,
+      "clientWidth": 1430,
+      "title": "System · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nadmin\nlocal\nSystem\n\nRead-only runtime configuration, security posture, retention, and storage.\n\nSecurity posture\nattention · 3✓ 7! 0✗\nwarn\ndeployment_mode\nserver.deployment is development; set production before public deployment\nwarn\npublic_url_https\nserver.public_url is not HTTPS; this can be acceptable behind an HTTP-only reverse proxy, but browser traffic should terminate at HTTPS\nwarn\nsecure_cookies\nsession cookies are not marked Secure; enable auth.cookie_secure when browser traffic uses HTTPS\nwarn\nretention\nstorage.retention_days is not configured; age-based trace and UI audit cleanup is disabled\npass\nupstream_allowlist\nproxy upstream allowlist is configured\nwarn\nmetrics_auth\nmetrics bearer token is not configured; protect /metrics before public deployment\nwarn\nlocal_plaintext_password\nlocal admin plaintext password is configured; use auth.local_admin.password_hash before production\nwarn\nlocal_password_hash\nno local password hash or OAuth provider is configured for production authentication\npass\nlogin_rate_limit\nlogin rate limiting is enabled\npass\noauth_allowlist\nOAuth is disabled or constrained by an allowlist\nConfiguration\nDEPLOYMENT\ndevelopment\nADMIN URL\nhttp://localhost:56465\nPROXY URL\nhttp://127.0.0.1:59873\nPROXY LISTENER\n127.0.0.1:59873\nADMIN LISTENER\n127.0.0.1:56465\nUI ENABLED\nyes\nDEFAULT UPSTREAM\nhttp://127.0.0.1:36953\nROUTING PRESET\nlitellm\nRouting prefixes: 21 forwarded, 20 captured\nUPSTREAM HEADER\nx-llmtrace-upstream\nALLOWED UPSTREAMS\n1\nPROXY TIMEOUT\n300s\nMAX REQ BODY\n64.0 MB\nMAX RESP BODY\n64.0 MB\nARCHIVE BACKEND\npostgres\nSEGMENT SIZE\n32.0 MB\nDB CONNECTIONS\n10\nTRACE WORKERS\n4\nQUEUE CAPACITY\n4,096\nTRACE MEMORY BUDGET\n256 MB\nRETENTION DAYS\ndisabled\nARCHIVE SIZE LIMIT\ndisabled\nSENSITIVE HEADERS\n9\nBODY STORAGE\nunredacted_archive\nSTORE HEADER HASH\nyes\nMETRICS TOKEN\nnone\nRuntime\nQUEUE DEPTH\n0 / 4,096\nENQUEUED\n0\nPERSISTED\n0\nDROPPED (FULL)\n0\nDROPPED (MEMORY)\n0\nTRACE EVENT MEMORY\n0 B / 256 MB\nDROPPED (CLOSED)\n0\nBUILD FAILURES\n0\nPERSIST FAILURES\n0\nRETENTION RUNS\n0\nRETENTION FAILURES\n0\nLAST PRUNE OK\n-\nCapture journal\n\nQueued captures become recoverable after a background disk sync. Live streams and captures awaiting that sync can be lost if the process stops.\n\nDURABLE JOURNAL\nDisabled — captures are held in memory\nAWAITING DISK SYNC\n0\nPENDING PERSISTENCE / CLEANUP\n0\nJOURNAL SIZE\n0 B / 0 B\nOLDEST PENDING CAPTURE\n0s\nRECOVERED AFTER RESTART\n0\nREJECTED (JOURNAL FULL)\n0\nDISK WRITE FAILURES\n0\nRETRY ATTEMPTS\n0\nQUARANTINED RECORDS\n0\nEXCEEDING REPLAY MEMORY LIMIT\n0\n\nFailure, rejection, and recovery counters reset when this instance restarts. Pending and quarantined files are rediscovered from disk. A successful proxied response does not confirm that its audit capture is durable.\n\nRetention\nSTATUS\ndisabled\nCUTOFF\n-\nPRUNE INTERVAL\n1h 0m\nBATCH SIZE\n1,000\nEXPIRED ROWS PENDING PRUNE\noauth_states: 0\nrequest_traces: 0\ntotal: 0\ntrace_rollups_minute: 0\ntrace_sessions: 0\nui_audit_events: 0\nui_sessions: 0\nArchive size rotation\ndisabled\nCOMPRESSED PAYLOADS\n0 B\nSIZE LIMIT\ndisabled\nCHECK INTERVAL\n1m\nFILES PENDING DELETION\n0 · 0 B\n\nRemoves the oldest requests and their payloads when compressed archives exceed the limit. Database metadata and operational logs are excluded. Set the limit in your configuration file or environment and restart to apply it.\n\nStorage\n480 KB across 11 relations\nRELATION\tROWS\tTOTAL\tTABLE\tINDEX\nrequest_traces\t0\t128 KB\t0 B\t120 KB\npayload_archive_segments\t0\t32.0 KB\t0 B\t24.0 KB\npayload_archive_segment_blobs\t0\t16.0 KB\t0 B\t8.0 KB\npayload_archive_records\t0\t48.0 KB\t0 B\t40.0 KB\ntrace_rollups_minute\t0\t16.0 KB\t0 B\t16.0 KB\ntrace_sessions\t0\t40.0 KB\t0 B\t32.0 KB\nsession_messages\t0\t40.0 KB\t0 B\t32.0 KB\nui_audit_events\t0\t64.0 KB\t8.0 KB\t48.0 KB\nui_sessions\t0\t48.0 KB\t8.0 KB\t32.0 KB\noauth_states\t0\t24.0 KB\t0 B\t16.0 KB\narchive_file_deletions\t0\t24.0 KB\t0 B\t16.0 KB"
+    },
+    {
+      "name": "system-390",
+      "width": 390,
+      "height": 844,
+      "documentWidth": 380,
+      "clientWidth": 380,
+      "title": "System · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nllmtrace\nSystem\n\nRead-only runtime configuration, security posture, retention, and storage.\n\nSecurity posture\nattention · 3✓ 7! 0✗\nwarn\ndeployment_mode\nserver.deployment is development; set production before public deployment\nwarn\npublic_url_https\nserver.public_url is not HTTPS; this can be acceptable behind an HTTP-only reverse proxy, but browser traffic should terminate at HTTPS\nwarn\nsecure_cookies\nsession cookies are not marked Secure; enable auth.cookie_secure when browser traffic uses HTTPS\nwarn\nretention\nstorage.retention_days is not configured; age-based trace and UI audit cleanup is disabled\npass\nupstream_allowlist\nproxy upstream allowlist is configured\nwarn\nmetrics_auth\nmetrics bearer token is not configured; protect /metrics before public deployment\nwarn\nlocal_plaintext_password\nlocal admin plaintext password is configured; use auth.local_admin.password_hash before production\nwarn\nlocal_password_hash\nno local password hash or OAuth provider is configured for production authentication\npass\nlogin_rate_limit\nlogin rate limiting is enabled\npass\noauth_allowlist\nOAuth is disabled or constrained by an allowlist\nConfiguration\nDEPLOYMENT\ndevelopment\nADMIN URL\nhttp://localhost:56465\nPROXY URL\nhttp://127.0.0.1:59873\nPROXY LISTENER\n127.0.0.1:59873\nADMIN LISTENER\n127.0.0.1:56465\nUI ENABLED\nyes\nDEFAULT UPSTREAM\nhttp://127.0.0.1:36953\nROUTING PRESET\nlitellm\nRouting prefixes: 21 forwarded, 20 captured\nUPSTREAM HEADER\nx-llmtrace-upstream\nALLOWED UPSTREAMS\n1\nPROXY TIMEOUT\n300s\nMAX REQ BODY\n64.0 MB\nMAX RESP BODY\n64.0 MB\nARCHIVE BACKEND\npostgres\nSEGMENT SIZE\n32.0 MB\nDB CONNECTIONS\n10\nTRACE WORKERS\n4\nQUEUE CAPACITY\n4,096\nTRACE MEMORY BUDGET\n256 MB\nRETENTION DAYS\ndisabled\nARCHIVE SIZE LIMIT\ndisabled\nSENSITIVE HEADERS\n9\nBODY STORAGE\nunredacted_archive\nSTORE HEADER HASH\nyes\nMETRICS TOKEN\nnone\nRuntime\nQUEUE DEPTH\n0 / 4,096\nENQUEUED\n0\nPERSISTED\n0\nDROPPED (FULL)\n0\nDROPPED (MEMORY)\n0\nTRACE EVENT MEMORY\n0 B / 256 MB\nDROPPED (CLOSED)\n0\nBUILD FAILURES\n0\nPERSIST FAILURES\n0\nRETENTION RUNS\n0\nRETENTION FAILURES\n0\nLAST PRUNE OK\n-\nCapture journal\n\nQueued captures become recoverable after a background disk sync. Live streams and captures awaiting that sync can be lost if the process stops.\n\nDURABLE JOURNAL\nDisabled — captures are held in memory\nAWAITING DISK SYNC\n0\nPENDING PERSISTENCE / CLEANUP\n0\nJOURNAL SIZE\n0 B / 0 B\nOLDEST PENDING CAPTURE\n0s\nRECOVERED AFTER RESTART\n0\nREJECTED (JOURNAL FULL)\n0\nDISK WRITE FAILURES\n0\nRETRY ATTEMPTS\n0\nQUARANTINED RECORDS\n0\nEXCEEDING REPLAY MEMORY LIMIT\n0\n\nFailure, rejection, and recovery counters reset when this instance restarts. Pending and quarantined files are rediscovered from disk. A successful proxied response does not confirm that its audit capture is durable.\n\nRetention\nSTATUS\ndisabled\nCUTOFF\n-\nPRUNE INTERVAL\n1h 0m\nBATCH SIZE\n1,000\nEXPIRED ROWS PENDING PRUNE\noauth_states: 0\nrequest_traces: 0\ntotal: 0\ntrace_rollups_minute: 0\ntrace_sessions: 0\nui_audit_events: 0\nui_sessions: 0\nArchive size rotation\ndisabled\nCOMPRESSED PAYLOADS\n0 B\nSIZE LIMIT\ndisabled\nCHECK INTERVAL\n1m\nFILES PENDING DELETION\n0 · 0 B\n\nRemoves the oldest requests and their payloads when compressed archives exceed the limit. Database metadata and operational logs are excluded. Set the limit in your configuration file or environment and restart to apply it.\n\nStorage\n480 KB across 11 relations\nRELATION\tROWS\tTOTAL\tTABLE\tINDEX\nrequest_traces\t0\t128 KB\t0 B\t120 KB\npayload_archive_segments\t0\t32.0 KB\t0 B\t24.0 KB\npayload_archive_segment_blobs\t0\t16.0 KB\t0 B\t8.0 KB\npayload_archive_records\t0\t48.0 KB\t0 B\t40.0 KB\ntrace_rollups_minute\t0\t16.0 KB\t0 B\t16.0 KB\ntrace_sessions\t0\t40.0 KB\t0 B\t32.0 KB\nsession_messages\t0\t40.0 KB\t0 B\t32.0 KB\nui_audit_events\t0\t64.0 KB\t8.0 KB\t48.0 KB\nui_sessions\t0\t48.0 KB\t8.0 KB\t32.0 KB\noauth_states\t0\t24.0 KB\t0 B\t16.0 KB\narchive_file_deletions\t0\t24.0 KB\t0 B\t16.0 KB"
+    },
+    {
+      "name": "system-320",
+      "width": 320,
+      "height": 844,
+      "documentWidth": 310,
+      "clientWidth": 310,
+      "title": "System · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nllmtrace\nSystem\n\nRead-only runtime configuration, security posture, retention, and storage.\n\nSecurity posture\nattention · 3✓ 7! 0✗\nwarn\ndeployment_mode\nserver.deployment is development; set production before public deployment\nwarn\npublic_url_https\nserver.public_url is not HTTPS; this can be acceptable behind an HTTP-only reverse proxy, but browser traffic should terminate at HTTPS\nwarn\nsecure_cookies\nsession cookies are not marked Secure; enable auth.cookie_secure when browser traffic uses HTTPS\nwarn\nretention\nstorage.retention_days is not configured; age-based trace and UI audit cleanup is disabled\npass\nupstream_allowlist\nproxy upstream allowlist is configured\nwarn\nmetrics_auth\nmetrics bearer token is not configured; protect /metrics before public deployment\nwarn\nlocal_plaintext_password\nlocal admin plaintext password is configured; use auth.local_admin.password_hash before production\nwarn\nlocal_password_hash\nno local password hash or OAuth provider is configured for production authentication\npass\nlogin_rate_limit\nlogin rate limiting is enabled\npass\noauth_allowlist\nOAuth is disabled or constrained by an allowlist\nConfiguration\nDEPLOYMENT\ndevelopment\nADMIN URL\nhttp://localhost:56465\nPROXY URL\nhttp://127.0.0.1:59873\nPROXY LISTENER\n127.0.0.1:59873\nADMIN LISTENER\n127.0.0.1:56465\nUI ENABLED\nyes\nDEFAULT UPSTREAM\nhttp://127.0.0.1:36953\nROUTING PRESET\nlitellm\nRouting prefixes: 21 forwarded, 20 captured\nUPSTREAM HEADER\nx-llmtrace-upstream\nALLOWED UPSTREAMS\n1\nPROXY TIMEOUT\n300s\nMAX REQ BODY\n64.0 MB\nMAX RESP BODY\n64.0 MB\nARCHIVE BACKEND\npostgres\nSEGMENT SIZE\n32.0 MB\nDB CONNECTIONS\n10\nTRACE WORKERS\n4\nQUEUE CAPACITY\n4,096\nTRACE MEMORY BUDGET\n256 MB\nRETENTION DAYS\ndisabled\nARCHIVE SIZE LIMIT\ndisabled\nSENSITIVE HEADERS\n9\nBODY STORAGE\nunredacted_archive\nSTORE HEADER HASH\nyes\nMETRICS TOKEN\nnone\nRuntime\nQUEUE DEPTH\n0 / 4,096\nENQUEUED\n0\nPERSISTED\n0\nDROPPED (FULL)\n0\nDROPPED (MEMORY)\n0\nTRACE EVENT MEMORY\n0 B / 256 MB\nDROPPED (CLOSED)\n0\nBUILD FAILURES\n0\nPERSIST FAILURES\n0\nRETENTION RUNS\n0\nRETENTION FAILURES\n0\nLAST PRUNE OK\n-\nCapture journal\n\nQueued captures become recoverable after a background disk sync. Live streams and captures awaiting that sync can be lost if the process stops.\n\nDURABLE JOURNAL\nDisabled — captures are held in memory\nAWAITING DISK SYNC\n0\nPENDING PERSISTENCE / CLEANUP\n0\nJOURNAL SIZE\n0 B / 0 B\nOLDEST PENDING CAPTURE\n0s\nRECOVERED AFTER RESTART\n0\nREJECTED (JOURNAL FULL)\n0\nDISK WRITE FAILURES\n0\nRETRY ATTEMPTS\n0\nQUARANTINED RECORDS\n0\nEXCEEDING REPLAY MEMORY LIMIT\n0\n\nFailure, rejection, and recovery counters reset when this instance restarts. Pending and quarantined files are rediscovered from disk. A successful proxied response does not confirm that its audit capture is durable.\n\nRetention\nSTATUS\ndisabled\nCUTOFF\n-\nPRUNE INTERVAL\n1h 0m\nBATCH SIZE\n1,000\nEXPIRED ROWS PENDING PRUNE\noauth_states: 0\nrequest_traces: 0\ntotal: 0\ntrace_rollups_minute: 0\ntrace_sessions: 0\nui_audit_events: 0\nui_sessions: 0\nArchive size rotation\ndisabled\nCOMPRESSED PAYLOADS\n0 B\nSIZE LIMIT\ndisabled\nCHECK INTERVAL\n1m\nFILES PENDING DELETION\n0 · 0 B\n\nRemoves the oldest requests and their payloads when compressed archives exceed the limit. Database metadata and operational logs are excluded. Set the limit in your configuration file or environment and restart to apply it.\n\nStorage\n480 KB across 11 relations\nRELATION\tROWS\tTOTAL\tTABLE\tINDEX\nrequest_traces\t0\t128 KB\t0 B\t120 KB\npayload_archive_segments\t0\t32.0 KB\t0 B\t24.0 KB\npayload_archive_segment_blobs\t0\t16.0 KB\t0 B\t8.0 KB\npayload_archive_records\t0\t48.0 KB\t0 B\t40.0 KB\ntrace_rollups_minute\t0\t16.0 KB\t0 B\t16.0 KB\ntrace_sessions\t0\t40.0 KB\t0 B\t32.0 KB\nsession_messages\t0\t40.0 KB\t0 B\t32.0 KB\nui_audit_events\t0\t64.0 KB\t8.0 KB\t48.0 KB\nui_sessions\t0\t48.0 KB\t8.0 KB\t32.0 KB\noauth_states\t0\t24.0 KB\t0 B\t16.0 KB\narchive_file_deletions\t0\t24.0 KB\t0 B\t16.0 KB"
+    }
+  ],
+  "errors": [],
+  "checks": {
+    "disabledSsoHidden": true,
+    "login": true,
+    "splitSettingsVisible": true,
+    "routingPrefixesExpand": true,
+    "noPageOverflow": true,
+    "adminRequestsStayOnAdminOrigin": true,
+    "adminCookieAbsentOnProxyHost": true
+  },
+  "timing": [
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 600,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    }
+  ],
+  "browser": "Chrome/151.0.7922.71"
+}

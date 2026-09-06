@@ -7,18 +7,25 @@
 	import * as authApi from '$lib/api/endpoints/auth';
 	import { auth } from '$lib/state/auth.svelte';
 	import { theme } from '$lib/state/theme.svelte';
+	import type { LoginMethods } from '$lib/api/types';
 
 	let username = $state('');
 	let password = $state('');
 	let submitting = $state(false);
 	let error = $state<string | null>(null);
 	let checking = $state(true);
+	let methods = $state<LoginMethods | null>(null);
 
 	onMount(async () => {
 		const status = await auth.refresh();
 		if (status === 'authenticated') {
 			await goto(`${base}/`);
 			return;
+		}
+		try {
+			methods = await authApi.methods();
+		} catch {
+			error = 'Unable to load sign-in options. Refresh the page to try again.';
 		}
 		checking = false;
 	});
@@ -86,6 +93,7 @@
 				</div>
 			</div>
 
+			{#if methods?.local}
 			<form onsubmit={submit} class="flex flex-col gap-4">
 				<div>
 					<label class="label" for="username">Username</label>
@@ -130,20 +138,27 @@
 					{/if}
 				</button>
 			</form>
+			{/if}
 
+			{#if methods?.oauth}
+			{#if methods.local}
 			<div class="my-4 flex items-center gap-3">
 				<div class="h-px flex-1" style="background-color: var(--color-border);"></div>
 				<span class="text-fg-muted text-xs uppercase tracking-wide">or</span>
 				<div class="h-px flex-1" style="background-color: var(--color-border);"></div>
 			</div>
+			{/if}
 
 			<button class="btn w-full" type="button" onclick={startOauth}>
 				<Icon name="external" size={16} />
 				Continue with SSO
 			</button>
-			<p class="text-fg-muted mt-3 text-center text-xs">
-				SSO must be enabled on the server.
-			</p>
+			{/if}
+			{#if !methods?.local && error}
+				<p class="mt-3 text-sm" role="alert">{error}</p>
+			{:else if methods && !methods.local && !methods.oauth}
+				<p class="text-fg-muted text-sm">No sign-in method is configured. Contact your administrator.</p>
+			{/if}
 		</div>
 	{/if}
 </div>

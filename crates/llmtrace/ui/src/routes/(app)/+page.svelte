@@ -82,7 +82,7 @@
 	);
 	const pipeline = $derived(stats?.runtime.trace_pipeline);
 	const dropped = $derived(
-		pipeline ? pipeline.dropped_full + pipeline.dropped_closed : 0
+		pipeline ? pipeline.dropped_full + pipeline.dropped_closed + pipeline.dropped_memory + (stats?.runtime.trace_journal.dropped_full ?? 0) + (stats?.runtime.trace_journal.write_failed ?? 0) : 0
 	);
 
 	const chartData = $derived.by<ChartData>(() => {
@@ -150,7 +150,7 @@
 
 <svelte:head><title>Overview · llmtrace</title></svelte:head>
 
-<PageHeader title="Overview" description="Live snapshot of proxied LLM traffic over the last 24 hours." />
+<PageHeader title="Overview" description="Stored traffic totals, with trends and investigations for the last 24 hours." />
 
 {#if core.error}
 	<Card>
@@ -163,7 +163,7 @@
 	</Card>
 {:else}
 	<div class="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
-		<StatCard label="Total requests" value={formatNumber(stats?.total ?? 0)} icon="list" loading={core.loading} />
+		<StatCard label="Total requests" hint="All retained history" value={formatNumber(stats?.total ?? 0)} icon="list" loading={core.loading} />
 		<StatCard label="Last hour" value={formatNumber(stats?.last_hour ?? 0)} icon="clock" loading={core.loading} />
 		<StatCard
 			label="Errors (all)"
@@ -189,36 +189,36 @@
 			</Card>
 		</div>
 
-		<Card title="Operational health">
+		<Card title="Operational health" subtitle="Capture counters since this instance started">
 			<div class="flex flex-col gap-3 text-sm">
-				<div class="flex items-center justify-between">
+				<div class="flex flex-wrap items-center justify-between gap-2">
 					<span class="text-fg-muted">Security posture</span>
 					{#if ops.data}
 						<Badge tone={postureTone[ops.data.posture.overall]}>
 							{ops.data.posture.overall}
-							· {ops.data.posture.counts.warn}w / {ops.data.posture.counts.fail}f
+							· {ops.data.posture.counts.warn} warnings / {ops.data.posture.counts.fail} failures
 						</Badge>
 					{:else}
 						<span class="text-fg-muted">…</span>
 					{/if}
 				</div>
-				<div class="flex items-center justify-between">
+				<div class="flex flex-wrap items-center justify-between gap-2">
 					<span class="text-fg-muted">Trace queue depth</span>
 					<span class="tabular-nums">
 						{pipeline ? `${formatNumber(pipeline.queue_depth)} / ${formatNumber(pipeline.queue_capacity)}` : '—'}
 					</span>
 				</div>
-				<div class="flex items-center justify-between">
+				<div class="flex flex-wrap items-center justify-between gap-2">
 					<span class="text-fg-muted">Dropped traces</span>
 					<span class="tabular-nums" style={dropped > 0 ? 'color: var(--color-warning);' : ''}>
 						{formatNumber(dropped)}
 					</span>
 				</div>
-				<div class="flex items-center justify-between">
+				<div class="flex flex-wrap items-center justify-between gap-2">
 					<span class="text-fg-muted">Persisted traces</span>
 					<span class="tabular-nums">{formatNumber(pipeline?.persisted ?? 0)}</span>
 				</div>
-				<div class="flex items-center justify-between">
+				<div class="flex flex-wrap items-center justify-between gap-2">
 					<span class="text-fg-muted">Retention</span>
 					{#if ops.data}
 						<span>

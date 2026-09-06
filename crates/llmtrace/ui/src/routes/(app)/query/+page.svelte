@@ -229,7 +229,7 @@
 {:else if schema.error}
 	<Card><ErrorState message={schema.error} onRetry={() => schema.load()} /></Card>
 {:else if schema.data}
-	<div class="grid grid-cols-1 gap-4 xl:grid-cols-[22rem_1fr]">
+	<div class="grid grid-cols-1 gap-4 xl:grid-cols-[22rem_minmax(0,1fr)]">
 		<div class="flex flex-col gap-4">
 			<Card title="Dataset & fields">
 				<div class="flex flex-col gap-4">
@@ -284,11 +284,12 @@
 									<input
 										class="input flex-1 font-mono text-xs"
 										type="text"
+										aria-label="Plugin metadata path"
 										placeholder="plugin_metadata.name.path"
 										bind:value={row.field}
 									/>
 								{:else}
-									<select class="input flex-1" value={row.field} onchange={(e) => onFilterFieldChange(row, e.currentTarget.value)}>
+									<select class="input min-w-0 flex-1" aria-label="Filter field" value={row.field} onchange={(e) => onFilterFieldChange(row, e.currentTarget.value)}>
 										{#each filterableFields as f (f.name)}
 											<option value={f.name}>{f.name}</option>
 										{/each}
@@ -298,23 +299,23 @@
 									<Icon name="trash" size={14} />
 								</button>
 							</div>
-							<div class="mt-2 flex items-center gap-2">
-								<select class="input" bind:value={row.op}>
+							<div class="mt-2 grid grid-cols-2 items-center gap-2">
+								<select class="input min-w-0" aria-label="Filter operator" bind:value={row.op}>
 									{#each rowOperators(row) as op (op)}
 										<option value={op}>{op}</option>
 									{/each}
 								</select>
 								{#if valueInputKind(rowKind(row), row.op) === 'bool'}
-									<select class="input flex-1" bind:value={row.value}>
+									<select class="input min-w-0" aria-label="Filter value" bind:value={row.value}>
 										<option value="true">true</option>
 										<option value="false">false</option>
 									</select>
 								{:else if valueInputKind(rowKind(row), row.op) === 'int'}
-									<input class="input flex-1" type="number" bind:value={row.value} />
+									<input class="input min-w-0" aria-label="Filter value" type="number" bind:value={row.value} />
 								{:else if valueInputKind(rowKind(row), row.op) === 'timestamp'}
-									<input class="input flex-1" type="datetime-local" bind:value={row.value} />
+									<input class="input min-w-0" aria-label="Filter value" type="datetime-local" bind:value={row.value} />
 								{:else if valueInputKind(rowKind(row), row.op) === 'text'}
-									<input class="input flex-1" type="text" placeholder="value" bind:value={row.value} />
+									<input class="input min-w-0" aria-label="Filter value" type="text" placeholder="value" bind:value={row.value} />
 								{/if}
 							</div>
 							{#if row.custom}<p class="text-fg-muted mt-1 text-[10px]">Plugin metadata path · json_path</p>{/if}
@@ -340,12 +341,12 @@
 					{/if}
 					{#each orderBy as row (row.id)}
 						<div class="flex items-center gap-2">
-							<select class="input flex-1" bind:value={row.field}>
+							<select class="input min-w-0 flex-1" aria-label="Sort field" bind:value={row.field}>
 								{#each currentDataset?.fields ?? [] as f (f.name)}
 									<option value={f.name}>{f.name}</option>
 								{/each}
 							</select>
-							<select class="input" bind:value={row.direction}>
+							<select class="input !w-auto shrink-0" aria-label="Sort direction" bind:value={row.direction}>
 								{#each schema.data.sort_directions as dir (dir)}
 									<option value={dir}>{dir}</option>
 								{/each}
@@ -368,7 +369,7 @@
 			</div>
 		</div>
 
-		<div>
+		<div class="min-w-0">
 			{#if runError}
 				<div class="card mb-3 p-3 text-sm" style="border-color: var(--color-danger); color: var(--color-danger);">
 					{runError}

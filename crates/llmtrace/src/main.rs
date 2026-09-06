@@ -6,8 +6,10 @@ mod login_throttle;
 mod metrics;
 mod parsers;
 mod plugins;
+mod pricing;
 mod proxy;
 mod redaction;
+mod routing;
 mod state;
 mod storage;
 mod trace;
@@ -25,6 +27,7 @@ use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, HeaderValue, Request, header};
 use axum::middleware::{self, Next};
 use axum::response::Response;
+use axum::serve::ListenerExt;
 use clap::Parser;
 use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
@@ -88,46 +91,101 @@ async fn main() -> anyhow::Result<()> {
         config.storage.clone(),
         runtime_metrics.clone(),
     );
+    let archive_maintenance = storage::spawn_archive_maintenance(
+        pool.clone(),
+        config.storage.clone(),
+        config.archive.clone(),
+        runtime_metrics.clone(),
+    );
     let plugins = Arc::new(PluginManager::load(&config.plugins).context("failed to load plugins")?);
     let (recorder, pipeline) = TraceRecorder::spawn(
         pool.clone(),
         plugins.clone(),
         config.archive.clone(),
-        config.storage.trace_queue_capacity,
-        config.storage.trace_worker_count,
+        Arc::new(config.pricing.clone()),
+        &config.storage,
         runtime_metrics.clone(),
-    );
+    )?;
     let state = AppState::new(config.clone(), pool, plugins, recorder, runtime_metrics)
         .context("failed to initialize app state")?;
-    let app = build_router(state.clone());
-    let addr: SocketAddr = config
-        .server
-        .listen
-        .parse()
-        .with_context(|| format!("invalid listen address {}", config.server.listen))?;
-    let listener = TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("failed to bind {addr}"))?;
-
-    tracing::info!(%addr, "llmtrace listening");
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
-    .context("server failed")?;
+    let server_result = serve_routers(&config, &state).await;
 
     if let Some(handle) = retention_pruner {
         handle.abort();
         let _ = handle.await;
     }
+    archive_maintenance.abort();
+    let _ = archive_maintenance.await;
 
     // Drop every recorder handle so the pipeline observes a closed channel, then drain it.
     drop(state);
     pipeline.drain().await;
     tracing::info!("shutdown complete");
-    Ok(())
+    server_result
+}
+
+async fn serve_routers(config: &Config, state: &AppState) -> anyhow::Result<()> {
+    // Bind both sockets before accepting traffic so a failed admin bind cannot
+    // leave an apparently healthy, partially configured service running.
+    let mut listeners = vec![(
+        TcpListener::bind(&config.server.listen)
+            .await
+            .context("failed to bind proxy listener")?,
+        build_router(state.clone()),
+        if config.server.admin_listen.is_some() {
+            "proxy"
+        } else {
+            "combined"
+        },
+    )];
+    if let Some(addr) = &config.server.admin_listen {
+        listeners.push((
+            TcpListener::bind(addr)
+                .await
+                .context("failed to bind admin listener")?,
+            build_admin_router(state.clone()),
+            "admin",
+        ));
+    }
+    let (shutdown, receiver) = tokio::sync::watch::channel(false);
+    let mut servers = tokio::task::JoinSet::new();
+    for (listener, app, role) in listeners {
+        tracing::info!(addr = %listener.local_addr()?, role, "llmtrace listening");
+        let listener = listener.tap_io(|socket| {
+            if let Err(error) = socket.set_nodelay(true) {
+                tracing::warn!(%error, "failed to disable TCP buffering");
+            }
+        });
+        let mut receiver = receiver.clone();
+        servers.spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(async move {
+                let _ = receiver.wait_for(|stop| *stop).await;
+            })
+            .await
+            .context("server failed")
+        });
+    }
+    let first_result = tokio::select! {
+        _ = shutdown_signal() => None,
+        result = servers.join_next() => result,
+    };
+    let _ = shutdown.send(true);
+    // Stop both listeners on signals or failure, then allow in-flight streams
+    // to finish before main drops recorder handles and drains the journal.
+    let mut result = first_result
+        .map(|r| r.context("server task failed").and_then(|r| r))
+        .unwrap_or(Ok(()));
+    while let Some(next) = servers.join_next().await {
+        let next = next.context("server task failed").and_then(|r| r);
+        if result.is_ok() {
+            result = next;
+        }
+    }
+    result
 }
 
 async fn shutdown_signal() {
@@ -155,6 +213,24 @@ async fn shutdown_signal() {
 }
 
 fn build_router(state: AppState) -> Router {
+    let router = if state.config.server.admin_listen.is_some() {
+        Router::new()
+    } else {
+        platform_routes(&state)
+    };
+    router
+        .fallback(proxy::proxy)
+        .with_state(state)
+        .layer(TraceLayer::new_for_http().make_span_with(request_trace_span))
+}
+
+fn build_admin_router(state: AppState) -> Router {
+    platform_routes(&state)
+        .with_state(state)
+        .layer(TraceLayer::new_for_http().make_span_with(request_trace_span))
+}
+
+fn platform_routes(state: &AppState) -> Router<AppState> {
     let protected_api = api::router().route_layer(middleware::from_fn_with_state(
         state.clone(),
         auth::require_auth,
@@ -172,12 +248,7 @@ fn build_router(state: AppState) -> Router {
             private_response_headers,
         ));
 
-    Router::new()
-        .merge(health::router())
-        .merge(private_routes)
-        .fallback(proxy::proxy)
-        .with_state(state)
-        .layer(TraceLayer::new_for_http().make_span_with(request_trace_span))
+    Router::new().merge(health::router()).merge(private_routes)
 }
 
 fn request_trace_span<B>(request: &Request<B>) -> tracing::Span {

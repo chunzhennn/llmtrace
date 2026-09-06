@@ -1,0 +1,16 @@
+{
+  "after_bytes": 43740024,
+  "before_bytes": 48600972,
+  "case": "storage_50000",
+  "concurrent_write_p95_ms": 2.051501,
+  "deleted_requests": 5101,
+  "limit_bytes": 43740874,
+  "query_p95_ms": {
+    "requests_ms": 2.4850499999999998,
+    "session_ms": 18.53467,
+    "stats_ms": 1.042202
+  },
+  "rotation_secs": 1.440577951,
+  "seed_secs": 4.391719803,
+  "within_limit": true
+}

@@ -20,15 +20,15 @@
 	}: Props = $props();
 </script>
 
-<section class="card {className}">
+<section class="card min-w-0 {className}">
 	{#if title || actions}
 		<div
-			class="flex items-center justify-between gap-3 px-4 py-3"
+			class="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
 			style="border-bottom: 1px solid var(--color-border);"
 		>
 			<div class="min-w-0">
 				{#if title}<h2 class="truncate text-sm font-semibold">{title}</h2>{/if}
-				{#if subtitle}<p class="text-fg-muted truncate text-xs">{subtitle}</p>{/if}
+				{#if subtitle}<p class="text-fg-muted text-xs [overflow-wrap:anywhere]">{subtitle}</p>{/if}
 			</div>
 			{#if actions}
 				<div class="flex shrink-0 items-center gap-2">{@render actions()}</div>

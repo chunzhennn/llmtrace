@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use wasmtime::{Config, Engine, Instance, Module, Store};
+use wasmtime::{Config, Engine, Linker, Module, Store};
+
+mod http;
 
 use crate::config::PluginConfig;
 use crate::types::PluginHook;
@@ -29,7 +31,7 @@ pub struct HookInput {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HookOutput {
-    #[serde(default)]
+    #[serde(default, alias = "metadata")]
     pub custom_fields: Map<String, Value>,
     #[serde(default)]
     pub tags: Vec<String>,
@@ -64,6 +66,7 @@ pub struct PluginManager {
     plugins: Vec<Arc<WasmPlugin>>,
     statuses: Vec<PluginStatus>,
     _ticker: Option<EpochTicker>,
+    http: reqwest::Client,
 }
 
 struct WasmPlugin {
@@ -72,6 +75,8 @@ struct WasmPlugin {
     hooks: Vec<PluginHook>,
     module: Module,
     epoch_deadline: u64,
+    timeout_ms: u64,
+    http_get_urls: Vec<url::Url>,
 }
 
 impl PluginManager {
@@ -101,6 +106,12 @@ impl PluginManager {
                         hooks: config.hooks.clone(),
                         module,
                         epoch_deadline: epoch_deadline(config.timeout_ms),
+                        timeout_ms: config.timeout_ms,
+                        http_get_urls: config
+                            .http_get_urls
+                            .iter()
+                            .map(|url| url::Url::parse(url))
+                            .collect::<Result<_, _>>()?,
                     }));
                     statuses.push(PluginStatus {
                         name: name.to_string(),
@@ -126,11 +137,18 @@ impl PluginManager {
             plugins,
             statuses,
             _ticker: ticker,
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?,
         })
     }
 
     pub fn statuses(&self) -> &[PluginStatus] {
         &self.statuses
+    }
+
+    pub fn has_plugins(&self) -> bool {
+        !self.plugins.is_empty()
     }
 
     pub fn run_hook(&self, hook: PluginHook, mut input: HookInput) -> PluginEffects {
@@ -141,7 +159,7 @@ impl PluginManager {
             if !plugin.hooks.contains(&hook) {
                 continue;
             }
-            match plugin.invoke(&self.engine, &input) {
+            match plugin.invoke(&self.engine, &self.http, &input) {
                 Ok(Some(output)) => effects.merge(plugin.name.as_str(), output),
                 Ok(None) => {}
                 Err(error) => effects.warnings.push(format!(
@@ -178,12 +196,23 @@ impl PluginEffects {
 }
 
 impl WasmPlugin {
-    fn invoke(&self, engine: &Engine, input: &HookInput) -> anyhow::Result<Option<HookOutput>> {
+    fn invoke(
+        &self,
+        engine: &Engine,
+        http: &reqwest::Client,
+        input: &HookInput,
+    ) -> anyhow::Result<Option<HookOutput>> {
         let export_name = format!("llmtrace_{}", input.hook.as_str());
-        let mut store = Store::new(engine, ());
+        let mut store = Store::new(
+            engine,
+            http::HostState::new(http.clone(), &self.http_get_urls, self.timeout_ms),
+        );
+        store.limiter(|state| &mut state.limits);
         store.set_epoch_deadline(self.epoch_deadline);
 
-        let instance = Instance::new(&mut store, &self.module, &[])?;
+        let mut linker = Linker::new(engine);
+        http::register(&mut linker)?;
+        let instance = linker.instantiate(&mut store, &self.module)?;
         let Some(func) = instance.get_func(&mut store, &export_name) else {
             return Ok(None);
         };
@@ -197,7 +226,8 @@ impl WasmPlugin {
             .ok();
 
         let input_bytes = serde_json::to_vec(input)?;
-        let input_ptr = alloc.call(&mut store, input_bytes.len() as i32)?;
+        let input_len = i32::try_from(input_bytes.len())?;
+        let input_ptr = alloc.call(&mut store, input_len)?;
         memory.write(&mut store, input_ptr as usize, &input_bytes)?;
         let packed = hook_func.call(&mut store, (input_ptr, input_bytes.len() as i32))?;
         if let Some(dealloc) = &dealloc {
@@ -341,16 +371,14 @@ mod tests {
     }
 
     #[test]
-    fn hook_output_rejects_legacy_metadata_field() {
-        let error = serde_json::from_value::<HookOutput>(json!({
+    fn hook_output_accepts_legacy_metadata_field() {
+        let output = serde_json::from_value::<HookOutput>(json!({
             "metadata": {
                 "customer_tier": "enterprise"
             }
         }))
-        .unwrap_err()
-        .to_string();
-
-        assert!(error.contains("unknown field `metadata`"));
+        .unwrap();
+        assert_eq!(output.custom_fields["customer_tier"], "enterprise");
     }
 
     fn pack_output(ptr: i32, len: i32) -> i64 {

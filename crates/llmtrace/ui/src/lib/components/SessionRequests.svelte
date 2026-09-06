@@ -31,7 +31,7 @@
 
 	async function exportRequests() {
 		try {
-			const rows = await exportJsonl.sessionRequests(id, { limit: 500 });
+			const rows = await exportJsonl.sessionRequests(id, { limit: REQUEST_PAGE, offset });
 			toasts.success(`Exported ${rows} request${rows === 1 ? '' : 's'}.`);
 		} catch (err) {
 			toasts.error(err instanceof Error ? err.message : 'Export failed.');
@@ -49,7 +49,7 @@
 <div class="mb-2 flex items-center justify-between">
 	<h2 class="text-sm font-semibold">Requests</h2>
 	<button type="button" class="btn !px-2 !py-1 text-xs" onclick={exportRequests}>
-		<Icon name="download" size={14} /> Export
+		<Icon name="download" size={14} /> Export page
 	</button>
 </div>
 <DataTable

@@ -23,8 +23,12 @@
 	}: Props = $props();
 
 	let mode = $state<'auto' | 'raw'>('auto');
+	const PREVIEW_CHARS = 128 * 1024;
+	const large = $derived(body.length > PREVIEW_CHARS);
+	const preview = $derived(body.slice(0, PREVIEW_CHARS));
 
 	const parsed = $derived.by(() => {
+		if (large) return { ok: false, value: null };
 		const trimmed = body.trim();
 		if (trimmed === '') return { ok: false, value: null };
 		const looksJson =
@@ -80,6 +84,7 @@
 		{/if}
 	</div>
 
+	{#if large}<p class="text-xs opacity-70">Showing the first 128 KiB of text. Download the captured body to inspect the rest.</p>{/if}
 	{#if body.length === 0}
 		<EmptyState icon="inbox" title="No body captured" message="This payload was empty or not stored." />
 	{:else if showJson}
@@ -87,6 +92,6 @@
 	{:else}
 		<pre
 			class="overflow-auto rounded-lg p-3 text-xs leading-relaxed"
-			style="background-color: var(--color-surface-muted); max-height: 28rem; white-space: pre-wrap; word-break: break-word;">{body}</pre>
+			style="background-color: var(--color-surface-muted); max-height: 28rem; white-space: pre-wrap; word-break: break-word;">{preview}</pre>
 	{/if}
 </div>

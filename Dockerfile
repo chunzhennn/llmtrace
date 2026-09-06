@@ -22,8 +22,9 @@ RUN apt-get update \
     && useradd --uid 10001 --gid llmtrace --home-dir /var/lib/llmtrace --create-home --shell /usr/sbin/nologin llmtrace
 COPY --from=build /app/target/release/llmtrace /usr/local/bin/llmtrace
 WORKDIR /var/lib/llmtrace
-EXPOSE 3000
+RUN install -d -o llmtrace -g llmtrace -m 0700 /var/lib/llmtrace/spool
+EXPOSE 3000 3001
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:3000/readyz || exit 1
+    CMD curl -fsS "${LLMTRACE_HEALTHCHECK_URL:-http://127.0.0.1:3000/readyz}" || exit 1
 USER llmtrace:llmtrace
 ENTRYPOINT ["llmtrace"]

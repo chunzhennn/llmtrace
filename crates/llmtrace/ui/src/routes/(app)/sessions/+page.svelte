@@ -9,7 +9,7 @@
 	import { Resource } from '$lib/utils/resource.svelte';
 	import * as sessionsApi from '$lib/api/endpoints/sessions';
 	import type { Paginated, SessionSummary } from '$lib/api/types';
-	import { formatNumber, formatDateTime, formatDuration, truncateMiddle } from '$lib/utils/format';
+	import { formatNumber, formatDateTime, formatDuration } from '$lib/utils/format';
 	import type { QueryParams } from '$lib/api/client';
 
 	const DEFAULT_LIMIT = 50;
@@ -53,8 +53,7 @@
 	}
 
 	const columns: Column[] = [
-		{ label: 'Session' },
-		{ label: 'User' },
+		{ label: 'Employee / session' },
 		{ label: 'Requests', align: 'right' },
 		{ label: 'Max duration', align: 'right' },
 		{ label: 'First seen' },
@@ -71,6 +70,7 @@
 		class="input flex-1"
 		type="text"
 		name="q"
+		aria-label="Search sessions by employee or session key"
 		placeholder="Search by session key or user…"
 		value={page.url.searchParams.get('q') ?? ''}
 	/>
@@ -96,11 +96,11 @@
 >
 	{#snippet row(item: SessionSummary)}
 		<td class="px-3 py-2">
-			<a class="font-medium hover:underline" style="color: var(--color-brand);" href={`${base}/sessions/${item.id}`}>
-				{truncateMiddle(item.session_key, 40)}
+			<a class="font-medium hover:underline" style="color: var(--color-brand);" href={`${base}/sessions/${item.id}?from=${encodeURIComponent(page.url.pathname + page.url.search)}`}>
+				{item.user_name ?? item.user_id ?? 'Unattributed employee'}
 			</a>
+			<div class="text-fg-muted mt-1 font-mono text-xs" title={item.session_key}>Session {item.id.slice(0, 8)}</div>
 		</td>
-		<td class="px-3 py-2">{item.user_name ?? item.user_id ?? '—'}</td>
 		<td class="px-3 py-2 text-right tabular-nums">{formatNumber(item.request_count)}</td>
 		<td class="px-3 py-2 text-right tabular-nums">{formatDuration(item.max_duration_ms)}</td>
 		<td class="px-3 py-2 whitespace-nowrap">{formatDateTime(item.first_seen)}</td>

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount, tick } from 'svelte';
 	import { page } from '$app/state';
 	import { base } from '$app/paths';
 	import Icon from '$lib/components/Icon.svelte';
@@ -8,6 +9,53 @@
 	let { children } = $props();
 
 	let mobileOpen = $state(false);
+	let isMobile = $state(false);
+	let sidebar: HTMLElement;
+	let menuButton: HTMLButtonElement;
+
+	onMount(() => {
+		const media = window.matchMedia('(max-width: 767px)');
+		const update = () => {
+			isMobile = media.matches;
+			if (!isMobile) mobileOpen = false;
+		};
+		update();
+		media.addEventListener('change', update);
+		return () => media.removeEventListener('change', update);
+	});
+
+	$effect(() => {
+		if (!mobileOpen || !isMobile) return;
+		const previous = document.body.style.overflow;
+		document.body.style.overflow = 'hidden';
+		sidebar?.querySelector<HTMLButtonElement>('[aria-label="Close menu"]')?.focus();
+		return () => { document.body.style.overflow = previous; };
+	});
+
+	async function closeMenu(restoreFocus = true) {
+		mobileOpen = false;
+		if (restoreFocus) {
+			await tick();
+			menuButton?.focus();
+		}
+	}
+
+	function menuKeydown(event: KeyboardEvent) {
+		if (!mobileOpen || !isMobile) return;
+		if (event.key === 'Escape') {
+			event.preventDefault();
+			void closeMenu();
+		} else if (event.key === 'Tab') {
+			const controls = sidebar.querySelectorAll<HTMLElement>('a[href], button');
+			const first = controls[0];
+			const last = controls[controls.length - 1];
+			if (event.shiftKey && document.activeElement === first) {
+				event.preventDefault(); last?.focus();
+			} else if (!event.shiftKey && document.activeElement === last) {
+				event.preventDefault(); first?.focus();
+			}
+		}
+	}
 
 	interface NavItem {
 		href: string;
@@ -55,9 +103,16 @@
 	}
 </script>
 
+<svelte:window onkeydown={menuKeydown} />
+
+<a href="#main-content" class="skip-link" inert={isMobile && mobileOpen}>Skip to content</a>
 <div class="flex min-h-screen">
 	<!-- Sidebar -->
 	<aside
+		id="primary-navigation"
+		bind:this={sidebar}
+		inert={isMobile && !mobileOpen}
+		aria-label="Main navigation"
 		class="fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r transition-transform md:translate-x-0 {mobileOpen
 			? 'translate-x-0'
 			: '-translate-x-full'}"
@@ -71,6 +126,9 @@
 				<Icon name="activity" size={18} />
 			</div>
 			<span class="font-semibold">llmtrace</span>
+			<button type="button" class="btn ml-auto !p-2 md:hidden" aria-label="Close menu" onclick={() => closeMenu()}>
+				<Icon name="x" />
+			</button>
 		</div>
 
 		<nav class="flex-1 overflow-y-auto px-3 py-4">
@@ -86,7 +144,7 @@
 							style={isActive(item.href)
 								? 'background-color: color-mix(in srgb, var(--color-brand) 15%, transparent); color: var(--color-brand); font-weight: 600;'
 								: 'color: var(--color-fg);'}
-							onclick={() => (mobileOpen = false)}
+							onclick={() => closeMenu(false)}
 							aria-current={isActive(item.href) ? 'page' : undefined}
 						>
 							<Icon name={item.icon} size={17} />
@@ -102,13 +160,14 @@
 		<button
 			type="button"
 			class="fixed inset-0 z-30 bg-black/40 md:hidden"
-			aria-label="Close menu"
-			onclick={() => (mobileOpen = false)}
+			aria-label="Dismiss navigation"
+			tabindex="-1"
+			onclick={() => closeMenu()}
 		></button>
 	{/if}
 
 	<!-- Main -->
-	<div class="flex min-w-0 flex-1 flex-col md:pl-64">
+	<div class="flex min-w-0 flex-1 flex-col md:pl-64" inert={isMobile && mobileOpen}>
 		<header
 			class="sticky top-0 z-20 flex h-14 items-center gap-3 border-b px-4"
 			style="background-color: color-mix(in srgb, var(--color-surface) 85%, transparent); border-color: var(--color-border); backdrop-filter: blur(8px);"
@@ -117,12 +176,15 @@
 				type="button"
 				class="btn !p-2 md:hidden"
 				aria-label="Open menu"
+				aria-expanded={mobileOpen}
+				aria-controls="primary-navigation"
+				bind:this={menuButton}
 				onclick={() => (mobileOpen = true)}
 			>
 				<Icon name="menu" />
 			</button>
 
-			<div class="flex-1"></div>
+			<div class="flex-1"><span class="text-sm font-semibold md:hidden">llmtrace</span></div>
 
 			<button
 				type="button"
@@ -155,7 +217,7 @@
 			</div>
 		</header>
 
-		<main class="min-w-0 flex-1 p-4 md:p-6">
+		<main id="main-content" tabindex="-1" class="min-w-0 flex-1 p-4 md:p-6">
 			{@render children()}
 		</main>
 	</div>

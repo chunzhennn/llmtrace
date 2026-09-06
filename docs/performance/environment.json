@@ -1,0 +1,17 @@
+{
+  "measured_dates": "2026-09-05/06",
+  "cpu": "AMD Ryzen 7 7735H",
+  "logical_cpus": 16,
+  "mem_total_kib": 27881328,
+  "rust": "1.97.1",
+  "node": "24.18.1",
+  "chrome": "151.0.7922.71",
+  "postgres_major": 16,
+  "binary_sha256": {
+    "baseline": "877050464069858949feca725d077416d241383b63318750889fe8792efd71fc",
+    "after": "70a14a71eabc93a179ac046de8bc9dcf95fea29efccae095c3fc0c6976efe558"
+  },
+  "functional_rust_tests": 349,
+  "release_performance_tests": 3,
+  "frontend_tests": 41
+}

@@ -49,13 +49,18 @@ pub struct Config {
     pub observability: ObservabilityConfig,
     pub redaction: RedactionConfig,
     pub plugins: Vec<PluginConfig>,
+    pub pricing: crate::pricing::PriceTable,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ServerConfig {
     pub listen: String,
+    /// Optional dedicated admin socket. `listen` then serves only upstream traffic.
+    pub admin_listen: Option<String>,
+    /// Admin browser origin, also used for cookies, CSRF checks and OAuth redirects.
     pub public_url: String,
+    pub proxy_public_url: Option<String>,
     pub deployment: DeploymentMode,
     pub ui_enabled: bool,
 }
@@ -63,15 +68,34 @@ pub struct ServerConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ProxyConfig {
+    pub preset: ProxyPreset,
     pub default_upstream: String,
     pub allow_upstreams: Vec<String>,
-    pub path_prefixes: Vec<String>,
+    pub path_prefixes: Option<Vec<String>>,
+    pub capture_path_prefixes: Option<Vec<String>>,
     pub upstream_header: String,
     pub timeout_secs: u64,
     pub max_request_body_bytes: usize,
     pub max_response_body_bytes: usize,
     pub max_websocket_message_bytes: usize,
     pub max_websocket_session_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProxyPreset {
+    #[default]
+    Custom,
+    Litellm,
+}
+
+impl ProxyPreset {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Custom => "custom",
+            Self::Litellm => "litellm",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -81,10 +105,36 @@ pub struct StorageConfig {
     pub max_connections: u32,
     pub acquire_timeout_secs: u64,
     pub trace_queue_capacity: usize,
+    pub trace_queue_max_bytes: usize,
     pub trace_worker_count: usize,
+    pub journal: JournalConfig,
     pub retention_days: Option<i64>,
     pub retention_prune_interval_secs: u64,
     pub retention_prune_batch_size: i64,
+    pub rotate_size_bytes: u64,
+    pub rotate_check_interval_secs: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct JournalConfig {
+    pub enabled: bool,
+    pub directory: PathBuf,
+    pub max_bytes: u64,
+    pub max_records: usize,
+    pub retry_interval_secs: u64,
+}
+
+impl Default for JournalConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            directory: PathBuf::from("spool/journal"),
+            max_bytes: 1024 * 1024 * 1024,
+            max_records: 100_000,
+            retry_interval_secs: 2,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -158,6 +208,8 @@ pub struct PluginConfig {
     pub wasm_path: PathBuf,
     pub hooks: Vec<PluginHook>,
     pub timeout_ms: u64,
+    /// Exact GET URLs a plugin may contact; empty disables network access.
+    pub http_get_urls: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -268,7 +320,32 @@ impl ProxyConfig {
     }
 
     pub fn path_prefix_allowlist(&self) -> Result<PathPrefixAllowlist, String> {
-        PathPrefixAllowlist::parse(&self.path_prefixes)
+        PathPrefixAllowlist::parse(&self.effective_path_prefixes(), "proxy.path_prefixes")
+    }
+
+    pub fn effective_path_prefixes(&self) -> Vec<String> {
+        self.path_prefixes
+            .clone()
+            .unwrap_or_else(|| match self.preset {
+                ProxyPreset::Custom => vec!["/v1".into()],
+                ProxyPreset::Litellm => crate::routing::litellm_forward_prefixes(),
+            })
+    }
+
+    pub fn effective_capture_path_prefixes(&self) -> Vec<String> {
+        self.capture_path_prefixes
+            .clone()
+            .unwrap_or_else(|| match self.preset {
+                ProxyPreset::Custom => self.effective_path_prefixes(),
+                ProxyPreset::Litellm => crate::routing::litellm_capture_prefixes(),
+            })
+    }
+
+    pub fn capture_prefix_allowlist(&self) -> Result<PathPrefixAllowlist, String> {
+        PathPrefixAllowlist::parse(
+            &self.effective_capture_path_prefixes(),
+            "proxy.capture_path_prefixes",
+        )
     }
 }
 
@@ -298,13 +375,11 @@ impl UpstreamAllowlist {
 }
 
 impl PathPrefixAllowlist {
-    fn parse(entries: &[String]) -> Result<Self, String> {
+    fn parse(entries: &[String], field: &str) -> Result<Self, String> {
         let prefixes = entries
             .iter()
             .enumerate()
-            .map(|(index, entry)| {
-                parse_proxy_path_prefix(&format!("proxy.path_prefixes[{index}]"), entry)
-            })
+            .map(|(index, entry)| parse_proxy_path_prefix(&format!("{field}[{index}]"), entry))
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Self { prefixes })
@@ -365,7 +440,9 @@ impl Config {
     }
 
     pub fn log_startup_warnings(&self) {
-        if !self.server.deployment.is_production() && self.proxy.path_prefixes.is_empty() {
+        if !self.server.deployment.is_production()
+            && self.proxy.effective_path_prefixes().is_empty()
+        {
             tracing::warn!("proxy.path_prefixes is empty; non-platform paths will not be proxied");
         }
     }
@@ -381,6 +458,14 @@ impl Config {
         self.validate_observability(&mut errors);
         self.validate_redaction(&mut errors);
         self.validate_plugins(&mut errors);
+        for (model, price) in &self.pricing {
+            if model.trim().is_empty() || !price.valid() {
+                errors.push(
+                    "pricing requires a model name and finite nonnegative USD rates up to 1000000"
+                        .to_string(),
+                );
+            }
+        }
 
         if errors.is_empty() {
             Ok(())
@@ -408,6 +493,40 @@ impl Config {
                 "server.listen must be a socket address, got {:?}",
                 self.server.listen
             ));
+        }
+
+        if self.server.admin_listen.is_some() != self.server.proxy_public_url.is_some() {
+            errors.push(
+                "server.admin_listen and server.proxy_public_url must be configured together"
+                    .into(),
+            );
+        }
+        if let Some(listen) = &self.server.admin_listen {
+            match listen.parse::<SocketAddr>() {
+                Ok(admin) => {
+                    if self.server.listen.parse::<SocketAddr>().is_ok_and(|proxy| {
+                        admin.port() != 0
+                            && admin.port() == proxy.port()
+                            && (admin.ip() == proxy.ip()
+                                || admin.ip().is_unspecified()
+                                || proxy.ip().is_unspecified())
+                    }) {
+                        errors.push("server.admin_listen must not overlap server.listen".into());
+                    }
+                }
+                Err(_) => errors.push("server.admin_listen must be a socket address".into()),
+            }
+        }
+        if let Some(proxy_url) = &self.server.proxy_public_url {
+            let proxy = validate_public_origin("server.proxy_public_url", proxy_url, errors);
+            let admin =
+                validate_public_origin("server.public_url", &self.server.public_url, errors);
+            if let (Some(proxy), Some(admin)) = (proxy, admin)
+                && proxy.host_str().map(|h| h.trim_end_matches('.'))
+                    == admin.host_str().map(|h| h.trim_end_matches('.'))
+            {
+                errors.push("server.public_url and server.proxy_public_url must use different hostnames (browser cookies are not isolated by port)".into());
+            }
         }
 
         match parse_url(
@@ -482,17 +601,19 @@ impl Config {
             );
         }
 
-        if self.server.deployment.is_production() && self.proxy.path_prefixes.is_empty() {
+        if self.server.deployment.is_production() && self.proxy.effective_path_prefixes().is_empty()
+        {
             errors.push(
                 "proxy.path_prefixes must not be empty when server.deployment is production"
                     .to_string(),
             );
         }
 
-        for (index, prefix) in self.proxy.path_prefixes.iter().enumerate() {
-            if let Err(error) =
-                parse_proxy_path_prefix(&format!("proxy.path_prefixes[{index}]"), prefix)
-            {
+        for result in [
+            self.proxy.path_prefix_allowlist(),
+            self.proxy.capture_prefix_allowlist(),
+        ] {
+            if let Err(error) = result {
                 errors.push(error);
             }
         }
@@ -507,6 +628,15 @@ impl Config {
     }
 
     fn validate_storage(&self, errors: &mut Vec<String>) {
+        if self.storage.rotate_size_bytes > i64::MAX as u64 {
+            errors.push("storage.rotate_size_bytes must fit in a signed 64-bit integer".into());
+        }
+        validate_u64_range(
+            errors,
+            "storage.rotate_check_interval_secs",
+            self.storage.rotate_check_interval_secs,
+            MAX_RETENTION_PRUNE_INTERVAL_SECS,
+        );
         if let Err(error) = parse_url(
             "storage.postgres_url",
             &self.storage.postgres_url,
@@ -534,10 +664,37 @@ impl Config {
         );
         validate_usize_range(
             errors,
+            "storage.trace_queue_max_bytes",
+            self.storage.trace_queue_max_bytes,
+            64 * 1024 * 1024 * 1024,
+        );
+        validate_usize_range(
+            errors,
             "storage.trace_worker_count",
             self.storage.trace_worker_count,
             MAX_TRACE_WORKER_COUNT,
         );
+        validate_u64_range(
+            errors,
+            "storage.journal.max_bytes",
+            self.storage.journal.max_bytes,
+            1024 * 1024 * 1024 * 1024,
+        );
+        validate_usize_range(
+            errors,
+            "storage.journal.max_records",
+            self.storage.journal.max_records,
+            1_000_000,
+        );
+        validate_u64_range(
+            errors,
+            "storage.journal.retry_interval_secs",
+            self.storage.journal.retry_interval_secs,
+            3600,
+        );
+        if self.storage.journal.directory.as_os_str().is_empty() {
+            errors.push("storage.journal.directory must not be empty".into());
+        }
         match self.storage.retention_days {
             Some(days) if days <= 0 => {
                 errors.push("storage.retention_days must be greater than 0 when set".to_string());
@@ -838,6 +995,22 @@ impl Config {
 
         let mut names = HashSet::new();
         for (index, plugin) in self.plugins.iter().enumerate() {
+            if plugin.http_get_urls.len() > 16 {
+                errors.push(format!(
+                    "plugins[{index}].http_get_urls permits at most 16 URLs"
+                ));
+            }
+            for endpoint in &plugin.http_get_urls {
+                if url::Url::parse(endpoint).map_or(true, |url| {
+                    !matches!(url.scheme(), "http" | "https")
+                        || url.host_str().is_none()
+                        || !url.username().is_empty()
+                        || url.password().is_some()
+                        || url.fragment().is_some()
+                }) {
+                    errors.push(format!("plugins[{index}].http_get_urls requires HTTP(S) URLs without credentials or fragments"));
+                }
+            }
             let name = plugin.name.trim();
             if name.is_empty() {
                 errors.push(format!("plugins[{index}].name must not be empty"));
@@ -913,6 +1086,13 @@ fn apply_env_overrides(
         config.storage.retention_prune_batch_size =
             parse_i64_env("LLMTRACE_RETENTION_PRUNE_BATCH_SIZE", &value)?;
     }
+    if let Some(value) = env("LLMTRACE_ROTATE_SIZE_BYTES") {
+        config.storage.rotate_size_bytes = parse_u64_env("LLMTRACE_ROTATE_SIZE_BYTES", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_ROTATE_CHECK_INTERVAL_SECS") {
+        config.storage.rotate_check_interval_secs =
+            parse_u64_env("LLMTRACE_ROTATE_CHECK_INTERVAL_SECS", &value)?;
+    }
     if let Some(value) = env("LLMTRACE_DB_ACQUIRE_TIMEOUT_SECS") {
         config.storage.acquire_timeout_secs =
             parse_u64_env("LLMTRACE_DB_ACQUIRE_TIMEOUT_SECS", &value)?;
@@ -921,11 +1101,38 @@ fn apply_env_overrides(
         config.storage.trace_queue_capacity =
             parse_usize_env("LLMTRACE_TRACE_QUEUE_CAPACITY", &value)?;
     }
+    if let Some(value) = env("LLMTRACE_TRACE_QUEUE_MAX_BYTES") {
+        config.storage.trace_queue_max_bytes =
+            parse_usize_env("LLMTRACE_TRACE_QUEUE_MAX_BYTES", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_JOURNAL_ENABLED") {
+        config.storage.journal.enabled = parse_bool_env("LLMTRACE_JOURNAL_ENABLED", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_JOURNAL_DIRECTORY") {
+        config.storage.journal.directory = PathBuf::from(value);
+    }
+    if let Some(value) = env("LLMTRACE_JOURNAL_MAX_BYTES") {
+        config.storage.journal.max_bytes = parse_u64_env("LLMTRACE_JOURNAL_MAX_BYTES", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_JOURNAL_MAX_RECORDS") {
+        config.storage.journal.max_records =
+            parse_usize_env("LLMTRACE_JOURNAL_MAX_RECORDS", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_JOURNAL_RETRY_INTERVAL_SECS") {
+        config.storage.journal.retry_interval_secs =
+            parse_u64_env("LLMTRACE_JOURNAL_RETRY_INTERVAL_SECS", &value)?;
+    }
     if let Some(value) = env("LLMTRACE_TRACE_WORKER_COUNT") {
         config.storage.trace_worker_count = parse_usize_env("LLMTRACE_TRACE_WORKER_COUNT", &value)?;
     }
     if let Some(value) = env("LLMTRACE_LISTEN") {
         config.server.listen = value;
+    }
+    if let Some(value) = env("LLMTRACE_ADMIN_LISTEN") {
+        config.server.admin_listen = Some(value);
+    }
+    if let Some(value) = env("LLMTRACE_PROXY_PUBLIC_URL") {
+        config.server.proxy_public_url = Some(value);
     }
     if let Some(value) = env("LLMTRACE_PUBLIC_URL") {
         config.server.public_url = value;
@@ -939,11 +1146,26 @@ fn apply_env_overrides(
     if let Some(value) = env("LLMTRACE_DEFAULT_UPSTREAM") {
         config.proxy.default_upstream = value;
     }
+    if let Some(value) = env("LLMTRACE_PROXY_PRESET") {
+        config.proxy.preset = match value.trim() {
+            "custom" => ProxyPreset::Custom,
+            "litellm" => ProxyPreset::Litellm,
+            _ => anyhow::bail!("LLMTRACE_PROXY_PRESET must be custom or litellm"),
+        };
+    }
     if let Some(value) = env("LLMTRACE_ALLOW_UPSTREAMS") {
         config.proxy.allow_upstreams = parse_csv_env("LLMTRACE_ALLOW_UPSTREAMS", &value)?;
     }
     if let Some(value) = env("LLMTRACE_PROXY_PATH_PREFIXES") {
-        config.proxy.path_prefixes = parse_csv_env("LLMTRACE_PROXY_PATH_PREFIXES", &value)?;
+        config.proxy.path_prefixes = Some(parse_csv_env("LLMTRACE_PROXY_PATH_PREFIXES", &value)?);
+    }
+    if let Some(value) = env("LLMTRACE_CAPTURE_PATH_PREFIXES") {
+        // An empty value explicitly disables capture, matching [] in TOML.
+        config.proxy.capture_path_prefixes = Some(if value.trim().is_empty() {
+            Vec::new()
+        } else {
+            parse_csv_env("LLMTRACE_CAPTURE_PATH_PREFIXES", &value)?
+        });
     }
     if let Some(value) = env("LLMTRACE_UPSTREAM_HEADER") {
         config.proxy.upstream_header = value;
@@ -1053,6 +1275,16 @@ fn apply_env_overrides(
     }
     if let Some(value) = env("LLMTRACE_STORE_HEADER_HASH") {
         config.redaction.store_header_hash = parse_bool_env("LLMTRACE_STORE_HEADER_HASH", &value)?;
+    }
+    if let Some(value) = env("LLMTRACE_PRICING_JSON") {
+        config.pricing = serde_json::from_str(&value).map_err(|_| {
+            anyhow::anyhow!("LLMTRACE_PRICING_JSON must be a valid model pricing object")
+        })?;
+    }
+    if let Some(value) = env("LLMTRACE_PLUGINS_JSON") {
+        config.plugins = serde_json::from_str(&value).map_err(|_| {
+            anyhow::anyhow!("LLMTRACE_PLUGINS_JSON must be a valid plugin configuration array")
+        })?;
     }
     Ok(())
 }
@@ -1181,16 +1413,42 @@ fn parse_proxy_path_prefix(field: &str, value: &str) -> Result<String, String> {
     if !value.starts_with('/') {
         return Err(format!("{field} must start with '/', got {value:?}"));
     }
-    if value.split('/').any(|segment| segment == "..") {
-        return Err(format!("{field} must not contain '..', got {value:?}"));
-    }
-    let normalized = normalize_allowlist_path(value);
-    if normalized == "/" {
+    if value
+        .split('/')
+        .any(|segment| segment == ".." || segment == ".")
+        || value.contains(['?', '#', '%', '\\'])
+        || value.chars().any(char::is_whitespace)
+    {
         return Err(format!(
-            "{field} must not be '/', which would allow all paths to be proxied"
+            "{field} must be a plain path without dot segments, escapes, whitespace, query or fragment"
         ));
     }
+    let normalized = normalize_allowlist_path(value);
     Ok(normalized)
+}
+
+fn validate_public_origin(field: &str, value: &str, errors: &mut Vec<String>) -> Option<Url> {
+    match parse_url(field, value, &["http", "https"]) {
+        Ok(url)
+            if url.username().is_empty()
+                && url.password().is_none()
+                && url.path() == "/"
+                && url.query().is_none()
+                && url.fragment().is_none() =>
+        {
+            Some(url)
+        }
+        Ok(_) => {
+            errors.push(format!(
+                "{field} must be an origin without credentials, path, query or fragment"
+            ));
+            None
+        }
+        Err(error) => {
+            errors.push(error);
+            None
+        }
+    }
 }
 
 fn path_prefix_matches(prefix: &str, path: &str) -> bool {
@@ -1321,7 +1579,9 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             listen: "127.0.0.1:3000".to_string(),
+            admin_listen: None,
             public_url: "http://127.0.0.1:3000".to_string(),
+            proxy_public_url: None,
             deployment: DeploymentMode::Development,
             ui_enabled: true,
         }
@@ -1331,9 +1591,11 @@ impl Default for ServerConfig {
 impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
+            preset: ProxyPreset::Custom,
             default_upstream: "https://api.openai.com".to_string(),
             allow_upstreams: Vec::new(),
-            path_prefixes: vec!["/v1".to_string()],
+            path_prefixes: None,
+            capture_path_prefixes: None,
             upstream_header: "x-llmtrace-upstream".to_string(),
             timeout_secs: 300,
             max_request_body_bytes: 64 * 1024 * 1024,
@@ -1351,10 +1613,14 @@ impl Default for StorageConfig {
             max_connections: 10,
             acquire_timeout_secs: 30,
             trace_queue_capacity: 4096,
+            trace_queue_max_bytes: 256 * 1024 * 1024,
             trace_worker_count: 4,
+            journal: JournalConfig::default(),
             retention_days: None,
             retention_prune_interval_secs: 3600,
             retention_prune_batch_size: 1000,
+            rotate_size_bytes: 0,
+            rotate_check_interval_secs: 60,
         }
     }
 }
@@ -1446,12 +1712,116 @@ impl Default for PluginConfig {
             wasm_path: PathBuf::new(),
             hooks: Vec::new(),
             timeout_ms: 50,
+            http_get_urls: Vec::new(),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn split_domain_example_and_environment_overrides_validate() {
+        let mut config: super::Config =
+            toml::from_str(include_str!("../../../llmtrace.litellm.example.toml")).unwrap();
+        config.validate().unwrap();
+        super::apply_env_overrides(&mut config, |name| match name {
+            "LLMTRACE_ADMIN_LISTEN" => Some("0.0.0.0:9101".into()),
+            "LLMTRACE_PUBLIC_URL" => Some("https://trace.example.com".into()),
+            "LLMTRACE_PROXY_PUBLIC_URL" => Some("https://api.example.com".into()),
+            "LLMTRACE_PROXY_PATH_PREFIXES" => Some("/v1,/models".into()),
+            "LLMTRACE_CAPTURE_PATH_PREFIXES" => Some("".into()),
+            "LLMTRACE_PROXY_PRESET" => Some("litellm".into()),
+            _ => None,
+        })
+        .unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.server.admin_listen.as_deref(), Some("0.0.0.0:9101"));
+        assert_eq!(config.proxy.effective_path_prefixes(), ["/v1", "/models"]);
+        assert!(config.proxy.effective_capture_path_prefixes().is_empty());
+    }
+
+    #[test]
+    fn split_domains_reject_shared_cookie_host_and_incomplete_configuration() {
+        let mut config = super::Config::default();
+        config.server.admin_listen = Some("127.0.0.1:3001".into());
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("configured together")
+        );
+        config.server.proxy_public_url = Some("http://127.0.0.1:3001".into());
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("different hostnames")
+        );
+        config.server.proxy_public_url = Some("http://api.example.com".into());
+        config.server.public_url = "http://trace.example.com/ui".into();
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("must be an origin")
+        );
+        config.server.public_url = "http://trace.example.com".into();
+        config.server.admin_listen = Some("0.0.0.0:3000".into());
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("must not overlap")
+        );
+        config.server.admin_listen = Some("not-a-socket".into());
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("socket address")
+        );
+    }
+
+    #[test]
+    fn preset_selection_respects_explicit_prefixes_and_legacy_toml() {
+        let mut config: super::Config =
+            toml::from_str("[proxy]\npath_prefixes=['/private']").unwrap();
+        super::apply_env_overrides(&mut config, |name| {
+            (name == "LLMTRACE_PROXY_PRESET").then(|| "litellm".into())
+        })
+        .unwrap();
+        assert_eq!(config.proxy.effective_path_prefixes(), ["/private"]);
+        let mut config = super::Config::default();
+        super::apply_env_overrides(&mut config, |name| {
+            (name == "LLMTRACE_PROXY_PRESET").then(|| "litellm".into())
+        })
+        .unwrap();
+        assert!(
+            config
+                .proxy
+                .path_prefix_allowlist()
+                .unwrap()
+                .allows("/models")
+        );
+        assert!(
+            super::apply_env_overrides(&mut config, |name| (name == "LLMTRACE_PROXY_PRESET")
+                .then(|| "typo".into()))
+            .is_err()
+        );
+        assert!(toml::from_str::<super::Config>("[proxy]\npreset='typo'").is_err());
+        assert!(
+            toml::from_str::<super::Config>("[proxy]\ncapture_path_prefixes=['bad']")
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+
     use super::*;
 
     const VALID_ARGON2_HASH: &str =
@@ -1774,6 +2144,150 @@ mod tests {
     }
 
     #[test]
+    fn rotation_environment_overrides_file_configuration() {
+        let mut config: Config = toml::from_str(
+            "[storage]\nrotate_size_bytes = 10737418240\nrotate_check_interval_secs = 60",
+        )
+        .unwrap();
+        assert_eq!(config.storage.rotate_size_bytes, 10 * 1024 * 1024 * 1024);
+        config.validate().unwrap();
+        apply_env_overrides(&mut config, |name| match name {
+            "LLMTRACE_ROTATE_SIZE_BYTES" => Some("2048".into()),
+            "LLMTRACE_ROTATE_CHECK_INTERVAL_SECS" => Some("15".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(config.storage.rotate_size_bytes, 2048);
+        assert_eq!(config.storage.rotate_check_interval_secs, 15);
+        config.validate().unwrap();
+        apply_env_overrides(&mut config, |name| {
+            (name == "LLMTRACE_ROTATE_SIZE_BYTES").then(|| "0".into())
+        })
+        .unwrap();
+        assert_eq!(config.storage.rotate_size_bytes, 0);
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn rotation_rejects_invalid_sizes_and_intervals() {
+        for (key, value) in [
+            ("LLMTRACE_ROTATE_SIZE_BYTES", "-1"),
+            ("LLMTRACE_ROTATE_SIZE_BYTES", "10GB"),
+            ("LLMTRACE_ROTATE_CHECK_INTERVAL_SECS", "invalid"),
+        ] {
+            assert!(
+                apply_env_overrides(&mut Config::default(), |name| (name == key)
+                    .then(|| value.into()))
+                .is_err()
+            );
+        }
+        let mut config = Config::default();
+        config.storage.rotate_size_bytes = u64::MAX;
+        config.storage.rotate_check_interval_secs = 0;
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("storage.rotate_size_bytes"));
+        assert!(error.contains("storage.rotate_check_interval_secs"));
+        config.storage.rotate_size_bytes = 0;
+        config.storage.rotate_check_interval_secs = 86401;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn journal_settings_support_file_env_precedence_and_validation() {
+        let mut config: Config = toml::from_str("[storage.journal]\nenabled=false\ndirectory='test-journal'\nmax_bytes=12345\nmax_records=20\nretry_interval_secs=3").unwrap();
+        assert!(!config.storage.journal.enabled);
+        apply_env_overrides(&mut config, |key| match key {
+            "LLMTRACE_JOURNAL_ENABLED" => Some("true".into()),
+            "LLMTRACE_JOURNAL_DIRECTORY" => Some("another-journal".into()),
+            "LLMTRACE_JOURNAL_MAX_BYTES" => Some("54321".into()),
+            "LLMTRACE_JOURNAL_MAX_RECORDS" => Some("40".into()),
+            "LLMTRACE_JOURNAL_RETRY_INTERVAL_SECS" => Some("7".into()),
+            _ => None,
+        })
+        .unwrap();
+        config.validate().unwrap();
+        assert!(config.storage.journal.enabled);
+        assert_eq!(
+            config.storage.journal.directory,
+            PathBuf::from("another-journal")
+        );
+        assert_eq!(config.storage.journal.max_bytes, 54321);
+        assert_eq!(config.storage.journal.max_records, 40);
+        assert_eq!(config.storage.journal.retry_interval_secs, 7);
+        config.storage.journal.max_bytes = 0;
+        config.storage.journal.max_records = 0;
+        config.storage.journal.retry_interval_secs = 0;
+        config.storage.journal.directory = PathBuf::new();
+        let error = config.validate().unwrap_err().to_string();
+        for field in [
+            "max_bytes",
+            "max_records",
+            "retry_interval_secs",
+            "directory",
+        ] {
+            assert!(error.contains(field));
+        }
+    }
+
+    #[test]
+    fn trace_memory_budget_supports_file_and_environment_and_rejects_zero() {
+        let mut config: Config =
+            toml::from_str("[storage]\ntrace_queue_max_bytes=1048576").unwrap();
+        assert_eq!(config.storage.trace_queue_max_bytes, 1048576);
+        apply_env_overrides(&mut config, |name| {
+            (name == "LLMTRACE_TRACE_QUEUE_MAX_BYTES").then(|| "2097152".into())
+        })
+        .unwrap();
+        assert_eq!(config.storage.trace_queue_max_bytes, 2097152);
+        config.validate().unwrap();
+        config.storage.trace_queue_max_bytes = 0;
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("storage.trace_queue_max_bytes")
+        );
+    }
+
+    #[test]
+    fn pricing_and_plugins_can_be_replaced_from_environment() {
+        let mut config: Config = toml::from_str(
+            "[pricing.old]\ninput = 1.0\noutput = 2.0\n[[plugins]]\nname = 'old'\nwasm_path = 'old.wasm'",
+        ).unwrap();
+        apply_env_overrides(&mut config, |name| match name {
+            "LLMTRACE_PRICING_JSON" => Some(r#"{"new":{"input":2.0,"output":8.0}}"#.into()),
+            "LLMTRACE_PLUGINS_JSON" => Some(r#"[{"name":"identity","wasm_path":"identity.wasm","http_get_urls":["https://llm.example.com/v1/me"]}]"#.into()),
+            _ => None,
+        }).unwrap();
+        assert_eq!(config.pricing.len(), 1);
+        assert_eq!(config.pricing["new"].input, 2.0);
+        assert_eq!(config.plugins.len(), 1);
+        assert_eq!(config.plugins[0].name, "identity");
+        assert_eq!(
+            config.plugins[0].http_get_urls[0],
+            "https://llm.example.com/v1/me"
+        );
+        apply_env_overrides(&mut config, |name| match name {
+            "LLMTRACE_PRICING_JSON" => Some("{}".into()),
+            "LLMTRACE_PLUGINS_JSON" => Some("[]".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert!(config.pricing.is_empty());
+        assert!(config.plugins.is_empty());
+        for key in ["LLMTRACE_PRICING_JSON", "LLMTRACE_PLUGINS_JSON"] {
+            let error = apply_env_overrides(&mut config, |name| {
+                (name == key).then(|| r#"{"secret":"do-not-log"}"#.into())
+            })
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains(key));
+            assert!(!error.contains("do-not-log"));
+        }
+    }
+
+    #[test]
     fn csv_env_parser_trims_items_and_rejects_empty_entries() {
         let items = parse_csv_env(
             "LLMTRACE_ALLOW_UPSTREAMS",
@@ -2033,18 +2547,21 @@ mod tests {
                     wasm_path: "plugin.wasm".into(),
                     hooks: vec![PluginHook::RequestStart, PluginHook::RequestStart],
                     timeout_ms: 0,
+                    http_get_urls: Vec::new(),
                 },
                 PluginConfig {
                     name: "plugín".to_string(),
                     wasm_path: std::path::PathBuf::new(),
                     hooks: Vec::new(),
                     timeout_ms: MAX_PLUGIN_TIMEOUT_MS + 1,
+                    http_get_urls: Vec::new(),
                 },
                 PluginConfig {
                     name: "p".repeat(MAX_PLUGIN_NAME_BYTES + 1),
                     wasm_path: "plugin.wasm".into(),
                     hooks: vec![PluginHook::ResponseEnd],
                     timeout_ms: 50,
+                    http_get_urls: Vec::new(),
                 },
             ],
             ..Default::default()
@@ -2086,7 +2603,7 @@ mod tests {
     #[test]
     fn proxy_path_prefixes_use_path_boundaries() {
         let allowlist = ProxyConfig {
-            path_prefixes: vec!["/v1".to_string(), "/llm".to_string()],
+            path_prefixes: Some(vec!["/v1".to_string(), "/llm".to_string()]),
             ..ProxyConfig::default()
         }
         .path_prefix_allowlist()
@@ -2099,7 +2616,7 @@ mod tests {
     #[test]
     fn production_config_rejects_empty_path_prefixes() {
         let mut config = production_ready_config();
-        config.proxy.path_prefixes.clear();
+        config.proxy.path_prefixes = Some(Vec::new());
 
         let error = config.validate().unwrap_err().to_string();
 
@@ -2107,19 +2624,18 @@ mod tests {
     }
 
     #[test]
-    fn validation_rejects_root_path_prefix() {
+    fn validation_allows_explicit_root_path_prefix() {
         let mut config = Config::default();
-        config.proxy.path_prefixes = vec!["/".to_string()];
+        config.proxy.path_prefixes = Some(vec!["/".to_string()]);
 
-        let error = config.validate().unwrap_err().to_string();
-
-        assert!(error.contains("must not be '/'"));
+        config.validate().unwrap();
+        assert!(config.proxy.path_prefix_allowlist().unwrap().allows("/ui"));
     }
 
     #[test]
     fn validation_rejects_invalid_path_prefix_entries() {
         let mut config = Config::default();
-        config.proxy.path_prefixes = vec!["v1".to_string()];
+        config.proxy.path_prefixes = Some(vec!["v1".to_string()]);
 
         let error = config.validate().unwrap_err().to_string();
 
@@ -2129,7 +2645,7 @@ mod tests {
     #[test]
     fn path_prefix_allowlist_normalizes_trailing_slashes() {
         let allowlist = ProxyConfig {
-            path_prefixes: vec!["/v1/".to_string()],
+            path_prefixes: Some(vec!["/v1/".to_string()]),
             ..ProxyConfig::default()
         }
         .path_prefix_allowlist()
@@ -2158,6 +2674,7 @@ mod tests {
             wasm_path: "plugin.wasm".into(),
             hooks: vec![PluginHook::RequestStart],
             timeout_ms: 50,
+            http_get_urls: Vec::new(),
         }
     }
 }

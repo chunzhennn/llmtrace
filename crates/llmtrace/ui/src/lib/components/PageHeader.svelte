@@ -11,10 +11,10 @@
 </script>
 
 <div class="mb-5 flex flex-wrap items-end justify-between gap-3">
-	<div>
+	<div class="min-w-0">
 		<h1 class="text-xl font-semibold">{title}</h1>
 		{#if description}
-			<p class="text-fg-muted mt-1 text-sm">{description}</p>
+			<p class="text-fg-muted mt-1 text-sm [overflow-wrap:anywhere]">{description}</p>
 		{/if}
 	</div>
 	{#if actions}

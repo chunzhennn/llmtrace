@@ -1,0 +1,19 @@
+{
+  "synthetic": true,
+  "admin_bind_failure_releases_proxy": true,
+  "shutdown_drains_active_stream": true,
+  "supporting_requests": 500,
+  "concurrency": 16,
+  "latency_ms": {
+    "p50": 7.59,
+    "p95": 12.84,
+    "p99": 22.9
+  },
+  "direct_latency_ms": {
+    "p50": 12.47,
+    "p95": 21.71,
+    "p99": 28.29
+  },
+  "upstream_tcp_nodelay": true,
+  "persisted_traces": 0
+}

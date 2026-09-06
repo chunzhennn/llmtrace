@@ -71,8 +71,18 @@ pub fn router() -> Router<AppState> {
         .route("/login", post(login))
         .route("/logout", post(logout))
         .route("/me", get(me))
+        .route("/methods", get(login_methods))
         .route("/oauth/start", get(oauth_start))
         .route("/oauth/callback", get(oauth_callback))
+}
+
+// Public, non-sensitive capabilities let the sign-in page offer working actions.
+async fn login_methods(State(state): State<AppState>) -> Json<Value> {
+    let admin = &state.config.auth.local_admin;
+    Json(json!({
+        "local": admin.password.is_some() || admin.password_hash.is_some(),
+        "oauth": state.config.auth.oauth.enabled
+    }))
 }
 
 pub async fn require_auth(

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { requestKindLabel } from '$lib/utils/format';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { base } from '$app/paths';
@@ -28,7 +29,7 @@
 		UpstreamHealthItem,
 		ErrorSummary
 	} from '$lib/api/types';
-	import { formatNumber, formatBytes, formatMs, formatPercent, truncateMiddle } from '$lib/utils/format';
+	import { formatNumber, formatBytes, formatMs, formatPercent, truncateMiddle, formatTokens, formatCost } from '$lib/utils/format';
 	import { baseTimeChartOptions, chartColors, withAlpha } from '$lib/utils/chart';
 	import type { ChartData } from 'chart.js';
 
@@ -160,7 +161,7 @@
 			datasets: [
 				{
 					label: 'Avg duration (ms)',
-					data: points.map((p) => p.avg_duration_ms ?? 0),
+					data: points.map((p) => p.avg_duration_ms),
 					borderColor: colors.info,
 					backgroundColor: withAlpha(colors.info, 0.12),
 					fill: true,
@@ -170,7 +171,7 @@
 				},
 				{
 					label: 'Avg TTFT (ms)',
-					data: points.map((p) => p.avg_ttft_ms ?? 0),
+					data: points.map((p) => p.avg_ttft_ms),
 					borderColor: colors.warning,
 					backgroundColor: withAlpha(colors.warning, 0.1),
 					fill: true,
@@ -211,7 +212,10 @@
 		{ label: 'Error rate', align: 'right' },
 		{ label: 'Keys', align: 'right' },
 		{ label: 'Sessions', align: 'right' },
-		{ label: 'Avg', align: 'right' }
+		{ label: 'Input / output tokens', align: 'right' },
+        { label: 'Tool calls', align: 'right' },
+        { label: 'Estimated token cost', align: 'right' },
+        { label: 'Usage / price coverage', align: 'right' }
 	];
 	const modelColumns: Column[] = [
 		{ label: 'Model' },
@@ -321,7 +325,7 @@
 			{:else}
 				<div class="flex flex-wrap gap-2">
 					{#each summary.data?.request_kinds ?? [] as rk (rk.name)}
-						<Badge tone="info">{rk.name}: {formatNumber(rk.request_count)}</Badge>
+						<Badge tone="info">{requestKindLabel(rk.name)}: {formatNumber(rk.request_count)}</Badge>
 					{/each}
 				</div>
 			{/if}
@@ -416,6 +420,7 @@
 		{/snippet}
 	</DataTable>
 {:else if tab === 'users'}
+	<p class="mb-3 text-sm opacity-70">Totals cover reported usage in the selected window. Missing prices and usage are excluded; estimates cover configured token rates only.</p>
 	<DataTable
 		columns={userColumns}
 		rows={users.data?.items ?? []}
@@ -430,7 +435,10 @@
 			<td class="px-3 py-2 text-right"><Badge tone={errorRateTone(item.error_rate)}>{formatPercent(item.error_rate)}</Badge></td>
 			<td class="px-3 py-2 text-right tabular-nums">{formatNumber(item.api_key_count)}</td>
 			<td class="px-3 py-2 text-right tabular-nums">{formatNumber(item.session_count)}</td>
-			<td class="px-3 py-2 text-right tabular-nums">{formatMs(item.avg_duration_ms)}</td>
+			<td class="px-3 py-2 text-right tabular-nums">{formatTokens(item.input_tokens)} / {formatTokens(item.output_tokens)}</td>
+            <td class="px-3 py-2 text-right tabular-nums">{formatTokens(item.tool_call_count)}</td>
+            <td class="px-3 py-2 text-right tabular-nums">{formatCost(item.estimated_cost_microusd)}</td>
+            <td class="px-3 py-2 text-right tabular-nums">{item.usage_known_count} / {item.priced_request_count} of {item.request_count}</td>
 		{/snippet}
 	</DataTable>
 {:else if tab === 'models'}

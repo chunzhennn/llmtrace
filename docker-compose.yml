@@ -25,12 +25,17 @@ services:
       LLMTRACE_CONFIG: /etc/llmtrace/llmtrace.toml
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/llmtrace
       LLMTRACE_LISTEN: 0.0.0.0:3000
+      # For split domains, also set LLMTRACE_ADMIN_LISTEN=0.0.0.0:3001,
+      # LLMTRACE_PUBLIC_URL (admin), LLMTRACE_PROXY_PUBLIC_URL (employee API),
+      # publish port 3001 below and change this service's healthcheck to 3001.
     ports:
       # The mounted example config uses development credentials; expose it
       # only on the Docker host loopback interface by default.
       - "127.0.0.1:3000:3000"
+      # - "127.0.0.1:3001:3001"
     volumes:
       - ./llmtrace.example.toml:/etc/llmtrace/llmtrace.toml:ro
+      - llmtrace-spool:/var/lib/llmtrace/spool
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/readyz"]
       interval: 30s
@@ -39,3 +44,4 @@ services:
 
 volumes:
   postgres-data:
+  llmtrace-spool:

@@ -19,7 +19,24 @@ pub fn redact_headers(
     upstream_header: &str,
 ) -> RedactedHeaders {
     let mut map = Map::new();
-    let mut first_secret_hash = None;
+    // Account attribution must not depend on HeaderMap iteration order or on
+    // unrelated cookies, CSRF tokens, or passwords.
+    let first_secret_hash = config
+        .store_header_hash
+        .then(|| {
+            [
+                "authorization",
+                "x-api-key",
+                "api-key",
+                "openai-api-key",
+                "anthropic-api-key",
+                "x-goog-api-key",
+            ]
+            .iter()
+            .find_map(|name| headers.get(*name))
+            .map(|value| sha256_hex(value.as_bytes()))
+        })
+        .flatten();
     let upstream_header = upstream_header.trim().to_ascii_lowercase();
 
     for (name, value) in headers {
@@ -33,9 +50,6 @@ pub fn redact_headers(
             let value_hash = config
                 .store_header_hash
                 .then(|| sha256_hex(value_text.as_bytes()));
-            if first_secret_hash.is_none() {
-                first_secret_hash = value_hash.clone();
-            }
             map.insert(name_text, redacted_value(&value_text, value_hash));
         } else if name_text == upstream_header {
             map.insert(name_text, redact_upstream_header(&value_text));
@@ -128,15 +142,13 @@ fn redacted_value(value: &str, hash: Option<String>) -> Value {
     let scheme = value
         .split_once(' ')
         .map(|(scheme, _)| scheme.to_string())
-        .filter(|scheme| scheme.len() <= 24);
-    let prefix_len = value.len().min(6);
-    let suffix_start = value.len().saturating_sub(4);
+        .filter(|scheme| {
+            scheme.eq_ignore_ascii_case("bearer") || scheme.eq_ignore_ascii_case("basic")
+        });
     json!({
         "redacted": true,
         "scheme": scheme,
         "sha256": hash,
-        "prefix": &value[..prefix_len],
-        "suffix": &value[suffix_start..],
         "length": value.len()
     })
 }
@@ -163,6 +175,29 @@ fn redact_upstream_header(value: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redacted_values_do_not_reveal_short_or_unicode_secrets() {
+        for secret in ["short", "é界🔑"] {
+            let value = redacted_value(secret, None);
+            assert!(value.get("prefix").is_none());
+            assert!(value.get("suffix").is_none());
+        }
+    }
+
+    #[test]
+    fn credential_hash_is_stable_when_cookies_change() {
+        let mut headers = HeaderMap::new();
+        headers.insert("cookie", "changing-cookie".parse().unwrap());
+        headers.insert("authorization", "Bearer key".parse().unwrap());
+        let redacted = redact_headers(&headers, &RedactionConfig::default(), "x-upstream");
+        assert_eq!(redacted.first_secret_hash, Some(sha256_hex(b"Bearer key")));
+        headers.remove("authorization");
+        assert_eq!(
+            redact_headers(&headers, &RedactionConfig::default(), "x-upstream").first_secret_hash,
+            None
+        );
+    }
     use axum::http::{HeaderValue, header};
 
     #[test]
@@ -178,7 +213,7 @@ mod tests {
 
         assert_eq!(redacted.json["cookie"]["redacted"], json!(true));
         assert_eq!(redacted.json["set-cookie"]["redacted"], json!(true));
-        assert!(redacted.first_secret_hash.is_some());
+        assert!(redacted.first_secret_hash.is_none());
     }
 
     #[test]

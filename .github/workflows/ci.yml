@@ -1,0 +1,73 @@
+name: Verify
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      performance:
+        description: Run the local release performance and browser suite
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: llmtrace
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d llmtrace"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/llmtrace
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6.4.0
+        with:
+          node-version: '22'
+      - name: Install Rust toolchain used by the container
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.96.0
+      - name: Frontend checks and embedded assets
+        run: |
+          corepack enable
+          corepack pnpm --dir crates/llmtrace/ui install --frozen-lockfile
+          corepack pnpm --dir crates/llmtrace/ui check
+          corepack pnpm --dir crates/llmtrace/ui test
+          corepack pnpm --dir crates/llmtrace/ui build
+          node --check scripts/browser-performance.mjs
+      - name: Formatting and lint
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Functional, database, and process crash tests
+        run: cargo test --workspace --locked -- --include-ignored --skip performance_ --skip journal_process_helper --skip openrouter_live
+      - name: Apply embedded migrations
+        run: cargo run --locked -p llmtrace -- --config llmtrace.example.toml --migrate-only
+      - name: Release performance and browser checks
+        if: github.event_name == 'workflow_dispatch' && inputs.performance
+        env:
+          LLMTRACE_PERF_BROWSER: '1'
+          LLMTRACE_PERF_REPORT: /tmp/llmtrace-performance.json
+          LLMTRACE_PERF_STORAGE_REPORT: /tmp/llmtrace-storage.json
+          LLMTRACE_PERF_SOAK_REPORT: /tmp/llmtrace-soak.json
+        run: |
+          cargo build --release --workspace --locked
+          cargo test --release --workspace --locked performance_ -- --ignored --nocapture --test-threads=1

@@ -18,6 +18,17 @@ use crate::config::{ArchiveConfig, ArchiveStorageBackend, StorageConfig};
 use crate::metrics::RuntimeMetrics;
 use crate::types::RequestKind;
 
+#[cfg(test)]
+mod integration;
+#[cfg(test)]
+mod openrouter;
+#[cfg(test)]
+mod performance;
+mod rotation;
+#[cfg(test)]
+mod routing_integration;
+pub use rotation::spawn_archive_maintenance;
+
 const DEFAULT_REQUEST_LIST_LIMIT: i64 = 100;
 const MAX_ARCHIVE_SEGMENT_DECODE_BYTES: usize = 2 * 1024 * 1024 * 1024;
 const ARCHIVE_DIRECTION_REQUEST_BODY: &str = "request_body";
@@ -139,7 +150,7 @@ const REQUEST_FACET_STATUS_CLASSES_SQL: &str = r#"
         LIMIT $2
         "#;
 const REQUEST_FACET_ERROR_STATES_SQL: &str = r#"
-        SELECT (error IS NOT NULL OR COALESCE(status >= 500, false)) AS value,
+        SELECT (error IS NOT NULL OR COALESCE(status >= 400, false)) AS value,
                COUNT(*)::bigint AS request_count
         FROM trace_requests
         WHERE started_at >= $1
@@ -205,13 +216,14 @@ const ERROR_SUMMARY_TOTALS_SQL: &str = r#"
                MAX(started_at) AS last_seen_at
         FROM trace_requests
         WHERE started_at >= $1
-          AND (error IS NOT NULL OR status >= 500)
+          AND (error IS NOT NULL OR status >= 400)
         "#;
 const ERROR_SUMMARY_SOURCES_SQL: &str = r#"
         SELECT CASE
                    WHEN error IS NOT NULL AND status >= 500 THEN 'proxy_error_and_http_5xx'
                    WHEN error IS NOT NULL THEN 'proxy_error'
                    WHEN status >= 500 THEN 'http_5xx'
+                   WHEN status >= 400 THEN 'http_4xx'
                    ELSE 'other'
                END AS name,
                COUNT(*)::bigint AS error_count,
@@ -221,7 +233,7 @@ const ERROR_SUMMARY_SOURCES_SQL: &str = r#"
                MAX(duration_ms)::bigint AS max_duration_ms
         FROM trace_requests
         WHERE started_at >= $1
-          AND (error IS NOT NULL OR status >= 500)
+          AND (error IS NOT NULL OR status >= 400)
         GROUP BY 1
         ORDER BY error_count DESC, name ASC
         LIMIT $2
@@ -235,7 +247,7 @@ const ERROR_SUMMARY_UPSTREAMS_SQL: &str = r#"
                MAX(duration_ms)::bigint AS max_duration_ms
         FROM trace_requests
         WHERE started_at >= $1
-          AND (error IS NOT NULL OR status >= 500)
+          AND (error IS NOT NULL OR status >= 400)
         GROUP BY 1
         ORDER BY error_count DESC, name ASC
         LIMIT $2
@@ -249,7 +261,7 @@ const ERROR_SUMMARY_MODELS_SQL: &str = r#"
                MAX(duration_ms)::bigint AS max_duration_ms
         FROM trace_requests
         WHERE started_at >= $1
-          AND (error IS NOT NULL OR status >= 500)
+          AND (error IS NOT NULL OR status >= 400)
         GROUP BY 1
         ORDER BY error_count DESC, name ASC
         LIMIT $2
@@ -263,7 +275,7 @@ const ERROR_SUMMARY_REQUEST_KINDS_SQL: &str = r#"
                MAX(duration_ms)::bigint AS max_duration_ms
         FROM trace_requests
         WHERE started_at >= $1
-          AND (error IS NOT NULL OR status >= 500)
+          AND (error IS NOT NULL OR status >= 400)
         GROUP BY 1
         ORDER BY error_count DESC, name ASC
         LIMIT $2
@@ -285,7 +297,7 @@ const ERROR_SUMMARY_STATUS_CLASSES_SQL: &str = r#"
                MAX(duration_ms)::bigint AS max_duration_ms
         FROM trace_requests
         WHERE started_at >= $1
-          AND (error IS NOT NULL OR status >= 500)
+          AND (error IS NOT NULL OR status >= 400)
         GROUP BY 1
         ORDER BY error_count DESC, name ASC
         LIMIT $2
@@ -384,7 +396,7 @@ const LATENCY_SUMMARY_REQUEST_KINDS_SQL: &str = r#"
 const UPSTREAM_HEALTH_SQL: &str = r#"
         SELECT COALESCE(NULLIF(upstream_host, ''), 'unknown') AS upstream_host,
                COUNT(*)::bigint AS request_count,
-               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 400)::bigint AS error_count,
                COUNT(*) FILTER (WHERE error IS NOT NULL)::bigint AS proxy_error_count,
                COUNT(*) FILTER (WHERE status BETWEEN 200 AND 299)::bigint AS http_2xx_count,
                COUNT(*) FILTER (WHERE status BETWEEN 300 AND 399)::bigint AS http_3xx_count,
@@ -414,7 +426,7 @@ const UPSTREAM_HEALTH_SQL: &str = r#"
 const MODEL_USAGE_SQL: &str = r#"
         SELECT COALESCE(NULLIF(model, ''), 'unknown') AS model,
                COUNT(*)::bigint AS request_count,
-               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 400)::bigint AS error_count,
                COUNT(*) FILTER (WHERE error IS NOT NULL)::bigint AS proxy_error_count,
                COUNT(*) FILTER (WHERE status >= 500)::bigint AS http_5xx_count,
                COUNT(DISTINCT upstream_host) FILTER (WHERE upstream_host IS NOT NULL AND upstream_host <> '')::bigint AS upstream_count,
@@ -433,6 +445,12 @@ const MODEL_USAGE_SQL: &str = r#"
                (percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms))::bigint AS p95_ttft_ms,
                MIN(started_at) AS first_seen_at,
                MAX(started_at) AS last_seen_at
+               , SUM(input_tokens)::bigint AS input_tokens
+               , SUM(output_tokens)::bigint AS output_tokens
+               , SUM(estimated_cost_microusd)::bigint AS estimated_cost_microusd
+               , SUM(tool_call_count)::bigint AS tool_call_count
+               , COUNT(*) FILTER (WHERE usage_complete)::bigint AS usage_known_count
+               , COUNT(estimated_cost_microusd)::bigint AS priced_request_count
         FROM trace_requests
         WHERE started_at >= $1
         GROUP BY 1
@@ -443,7 +461,7 @@ const USER_USAGE_SQL: &str = r#"
         SELECT COALESCE(NULLIF(s.user_id, ''), 'unknown') AS user_id,
                COALESCE(NULLIF(s.user_name, ''), 'unknown') AS user_name,
                COUNT(*)::bigint AS request_count,
-               COUNT(*) FILTER (WHERE r.error IS NOT NULL OR r.status >= 500)::bigint AS error_count,
+               COUNT(*) FILTER (WHERE r.error IS NOT NULL OR r.status >= 400)::bigint AS error_count,
                COUNT(*) FILTER (WHERE r.error IS NOT NULL)::bigint AS proxy_error_count,
                COUNT(*) FILTER (WHERE r.status >= 500)::bigint AS http_5xx_count,
                COUNT(DISTINCT r.session_id) FILTER (WHERE r.session_id IS NOT NULL)::bigint AS session_count,
@@ -462,6 +480,12 @@ const USER_USAGE_SQL: &str = r#"
                (percentile_cont(0.95) WITHIN GROUP (ORDER BY r.ttft_ms))::bigint AS p95_ttft_ms,
                MIN(r.started_at) AS first_seen_at,
                MAX(r.started_at) AS last_seen_at
+               , SUM(r.input_tokens)::bigint AS input_tokens
+               , SUM(r.output_tokens)::bigint AS output_tokens
+               , SUM(r.estimated_cost_microusd)::bigint AS estimated_cost_microusd
+               , SUM(r.tool_call_count)::bigint AS tool_call_count
+               , COUNT(*) FILTER (WHERE r.usage_complete)::bigint AS usage_known_count
+               , COUNT(r.estimated_cost_microusd)::bigint AS priced_request_count
         FROM trace_requests r
         LEFT JOIN trace_sessions s ON s.id = r.session_id
         WHERE r.started_at >= $1
@@ -472,7 +496,7 @@ const USER_USAGE_SQL: &str = r#"
 const API_KEY_USAGE_SQL: &str = r#"
         SELECT api_key_hash,
                COUNT(*)::bigint AS request_count,
-               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 400)::bigint AS error_count,
                COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::bigint AS session_count,
                COALESCE(SUM(bytes_in), 0)::bigint AS bytes_in,
                COALESCE(SUM(bytes_out), 0)::bigint AS bytes_out,
@@ -483,6 +507,12 @@ const API_KEY_USAGE_SQL: &str = r#"
                MAX(ttft_ms)::bigint AS max_ttft_ms,
                MIN(started_at) AS first_seen_at,
                MAX(started_at) AS last_seen_at
+               , SUM(input_tokens)::bigint AS input_tokens
+               , SUM(output_tokens)::bigint AS output_tokens
+               , SUM(estimated_cost_microusd)::bigint AS estimated_cost_microusd
+               , SUM(tool_call_count)::bigint AS tool_call_count
+               , COUNT(*) FILTER (WHERE usage_complete)::bigint AS usage_known_count
+               , COUNT(estimated_cost_microusd)::bigint AS priced_request_count
         FROM trace_requests
         WHERE started_at >= $1
           AND api_key_hash IS NOT NULL
@@ -495,7 +525,7 @@ const LIST_REQUESTS_SQL: &str = r#"
         SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
                status, error, request_kind, model, api_key_hash, session_id, ttft_ms,
                duration_ms, bytes_in, bytes_out, request_body_truncated, response_body_truncated,
-               plugin_metadata, tags
+               plugin_metadata, tags, ttfb_ms, input_tokens, output_tokens, cached_input_tokens, cache_creation_input_tokens, usage_complete, estimated_cost_microusd, tool_call_count
         FROM trace_requests
         WHERE (
             $1::text IS NULL
@@ -515,8 +545,8 @@ const LIST_REQUESTS_SQL: &str = r#"
           AND ($11::bigint IS NULL OR duration_ms <= $11)
           AND (
               $12::boolean IS NULL
-              OR ($12 = true AND (error IS NOT NULL OR status >= 500))
-              OR ($12 = false AND error IS NULL AND (status IS NULL OR status < 500))
+              OR ($12 = true AND (error IS NOT NULL OR status >= 400))
+              OR ($12 = false AND error IS NULL AND (status IS NULL OR status < 400))
           )
           AND (
               $13::text IS NULL
@@ -535,7 +565,7 @@ const LIST_SESSION_REQUESTS_SQL: &str = r#"
         SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
                status, error, request_kind, model, api_key_hash, session_id, ttft_ms,
                duration_ms, bytes_in, bytes_out, request_body_truncated, response_body_truncated,
-               plugin_metadata, tags
+               plugin_metadata, tags, ttfb_ms, input_tokens, output_tokens, cached_input_tokens, cache_creation_input_tokens, usage_complete, estimated_cost_microusd, tool_call_count
         FROM trace_requests
         WHERE session_id = $1
         ORDER BY started_at DESC, id DESC
@@ -545,10 +575,10 @@ const RECENT_ERROR_REQUESTS_SQL: &str = r#"
         SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
                status, error, request_kind, model, api_key_hash, session_id, ttft_ms,
                duration_ms, bytes_in, bytes_out, request_body_truncated, response_body_truncated,
-               plugin_metadata, tags
+               plugin_metadata, tags, ttfb_ms, input_tokens, output_tokens, cached_input_tokens, cache_creation_input_tokens, usage_complete, estimated_cost_microusd, tool_call_count
         FROM trace_requests
         WHERE started_at >= $1
-          AND (error IS NOT NULL OR status >= 500)
+          AND (error IS NOT NULL OR status >= 400)
         ORDER BY started_at DESC, id DESC
         LIMIT $2
         "#;
@@ -556,7 +586,7 @@ const SLOW_REQUESTS_SQL: &str = r#"
         SELECT id, started_at, completed_at, method, original_uri, upstream_url, upstream_host,
                status, error, request_kind, model, api_key_hash, session_id, ttft_ms,
                duration_ms, bytes_in, bytes_out, request_body_truncated, response_body_truncated,
-               plugin_metadata, tags
+               plugin_metadata, tags, ttfb_ms, input_tokens, output_tokens, cached_input_tokens, cache_creation_input_tokens, usage_complete, estimated_cost_microusd, tool_call_count
         FROM trace_requests
         WHERE started_at >= $1
           AND duration_ms >= $2
@@ -574,7 +604,7 @@ const DATA_OVERVIEW_ROLLUPS_SQL: &str = r#"
         "#;
 const DATA_OVERVIEW_RECENT_REQUESTS_SQL: &str = r#"
         SELECT COUNT(*)::bigint AS request_count,
-               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 400)::bigint AS error_count,
                COUNT(*) FILTER (WHERE error IS NOT NULL)::bigint AS proxy_error_count,
                COUNT(*) FILTER (WHERE status >= 500)::bigint AS http_5xx_count,
                COUNT(DISTINCT upstream_host) FILTER (WHERE upstream_host IS NOT NULL AND upstream_host <> '')::bigint AS upstream_count,
@@ -640,7 +670,7 @@ macro_rules! data_integrity_rollup_diffs_sql {
         raw AS (
             SELECT date_trunc('minute', started_at) AS bucket,
                    COUNT(*)::bigint AS total,
-                   COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS errors,
+                   COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 400)::bigint AS errors,
                    COALESCE(SUM(request_body_bytes + response_body_bytes), 0)::bigint AS captured_bytes,
                    COUNT(duration_ms)::bigint AS duration_count,
                    COALESCE(SUM(duration_ms), 0)::bigint AS duration_sum_ms,
@@ -828,7 +858,7 @@ const DATA_INTEGRITY_RELATIONSHIP_SQL: &str = r#"
         "#;
 const SESSION_REQUEST_STATS_SQL: &str = r#"
         SELECT COUNT(*)::bigint AS request_count,
-               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 400)::bigint AS error_count,
                COALESCE(SUM(bytes_in), 0)::bigint AS bytes_in,
                COALESCE(SUM(bytes_out), 0)::bigint AS bytes_out,
                COALESCE(SUM(request_body_bytes + response_body_bytes), 0)::bigint AS captured_bytes,
@@ -838,6 +868,13 @@ const SESSION_REQUEST_STATS_SQL: &str = r#"
                MAX(ttft_ms)::bigint AS max_ttft_ms,
                MIN(started_at) AS first_request_at,
                MAX(started_at) AS last_request_at
+               , SUM(input_tokens)::bigint AS input_tokens
+               , SUM(output_tokens)::bigint AS output_tokens
+               , SUM(estimated_cost_microusd)::bigint AS estimated_cost_microusd
+               , COALESCE(SUM(tool_call_count), 0)::bigint AS tool_call_count
+               , COUNT(*) FILTER (WHERE usage_complete)::bigint AS usage_known_count
+               , COUNT(estimated_cost_microusd)::bigint AS priced_request_count
+               , COUNT(*) FILTER (WHERE request_body_truncated OR response_body_truncated OR 'session_messages_truncated' = ANY(tags))::bigint AS incomplete_capture_count
         FROM request_traces
         WHERE session_id = $1
         "#;
@@ -927,7 +964,8 @@ const STORAGE_SUMMARY_SQL: &str = r#"
                 (7, 'session_messages'),
                 (8, 'ui_audit_events'),
                 (9, 'ui_sessions'),
-                (10, 'oauth_states')
+                (10, 'oauth_states'),
+                (11, 'archive_file_deletions')
         ),
         current_schema_oid AS (
             SELECT oid
@@ -1012,6 +1050,11 @@ pub struct TraceRecord {
     pub session_key: Option<String>,
     pub session_id: Option<Uuid>,
     pub ttft_ms: Option<i64>,
+    pub ttfb_ms: Option<i64>,
+    pub usage: crate::parsers::TokenUsage,
+    pub usage_complete: bool,
+    pub tool_calls: Vec<crate::parsers::ToolCall>,
+    pub estimated_cost_microusd: Option<i64>,
     pub duration_ms: Option<i64>,
     pub bytes_in: i64,
     pub bytes_out: i64,
@@ -1043,16 +1086,6 @@ impl PayloadDirection {
     }
 }
 
-#[derive(Debug, Clone)]
-struct ArchiveSegment {
-    id: Uuid,
-    segment_index: i64,
-    uncompressed_bytes: i64,
-    record_count: i64,
-    storage_backend: String,
-    storage_key: String,
-}
-
 #[derive(Debug)]
 struct ArchiveRecordWrite {
     direction: PayloadDirection,
@@ -1081,7 +1114,7 @@ pub struct RequestListFilters {
     pub offset: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedMessage {
     pub role: String,
     pub content: String,
@@ -1822,12 +1855,8 @@ pub async fn prune_retention(
     })
 }
 
-pub async fn retention_status(
-    pool: &PgPool,
-    retention_days: Option<i64>,
-    prune_interval_secs: u64,
-    prune_batch_size: i64,
-) -> anyhow::Result<Value> {
+pub async fn retention_status(pool: &PgPool, config: &StorageConfig) -> anyhow::Result<Value> {
+    let retention_days = config.retention_days;
     if retention_days.is_some_and(|days| days <= 0) {
         anyhow::bail!("retention_days must be greater than 0 when set");
     }
@@ -1840,6 +1869,7 @@ pub async fn retention_status(
         .bind(now)
         .fetch_one(&mut *tx)
         .await?;
+    let footprint = rotation::archive_footprint(&mut tx).await?;
     tx.commit().await?;
 
     let request_traces = row.get::<i64, _>("request_traces");
@@ -1854,8 +1884,18 @@ pub async fn retention_status(
         "retention_days": retention_days,
         "cutoff": cutoff,
         "checked_at": now,
-        "prune_interval_secs": prune_interval_secs,
-        "prune_batch_size": prune_batch_size,
+        "prune_interval_secs": config.retention_prune_interval_secs,
+        "prune_batch_size": config.retention_prune_batch_size,
+        "rotation": {
+            "enabled": config.rotate_size_bytes > 0,
+            "size_bytes": config.rotate_size_bytes,
+            "check_interval_secs": config.rotate_check_interval_secs,
+            "retained_bytes": footprint.retained_bytes,
+            "pending_delete_bytes": footprint.pending_bytes,
+            "pending_delete_files": footprint.pending_files,
+            "over_limit": config.rotate_size_bytes > 0
+                && footprint.retained_bytes.saturating_add(footprint.pending_bytes) as u64 > config.rotate_size_bytes,
+        },
         "expired": {
             "request_traces": request_traces,
             "trace_rollups_minute": trace_rollups_minute,
@@ -1957,13 +1997,17 @@ async fn delete_request_traces_before(
     cutoff: DateTime<Utc>,
     batch_size: i64,
 ) -> anyhow::Result<u64> {
+    let mut tx = pool.begin().await?;
+    if !rotation::try_prune_lock(&mut tx).await? {
+        return Ok(0);
+    }
     let result = sqlx::query(
         r#"
         WITH doomed AS (
             SELECT id
             FROM request_traces
             WHERE started_at < $1
-            ORDER BY started_at ASC
+            ORDER BY started_at ASC, id ASC
             LIMIT $2
         )
         DELETE FROM request_traces r
@@ -1973,8 +2017,9 @@ async fn delete_request_traces_before(
     )
     .bind(cutoff)
     .bind(batch_size)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(result.rows_affected())
 }
 
@@ -1983,24 +2028,33 @@ async fn delete_rollups_before(
     cutoff: DateTime<Utc>,
     batch_size: i64,
 ) -> anyhow::Result<u64> {
-    let result = sqlx::query(
-        r#"
-        WITH doomed AS (
-            SELECT bucket
-            FROM trace_rollups_minute
-            WHERE bucket < $1
-            ORDER BY bucket ASC
-            LIMIT $2
-        )
-        DELETE FROM trace_rollups_minute r
-        USING doomed
-        WHERE r.bucket = doomed.bucket
-        "#,
+    let mut tx = pool.begin().await?;
+    let buckets: Vec<DateTime<Utc>> = sqlx::query_scalar(
+        r#"SELECT bucket FROM trace_rollups_minute
+           WHERE bucket < $1
+             AND NOT EXISTS (
+                 SELECT 1 FROM request_traces
+                 WHERE started_at >= bucket AND started_at < bucket + interval '1 minute'
+             )
+           ORDER BY bucket LIMIT $2 FOR UPDATE SKIP LOCKED"#,
     )
     .bind(cutoff)
     .bind(batch_size)
-    .execute(pool)
+    .fetch_all(&mut *tx)
     .await?;
+    // Recheck after locking; an inserting writer may have populated a bucket
+    // since the first statement's snapshot. Never drop a retained bucket.
+    let result = sqlx::query(
+        r#"DELETE FROM trace_rollups_minute WHERE bucket = ANY($1)
+           AND NOT EXISTS (
+               SELECT 1 FROM request_traces
+               WHERE started_at >= bucket AND started_at < bucket + interval '1 minute'
+           )"#,
+    )
+    .bind(&buckets)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(result.rows_affected())
 }
 
@@ -2009,29 +2063,27 @@ async fn delete_empty_sessions_before(
     cutoff: DateTime<Utc>,
     batch_size: i64,
 ) -> anyhow::Result<u64> {
-    let result = sqlx::query(
-        r#"
-        WITH doomed AS (
-            SELECT s.id
-            FROM trace_sessions s
-            WHERE s.last_seen < $1
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM request_traces r
-                  WHERE r.session_id = s.id
-              )
-            ORDER BY s.last_seen ASC
-            LIMIT $2
-        )
-        DELETE FROM trace_sessions s
-        USING doomed
-        WHERE s.id = doomed.id
-        "#,
+    let mut tx = pool.begin().await?;
+    // Skip sessions currently being updated by the trace writer. Recheck in a
+    // fresh statement after locking so a concurrent insert cannot be orphaned.
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        r#"SELECT s.id FROM trace_sessions s
+           WHERE s.last_seen < $1
+             AND NOT EXISTS (SELECT 1 FROM request_traces r WHERE r.session_id = s.id)
+           ORDER BY s.last_seen, s.id LIMIT $2 FOR UPDATE OF s SKIP LOCKED"#,
     )
     .bind(cutoff)
     .bind(batch_size)
-    .execute(pool)
+    .fetch_all(&mut *tx)
     .await?;
+    let result = sqlx::query(
+        r#"DELETE FROM trace_sessions s WHERE s.id = ANY($1)
+           AND NOT EXISTS (SELECT 1 FROM request_traces r WHERE r.session_id = s.id)"#,
+    )
+    .bind(&ids)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(result.rows_affected())
 }
 
@@ -2144,41 +2196,89 @@ pub fn decompress_with_limit(data: &[u8], limit: usize) -> anyhow::Result<Vec<u8
     Ok(output)
 }
 
-async fn archive_trace_payloads(
-    tx: &mut Transaction<'_, Postgres>,
+async fn prepare_trace_payloads(
     archive: &ArchiveConfig,
-    trace: &TraceRecord,
-) -> anyhow::Result<()> {
-    let prepared = prepare_archive_records(trace)?;
-    if prepared.is_empty() {
-        return Ok(());
-    }
-    let append_bytes = prepared
-        .iter()
-        .try_fold(0usize, |total, record| {
-            total.checked_add(record.frame.len())
-        })
-        .ok_or_else(|| anyhow::anyhow!("archive segment append is too large"))?;
-    if prepared.len() > 1 && append_bytes > archive.segment_uncompressed_bytes {
-        for record in prepared {
-            archive_prepared_payloads(tx, archive, trace, vec![record]).await?;
+    trace: &mut TraceRecord,
+) -> anyhow::Result<Vec<PreparedArchiveSegment>> {
+    let id = trace.id;
+    let request = std::mem::take(&mut trace.request_body);
+    let response = std::mem::take(&mut trace.response_body);
+    let content_type = trace.content_type.clone();
+    let archive = archive.clone();
+    tokio::task::spawn_blocking(move || {
+        let prepared = vec![
+            prepare_archive_record(id, PayloadDirection::RequestBody, None, &request)?,
+            prepare_archive_record(id, PayloadDirection::ResponseBody, content_type, &response)?,
+        ];
+        drop(request);
+        drop(response);
+        let total = prepared
+            .iter()
+            .try_fold(0usize, |total, record| {
+                total.checked_add(record.frame.len())
+            })
+            .ok_or_else(|| anyhow::anyhow!("archive segment append is too large"))?;
+        if total > archive.segment_uncompressed_bytes {
+            prepared
+                .into_iter()
+                .map(|record| prepare_archive_segment(vec![record], archive.compression_level))
+                .collect()
+        } else {
+            Ok(vec![prepare_archive_segment(
+                prepared,
+                archive.compression_level,
+            )?])
         }
-        return Ok(());
-    }
+    })
+    .await?
+}
 
-    archive_prepared_payloads(tx, archive, trace, prepared).await
+struct PreparedArchiveSegment {
+    compressed: Vec<u8>,
+    checksum: String,
+    uncompressed_bytes: i64,
+    writes: Vec<ArchiveRecordWrite>,
+}
+
+fn prepare_archive_segment(
+    records: Vec<PreparedArchiveRecord>,
+    level: i32,
+) -> anyhow::Result<PreparedArchiveSegment> {
+    let mut buffer = Vec::new();
+    let mut writes = Vec::with_capacity(records.len());
+    for record in records {
+        let offset = usize_to_i64_checked(buffer.len(), "archive segment offset")?;
+        if buffer.is_empty() {
+            buffer = record.frame;
+        } else {
+            buffer.extend_from_slice(&record.frame);
+        }
+        writes.push(ArchiveRecordWrite {
+            direction: record.direction,
+            content_type: record.content_type,
+            uncompressed_offset: offset,
+            uncompressed_len: record.uncompressed_len,
+            body_sha256: record.body_sha256,
+        });
+    }
+    let uncompressed_bytes = usize_to_i64_checked(buffer.len(), "archive segment size")?;
+    let compressed = compress_with_level(&buffer, level)?;
+    let checksum = sha256_hex(&compressed);
+    Ok(PreparedArchiveSegment {
+        compressed,
+        checksum,
+        uncompressed_bytes,
+        writes,
+    })
 }
 
 async fn archive_prepared_payloads(
     tx: &mut Transaction<'_, Postgres>,
     archive: &ArchiveConfig,
     trace: &TraceRecord,
-    prepared: Vec<PreparedArchiveRecord>,
+    prepared: PreparedArchiveSegment,
+    journal_id: Option<Uuid>,
 ) -> anyhow::Result<()> {
-    if prepared.is_empty() {
-        return Ok(());
-    }
-
     let lock_key = trace
         .session_id
         .map(|id| id.to_string())
@@ -2188,76 +2288,39 @@ async fn archive_prepared_payloads(
         .execute(&mut **tx)
         .await?;
 
-    let mut segment = load_open_archive_segment(tx, trace.session_id).await?;
-    let mut existing_uncompressed = match segment.as_ref() {
-        Some(segment) if segment.uncompressed_bytes > 0 => {
-            load_archive_segment_uncompressed(tx, archive, segment).await?
-        }
-        _ => Vec::new(),
+    // Immutable segments: never rewrite bytes referenced by a committed trace.
+    let segment_id = if let Some(journal_id) = journal_id {
+        let mut digest = Sha256::new();
+        digest.update(journal_id.as_bytes());
+        digest.update(trace.id.as_bytes());
+        digest.update(prepared.checksum.as_bytes());
+        Uuid::from_bytes(digest.finalize()[..16].try_into().unwrap())
+    } else {
+        Uuid::new_v4()
     };
-
-    let append_bytes = prepared
-        .iter()
-        .try_fold(0usize, |total, record| {
-            total.checked_add(record.frame.len())
-        })
-        .ok_or_else(|| anyhow::anyhow!("archive segment append is too large"))?;
-    let target_segment_bytes = archive.segment_uncompressed_bytes;
-    if !existing_uncompressed.is_empty()
-        && existing_uncompressed
-            .len()
-            .checked_add(append_bytes)
-            .is_none_or(|bytes| bytes > target_segment_bytes)
-        && let Some(open_segment) = segment.take()
-    {
-        seal_archive_segment(tx, open_segment.id).await?;
-        existing_uncompressed.clear();
-    }
-
-    let (segment_id, segment_index, storage_key, existing_record_count) = match segment.as_ref() {
-        Some(segment) => (
-            segment.id,
-            segment.segment_index,
-            segment.storage_key.clone(),
-            segment.record_count,
-        ),
-        None => {
-            let segment_id = Uuid::new_v4();
-            let segment_index = next_archive_segment_index(tx, trace.session_id).await?;
-            (
-                segment_id,
-                segment_index,
-                archive_storage_key(trace.session_id, segment_id, segment_index),
-                0,
-            )
-        }
+    let segment_index = next_archive_segment_index(tx, trace.session_id).await?;
+    // Repeated transaction failures reuse the same immutable bytes instead of
+    // leaving a fresh orphan file on every journal retry. The key is independent
+    // of a session UUID that might itself have rolled back.
+    let storage_key = if let Some(journal_id) = journal_id {
+        format!(
+            "journal/{journal_id}/{}/{}.zst",
+            trace.id, prepared.checksum
+        )
+    } else {
+        archive_storage_key(trace.session_id, segment_id, segment_index)
     };
-
-    let mut writes = Vec::with_capacity(prepared.len());
-    for record in prepared {
-        let offset = usize_to_i64_checked(existing_uncompressed.len(), "archive segment offset")?;
-        let uncompressed_len = record.uncompressed_len;
-        existing_uncompressed.extend_from_slice(&record.frame);
-        writes.push(ArchiveRecordWrite {
-            direction: record.direction,
-            content_type: record.content_type,
-            uncompressed_offset: offset,
-            uncompressed_len,
-            body_sha256: record.body_sha256,
-        });
-    }
-
-    let compressed = compress_with_level(&existing_uncompressed, archive.compression_level)?;
-    let checksum = sha256_hex(&compressed);
-    let (storage_backend, storage_key) =
-        persist_archive_segment(tx, archive, segment_id, &storage_key, &compressed).await?;
-    let uncompressed_bytes =
-        usize_to_i64_checked(existing_uncompressed.len(), "archive segment size")?;
+    let PreparedArchiveSegment {
+        compressed,
+        checksum,
+        uncompressed_bytes,
+        writes,
+    } = prepared;
+    let level = archive.compression_level;
     let compressed_bytes = usize_to_i64_checked(compressed.len(), "archive compressed size")?;
-    let record_count = existing_record_count
-        .checked_add(i64::try_from(writes.len()).context("archive record count overflow")?)
-        .ok_or_else(|| anyhow::anyhow!("archive record count overflow"))?;
+    let record_count = i64::try_from(writes.len()).context("archive record count overflow")?;
 
+    // The parent must exist before inserting a PostgreSQL blob (including fallback).
     upsert_archive_segment(
         tx,
         segment_id,
@@ -2266,17 +2329,26 @@ async fn archive_prepared_payloads(
         uncompressed_bytes,
         compressed_bytes,
         record_count,
-        archive.compression_level,
-        &storage_backend,
+        level,
+        archive.storage_backend.as_str(),
         &storage_key,
         &checksum,
     )
     .await?;
+    let (backend, key) =
+        persist_archive_segment(tx, archive, segment_id, &storage_key, compressed).await?;
+    sqlx::query(
+        "UPDATE payload_archive_segments SET storage_backend = $2, storage_key = $3 WHERE id = $1",
+    )
+    .bind(segment_id)
+    .bind(backend)
+    .bind(key)
+    .execute(&mut **tx)
+    .await?;
+    seal_archive_segment(tx, segment_id).await?;
 
     for (index, write) in writes.into_iter().enumerate() {
-        let record_index = existing_record_count
-            .checked_add(i64::try_from(index).context("archive record index overflow")?)
-            .ok_or_else(|| anyhow::anyhow!("archive record index overflow"))?;
+        let record_index = i64::try_from(index).context("archive record index overflow")?;
         insert_archive_record(tx, trace, segment_id, record_index, write).await?;
     }
 
@@ -2289,23 +2361,6 @@ struct PreparedArchiveRecord {
     uncompressed_len: i64,
     body_sha256: String,
     frame: Vec<u8>,
-}
-
-fn prepare_archive_records(trace: &TraceRecord) -> anyhow::Result<Vec<PreparedArchiveRecord>> {
-    Ok(vec![
-        prepare_archive_record(
-            trace.id,
-            PayloadDirection::RequestBody,
-            None,
-            &trace.request_body,
-        )?,
-        prepare_archive_record(
-            trace.id,
-            PayloadDirection::ResponseBody,
-            trace.content_type.clone(),
-            &trace.response_body,
-        )?,
-    ])
 }
 
 fn prepare_archive_record(
@@ -2384,35 +2439,6 @@ fn decode_archive_frame_body(segment: &[u8], offset: i64) -> anyhow::Result<Vec<
     Ok(body.to_vec())
 }
 
-async fn load_open_archive_segment(
-    tx: &mut Transaction<'_, Postgres>,
-    session_id: Option<Uuid>,
-) -> anyhow::Result<Option<ArchiveSegment>> {
-    let row = sqlx::query(
-        r#"
-        SELECT id, segment_index, uncompressed_bytes, record_count, storage_backend, storage_key
-        FROM payload_archive_segments
-        WHERE (($1::uuid IS NULL AND session_id IS NULL) OR session_id = $1)
-          AND sealed = false
-        ORDER BY segment_index DESC
-        LIMIT 1
-        FOR UPDATE
-        "#,
-    )
-    .bind(session_id)
-    .fetch_optional(&mut **tx)
-    .await?;
-
-    Ok(row.map(|row| ArchiveSegment {
-        id: row.get("id"),
-        segment_index: row.get("segment_index"),
-        uncompressed_bytes: row.get("uncompressed_bytes"),
-        record_count: row.get("record_count"),
-        storage_backend: row.get("storage_backend"),
-        storage_key: row.get("storage_key"),
-    }))
-}
-
 async fn next_archive_segment_index(
     tx: &mut Transaction<'_, Postgres>,
     session_id: Option<Uuid>,
@@ -2452,47 +2478,22 @@ async fn seal_archive_segment(
     Ok(())
 }
 
-async fn load_archive_segment_uncompressed(
-    tx: &mut Transaction<'_, Postgres>,
-    archive: &ArchiveConfig,
-    segment: &ArchiveSegment,
-) -> anyhow::Result<Vec<u8>> {
-    let compressed = match segment.storage_backend.as_str() {
-        "filesystem" => read_archive_file(&archive.filesystem_root, &segment.storage_key)
-            .with_context(|| format!("failed to read archive segment {}", segment.id))?,
-        "postgres" => {
-            let row = sqlx::query(
-                r#"
-                SELECT compressed_payload
-                FROM payload_archive_segment_blobs
-                WHERE segment_id = $1
-                "#,
-            )
-            .bind(segment.id)
-            .fetch_one(&mut **tx)
-            .await?;
-            row.get::<Vec<u8>, _>("compressed_payload")
-        }
-        other => anyhow::bail!("unknown archive storage backend {other:?}"),
-    };
-    let limit = archive_decode_limit(segment.uncompressed_bytes)?;
-    decompress_with_limit(&compressed, limit)
-}
-
 async fn persist_archive_segment(
     tx: &mut Transaction<'_, Postgres>,
     archive: &ArchiveConfig,
     segment_id: Uuid,
     preferred_storage_key: &str,
-    compressed: &[u8],
+    compressed: Vec<u8>,
 ) -> anyhow::Result<(String, String)> {
-    if archive.storage_backend == ArchiveStorageBackend::Filesystem {
-        match write_archive_file(
-            &archive.filesystem_root,
-            preferred_storage_key,
-            segment_id,
-            compressed,
-        ) {
+    let compressed = if archive.storage_backend == ArchiveStorageBackend::Filesystem {
+        let root = archive.filesystem_root.clone();
+        let key = preferred_storage_key.to_string();
+        let (result, compressed) = tokio::task::spawn_blocking(move || {
+            let result = write_archive_file(&root, &key, segment_id, &compressed);
+            (result, compressed)
+        })
+        .await?;
+        match result {
             Ok(()) => {
                 sqlx::query("DELETE FROM payload_archive_segment_blobs WHERE segment_id = $1")
                     .bind(segment_id)
@@ -2511,7 +2512,10 @@ async fn persist_archive_segment(
                 );
             }
         }
-    }
+        compressed
+    } else {
+        compressed
+    };
 
     sqlx::query(
         r#"
@@ -2595,7 +2599,7 @@ async fn insert_archive_record(
             id, trace_id, session_id, segment_id, record_index, direction, content_type,
             uncompressed_offset, uncompressed_len, body_sha256, complete
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
         "#,
     )
     .bind(Uuid::new_v4())
@@ -2608,6 +2612,10 @@ async fn insert_archive_record(
     .bind(write.uncompressed_offset)
     .bind(write.uncompressed_len)
     .bind(&write.body_sha256)
+    .bind(match write.direction {
+        PayloadDirection::RequestBody => !trace.request_body_truncated,
+        PayloadDirection::ResponseBody => !trace.response_body_truncated,
+    })
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -2617,7 +2625,7 @@ fn archive_storage_key(session_id: Option<Uuid>, segment_id: Uuid, segment_index
     let owner = session_id
         .map(|id| id.to_string())
         .unwrap_or_else(|| format!("unscoped/{segment_id}"));
-    format!("{owner}/{segment_index:020}.zst")
+    format!("{owner}/{segment_index:020}-{segment_id}.zst")
 }
 
 fn write_archive_file(
@@ -2626,13 +2634,37 @@ fn write_archive_file(
     segment_id: Uuid,
     compressed: &[u8],
 ) -> io::Result<()> {
+    use std::io::Write;
     let path = archive_file_path(root, storage_key)?;
+    let mut directories = fs::DirBuilder::new();
+    directories.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        directories.mode(0o700);
+    }
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        directories.create(parent)?;
     }
     let tmp_path = path.with_extension(format!("zst.tmp-{segment_id}"));
-    fs::write(&tmp_path, compressed)?;
-    fs::rename(tmp_path, path)
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&tmp_path)?;
+    file.write_all(compressed)?;
+    file.sync_all()?;
+    fs::rename(tmp_path, &path)?;
+    // Database commit must never acknowledge an archive still only in page cache.
+    // Sync ancestors as recursive directory creation can introduce several levels.
+    let parent = fs::canonicalize(path.parent().unwrap_or_else(|| Path::new(".")))?;
+    for directory in parent.ancestors() {
+        fs::File::open(directory)?.sync_all()?;
+    }
+    Ok(())
 }
 
 fn read_archive_file(root: &Path, storage_key: &str) -> io::Result<Vec<u8>> {
@@ -2683,17 +2715,101 @@ fn sha256_hex(bytes: &[u8]) -> String {
 pub async fn insert_trace(
     pool: &PgPool,
     archive: &ArchiveConfig,
-    mut trace: TraceRecord,
+    trace: TraceRecord,
     messages: Vec<ParsedMessage>,
     user_id: Option<String>,
     user_name: Option<String>,
 ) -> anyhow::Result<()> {
+    insert_trace_internal(pool, archive, trace, messages, user_id, user_name, None).await
+}
+
+pub(crate) async fn insert_journaled_trace(
+    pool: &PgPool,
+    archive: &ArchiveConfig,
+    trace: TraceRecord,
+    messages: Vec<ParsedMessage>,
+    user_id: Option<String>,
+    user_name: Option<String>,
+    journal_id: Uuid,
+) -> anyhow::Result<()> {
+    insert_trace_internal(
+        pool,
+        archive,
+        trace,
+        messages,
+        user_id,
+        user_name,
+        Some(journal_id),
+    )
+    .await
+}
+
+pub(crate) async fn journal_trace_persisted(
+    pool: &PgPool,
+    trace_id: Uuid,
+    journal_id: Uuid,
+) -> anyhow::Result<bool> {
+    let owner: Option<Uuid> =
+        sqlx::query_scalar("SELECT journal_id FROM trace_ingest_receipts WHERE trace_id=$1")
+            .bind(trace_id)
+            .fetch_optional(pool)
+            .await?;
+    if let Some(owner) = owner {
+        anyhow::ensure!(
+            owner == journal_id,
+            "trace receipt belongs to a different journal"
+        );
+    }
+    Ok(owner.is_some())
+}
+
+async fn insert_trace_internal(
+    pool: &PgPool,
+    archive: &ArchiveConfig,
+    mut trace: TraceRecord,
+    messages: Vec<ParsedMessage>,
+    user_id: Option<String>,
+    user_name: Option<String>,
+    journal_id: Option<Uuid>,
+) -> anyhow::Result<()> {
+    // CPU work and large buffer assembly finish before taking a database
+    // connection or session/rollup locks. Slow compression cannot serialize
+    // other captures of the same conversation.
+    let payloads = prepare_trace_payloads(archive, &mut trace).await?;
     let mut tx = pool.begin().await?;
+    if let Some(journal_id) = journal_id {
+        let inserted = sqlx::query("INSERT INTO trace_ingest_receipts(trace_id,journal_id) VALUES ($1,$2) ON CONFLICT (trace_id) DO NOTHING")
+            .bind(trace.id).bind(journal_id).execute(&mut *tx).await?.rows_affected();
+        if inserted == 0 {
+            let owner: Uuid = sqlx::query_scalar(
+                "SELECT journal_id FROM trace_ingest_receipts WHERE trace_id=$1",
+            )
+            .bind(trace.id)
+            .fetch_one(&mut *tx)
+            .await?;
+            anyhow::ensure!(
+                owner == journal_id,
+                "trace receipt belongs to a different journal"
+            );
+            tx.commit().await?;
+            return Ok(());
+        }
+    }
 
     if trace.session_id.is_none()
         && let Some(session_key) = trace.session_key.clone()
     {
-        trace.session_id = Some(upsert_session(&mut tx, &session_key, user_id, user_name).await?);
+        trace.session_id = Some(
+            upsert_session(
+                &mut tx,
+                &session_key,
+                user_id,
+                user_name,
+                trace.started_at,
+                trace.completed_at.unwrap_or(trace.started_at),
+            )
+            .await?,
+        );
     }
 
     sqlx::query(
@@ -2703,11 +2819,12 @@ pub async fn insert_trace(
             status, error, request_kind, model, api_key_hash, session_key, session_id,
             ttft_ms, duration_ms, bytes_in, bytes_out, request_headers, response_headers,
             request_body_compressed, response_body_compressed, request_body_bytes, response_body_bytes,
-            request_body_truncated, response_body_truncated, content_type, plugin_metadata, tags
+            request_body_truncated, response_body_truncated, content_type, plugin_metadata, tags,
+            ttfb_ms, input_tokens, output_tokens, cached_input_tokens, cache_creation_input_tokens, usage_complete, estimated_cost_microusd, tool_calls, tool_call_count
         )
         VALUES (
             $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-            $21,$22,$23,$24,$25,$26,$27,$28,$29
+            $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38
         )
         "#,
     )
@@ -2740,10 +2857,21 @@ pub async fn insert_trace(
     .bind(&trace.content_type)
     .bind(&trace.plugin_metadata)
     .bind(&trace.tags)
+    .bind(trace.ttfb_ms)
+    .bind(trace.usage.input_tokens)
+    .bind(trace.usage.output_tokens)
+    .bind(trace.usage.cached_input_tokens)
+    .bind(trace.usage.cache_creation_input_tokens)
+    .bind(trace.usage_complete)
+    .bind(trace.estimated_cost_microusd)
+    .bind(serde_json::to_value(&trace.tool_calls)?)
+    .bind(trace.tool_calls.len() as i64)
     .execute(&mut *tx)
     .await?;
 
-    archive_trace_payloads(&mut tx, archive, &trace).await?;
+    for payload in payloads {
+        archive_prepared_payloads(&mut tx, archive, &trace, payload, journal_id).await?;
+    }
 
     update_rollup(&mut tx, &trace).await?;
 
@@ -2758,7 +2886,7 @@ pub async fn insert_trace(
         sqlx::query(
             r#"
             INSERT INTO session_messages (request_id, session_id, role, content, created_at)
-            SELECT $1, $2, message.role, message.content, now()
+            SELECT $1, $2, message.role, message.content, $5
             FROM UNNEST($3::text[], $4::text[]) AS message(role, content)
             "#,
         )
@@ -2766,6 +2894,7 @@ pub async fn insert_trace(
         .bind(session_id)
         .bind(&roles)
         .bind(&contents)
+        .bind(trace.started_at)
         .execute(&mut *tx)
         .await?;
     }
@@ -2779,14 +2908,17 @@ async fn upsert_session(
     session_key: &str,
     user_id: Option<String>,
     user_name: Option<String>,
+    first_seen: DateTime<Utc>,
+    last_seen: DateTime<Utc>,
 ) -> anyhow::Result<Uuid> {
     let id = Uuid::new_v4();
     let row = sqlx::query(
         r#"
         INSERT INTO trace_sessions (id, session_key, first_seen, last_seen, user_id, user_name, summary)
-        VALUES ($1, $2, now(), now(), $3, $4, '{}'::jsonb)
+        VALUES ($1, $2, $5, $6, $3, $4, '{}'::jsonb)
         ON CONFLICT (session_key) DO UPDATE
-        SET last_seen = now(),
+        SET first_seen = LEAST(trace_sessions.first_seen, EXCLUDED.first_seen),
+            last_seen = GREATEST(trace_sessions.last_seen, EXCLUDED.last_seen),
             user_id = COALESCE(trace_sessions.user_id, EXCLUDED.user_id),
             user_name = COALESCE(trace_sessions.user_name, EXCLUDED.user_name)
         RETURNING id
@@ -2796,6 +2928,8 @@ async fn upsert_session(
     .bind(session_key)
     .bind(user_id)
     .bind(user_name)
+    .bind(first_seen)
+    .bind(last_seen)
     .fetch_one(&mut **tx)
     .await?;
 
@@ -2806,7 +2940,7 @@ async fn update_rollup(
     tx: &mut Transaction<'_, Postgres>,
     trace: &TraceRecord,
 ) -> anyhow::Result<()> {
-    let errors = if trace.error.is_some() || trace.status.is_some_and(|status| status >= 500) {
+    let errors = if trace.error.is_some() || trace.status.is_some_and(|status| status >= 400) {
         1
     } else {
         0
@@ -3076,6 +3210,7 @@ pub async fn get_request(
     pool: &PgPool,
     id: Uuid,
     archive: &ArchiveConfig,
+    include_bodies: bool,
 ) -> anyhow::Result<Option<Value>> {
     let mut tx = begin_api_read_tx(pool).await?;
     let row = sqlx::query(
@@ -3084,7 +3219,7 @@ pub async fn get_request(
                status, error, request_kind, model, api_key_hash, session_key, session_id,
                ttft_ms, duration_ms, bytes_in, bytes_out, request_headers, response_headers,
                request_body_bytes, response_body_bytes, request_body_truncated, response_body_truncated,
-               content_type, plugin_metadata, tags
+               content_type, plugin_metadata, tags, ttfb_ms, input_tokens, output_tokens, cached_input_tokens, cache_creation_input_tokens, usage_complete, estimated_cost_microusd, tool_calls, tool_call_count
         FROM request_traces
         WHERE id = $1
         "#,
@@ -3097,12 +3232,20 @@ pub async fn get_request(
     let Some(row) = row else {
         return Ok(None);
     };
-    let request_body = load_archived_trace_body(pool, archive, id, PayloadDirection::RequestBody)
-        .await?
-        .unwrap_or_default();
-    let response_body = load_archived_trace_body(pool, archive, id, PayloadDirection::ResponseBody)
-        .await?
-        .unwrap_or_default();
+    let request_body = if include_bodies {
+        load_archived_trace_body(pool, archive, id, PayloadDirection::RequestBody)
+            .await?
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let response_body = if include_bodies {
+        load_archived_trace_body(pool, archive, id, PayloadDirection::ResponseBody)
+            .await?
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let request_body = String::from_utf8_lossy(&request_body).to_string();
     let response_body = String::from_utf8_lossy(&response_body).to_string();
 
@@ -3127,7 +3270,9 @@ pub async fn get_request(
         "bytes_out": row.get::<i64, _>("bytes_out"),
         "request_headers": row.get::<Value, _>("request_headers"),
         "response_headers": row.get::<Value, _>("response_headers"),
+        "tool_calls": row.get::<Value, _>("tool_calls"),
         "request_body": request_body,
+        "bodies_included": include_bodies,
         "response_body": response_body,
         "request_body_bytes": row.get::<i64, _>("request_body_bytes"),
         "response_body_bytes": row.get::<i64, _>("response_body_bytes"),
@@ -3136,6 +3281,14 @@ pub async fn get_request(
         "content_type": row.try_get::<Option<String>, _>("content_type").ok().flatten(),
         "plugin_metadata": row.get::<Value, _>("plugin_metadata"),
         "tags": row.get::<Vec<String>, _>("tags"),
+        "ttfb_ms": row.get::<Option<i64>, _>("ttfb_ms"),
+        "input_tokens": row.get::<Option<i64>, _>("input_tokens"),
+        "output_tokens": row.get::<Option<i64>, _>("output_tokens"),
+        "cached_input_tokens": row.get::<Option<i64>, _>("cached_input_tokens"),
+        "cache_creation_input_tokens": row.get::<Option<i64>, _>("cache_creation_input_tokens"),
+        "estimated_cost_microusd": row.get::<Option<i64>, _>("estimated_cost_microusd"),
+        "usage_complete": row.get::<bool, _>("usage_complete"),
+        "tool_call_count": row.get::<i64, _>("tool_call_count"),
     })))
 }
 
@@ -3168,34 +3321,41 @@ async fn load_archived_trace_body(
         return Ok(None);
     };
 
-    let segment_id: Uuid = row.get("segment_id");
-    let storage_backend: String = row.get("storage_backend");
-    let storage_key: String = row.get("storage_key");
-    let compressed = match storage_backend.as_str() {
-        "filesystem" => read_archive_file(&archive.filesystem_root, &storage_key)
-            .with_context(|| format!("failed to read archive segment {segment_id}"))?,
-        "postgres" => row
-            .try_get::<Option<Vec<u8>>, _>("compressed_payload")?
-            .ok_or_else(|| anyhow::anyhow!("archive postgres blob is missing for {segment_id}"))?,
-        other => anyhow::bail!("unknown archive storage backend {other:?}"),
-    };
-    let checksum: String = row.get("checksum_sha256");
-    let actual_checksum = sha256_hex(&compressed);
-    if actual_checksum != checksum {
-        anyhow::bail!("archive segment {segment_id} checksum mismatch");
-    }
-    let uncompressed_bytes: i64 = row.get("uncompressed_bytes");
-    let segment = decompress_with_limit(&compressed, archive_decode_limit(uncompressed_bytes)?)?;
-    let body = decode_archive_frame_body(&segment, row.get("uncompressed_offset"))?;
-    let expected_len: i64 = row.get("uncompressed_len");
-    if usize_to_i64_checked(body.len(), "archive body size")? != expected_len {
-        anyhow::bail!("archive body length mismatch for trace {trace_id}");
-    }
-    let body_sha256: String = row.get("body_sha256");
-    if sha256_hex(&body) != body_sha256 {
-        anyhow::bail!("archive body checksum mismatch for trace {trace_id}");
-    }
-    Ok(Some(body))
+    let archive = archive.clone();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Vec<u8>>> {
+        let segment_id: Uuid = row.get("segment_id");
+        let storage_backend: String = row.get("storage_backend");
+        let storage_key: String = row.get("storage_key");
+        let compressed = match storage_backend.as_str() {
+            "filesystem" => read_archive_file(&archive.filesystem_root, &storage_key)
+                .with_context(|| format!("failed to read archive segment {segment_id}"))?,
+            "postgres" => row
+                .try_get::<Option<Vec<u8>>, _>("compressed_payload")?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("archive postgres blob is missing for {segment_id}")
+                })?,
+            other => anyhow::bail!("unknown archive storage backend {other:?}"),
+        };
+        let checksum: String = row.get("checksum_sha256");
+        let actual_checksum = sha256_hex(&compressed);
+        if actual_checksum != checksum {
+            anyhow::bail!("archive segment {segment_id} checksum mismatch");
+        }
+        let uncompressed_bytes: i64 = row.get("uncompressed_bytes");
+        let segment =
+            decompress_with_limit(&compressed, archive_decode_limit(uncompressed_bytes)?)?;
+        let body = decode_archive_frame_body(&segment, row.get("uncompressed_offset"))?;
+        let expected_len: i64 = row.get("uncompressed_len");
+        if usize_to_i64_checked(body.len(), "archive body size")? != expected_len {
+            anyhow::bail!("archive body length mismatch for trace {trace_id}");
+        }
+        let body_sha256: String = row.get("body_sha256");
+        if sha256_hex(&body) != body_sha256 {
+            anyhow::bail!("archive body checksum mismatch for trace {trace_id}");
+        }
+        Ok(Some(body))
+    })
+    .await?
 }
 
 fn request_summary_row(row: sqlx::postgres::PgRow) -> Value {
@@ -3221,6 +3381,14 @@ fn request_summary_row(row: sqlx::postgres::PgRow) -> Value {
         "response_body_truncated": row.get::<bool, _>("response_body_truncated"),
         "plugin_metadata": row.get::<Value, _>("plugin_metadata"),
         "tags": row.get::<Vec<String>, _>("tags"),
+        "ttfb_ms": row.get::<Option<i64>, _>("ttfb_ms"),
+        "input_tokens": row.get::<Option<i64>, _>("input_tokens"),
+        "output_tokens": row.get::<Option<i64>, _>("output_tokens"),
+        "cached_input_tokens": row.get::<Option<i64>, _>("cached_input_tokens"),
+        "cache_creation_input_tokens": row.get::<Option<i64>, _>("cache_creation_input_tokens"),
+        "estimated_cost_microusd": row.get::<Option<i64>, _>("estimated_cost_microusd"),
+        "usage_complete": row.get::<bool, _>("usage_complete"),
+        "tool_call_count": row.get::<i64, _>("tool_call_count"),
     })
 }
 
@@ -3432,6 +3600,13 @@ pub async fn get_session(
         "request_stats": {
             "request_count": request_stats.get::<i64, _>("request_count"),
             "error_count": request_stats.get::<i64, _>("error_count"),
+            "input_tokens": request_stats.get::<Option<i64>, _>("input_tokens"),
+            "output_tokens": request_stats.get::<Option<i64>, _>("output_tokens"),
+            "estimated_cost_microusd": request_stats.get::<Option<i64>, _>("estimated_cost_microusd"),
+            "tool_call_count": request_stats.get::<i64, _>("tool_call_count"),
+            "usage_known_count": request_stats.get::<i64, _>("usage_known_count"),
+            "priced_request_count": request_stats.get::<i64, _>("priced_request_count"),
+            "incomplete_capture_count": request_stats.get::<i64, _>("incomplete_capture_count"),
             "bytes_in": request_stats.get::<i64, _>("bytes_in"),
             "bytes_out": request_stats.get::<i64, _>("bytes_out"),
             "captured_bytes": request_stats.get::<i64, _>("captured_bytes"),
@@ -3568,7 +3743,7 @@ pub async fn usage_summary(
     let totals = sqlx::query(
         r#"
         SELECT COUNT(*)::bigint AS request_count,
-               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 400)::bigint AS error_count,
                COALESCE(SUM(bytes_in), 0)::bigint AS bytes_in,
                COALESCE(SUM(bytes_out), 0)::bigint AS bytes_out,
                COALESCE(SUM(request_body_bytes + response_body_bytes), 0)::bigint AS captured_bytes,
@@ -3586,7 +3761,7 @@ pub async fn usage_summary(
         r#"
         SELECT COALESCE(NULLIF(model, ''), 'unknown') AS name,
                COUNT(*)::bigint AS request_count,
-               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 400)::bigint AS error_count,
                AVG(duration_ms)::bigint AS avg_duration_ms,
                AVG(ttft_ms)::bigint AS avg_ttft_ms
         FROM trace_requests
@@ -3605,7 +3780,7 @@ pub async fn usage_summary(
         r#"
         SELECT COALESCE(NULLIF(upstream_host, ''), 'unknown') AS name,
                COUNT(*)::bigint AS request_count,
-               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 400)::bigint AS error_count,
                AVG(duration_ms)::bigint AS avg_duration_ms,
                AVG(ttft_ms)::bigint AS avg_ttft_ms
         FROM trace_requests
@@ -3646,7 +3821,7 @@ pub async fn usage_summary(
         r#"
         SELECT request_kind AS name,
                COUNT(*)::bigint AS request_count,
-               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count,
+               COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 400)::bigint AS error_count,
                AVG(duration_ms)::bigint AS avg_duration_ms,
                AVG(ttft_ms)::bigint AS avg_ttft_ms
         FROM trace_requests
@@ -4340,6 +4515,12 @@ fn api_key_usage_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
                 "request_count": row.get::<i64, _>("request_count"),
                 "error_count": row.get::<i64, _>("error_count"),
                 "session_count": row.get::<i64, _>("session_count"),
+                "input_tokens": row.get::<Option<i64>, _>("input_tokens"),
+                "output_tokens": row.get::<Option<i64>, _>("output_tokens"),
+                "estimated_cost_microusd": row.get::<Option<i64>, _>("estimated_cost_microusd"),
+                "tool_call_count": row.get::<Option<i64>, _>("tool_call_count"),
+                "usage_known_count": row.get::<i64, _>("usage_known_count"),
+                "priced_request_count": row.get::<i64, _>("priced_request_count"),
                 "bytes_in": row.get::<i64, _>("bytes_in"),
                 "bytes_out": row.get::<i64, _>("bytes_out"),
                 "captured_bytes": row.get::<i64, _>("captured_bytes"),
@@ -4416,6 +4597,12 @@ fn model_usage_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
                 "upstream_count": row.get::<i64, _>("upstream_count"),
                 "api_key_count": row.get::<i64, _>("api_key_count"),
                 "session_count": row.get::<i64, _>("session_count"),
+                "input_tokens": row.get::<Option<i64>, _>("input_tokens"),
+                "output_tokens": row.get::<Option<i64>, _>("output_tokens"),
+                "estimated_cost_microusd": row.get::<Option<i64>, _>("estimated_cost_microusd"),
+                "tool_call_count": row.get::<Option<i64>, _>("tool_call_count"),
+                "usage_known_count": row.get::<i64, _>("usage_known_count"),
+                "priced_request_count": row.get::<i64, _>("priced_request_count"),
                 "bytes_in": row.get::<i64, _>("bytes_in"),
                 "bytes_out": row.get::<i64, _>("bytes_out"),
                 "captured_bytes": row.get::<i64, _>("captured_bytes"),
@@ -4454,6 +4641,12 @@ fn user_usage_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<Value> {
                 "proxy_error_count": row.get::<i64, _>("proxy_error_count"),
                 "http_5xx_count": row.get::<i64, _>("http_5xx_count"),
                 "session_count": row.get::<i64, _>("session_count"),
+                "input_tokens": row.get::<Option<i64>, _>("input_tokens"),
+                "output_tokens": row.get::<Option<i64>, _>("output_tokens"),
+                "estimated_cost_microusd": row.get::<Option<i64>, _>("estimated_cost_microusd"),
+                "tool_call_count": row.get::<Option<i64>, _>("tool_call_count"),
+                "usage_known_count": row.get::<i64, _>("usage_known_count"),
+                "priced_request_count": row.get::<i64, _>("priced_request_count"),
                 "api_key_count": row.get::<i64, _>("api_key_count"),
                 "upstream_count": row.get::<i64, _>("upstream_count"),
                 "bytes_in": row.get::<i64, _>("bytes_in"),
@@ -4624,6 +4817,46 @@ fn default_order_schema(order: &DefaultOrder) -> Value {
 }
 
 static REQUEST_FIELDS: &[FieldSpec] = &[
+    FieldSpec {
+        name: "ttfb_ms",
+        sql: "ttfb_ms",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "input_tokens",
+        sql: "input_tokens",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "output_tokens",
+        sql: "output_tokens",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "cached_input_tokens",
+        sql: "cached_input_tokens",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "cache_creation_input_tokens",
+        sql: "cache_creation_input_tokens",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "estimated_cost_microusd",
+        sql: "estimated_cost_microusd",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "tool_call_count",
+        sql: "tool_call_count",
+        filter: Some(FilterKind::Int),
+    },
+    FieldSpec {
+        name: "usage_complete",
+        sql: "usage_complete",
+        filter: Some(FilterKind::Bool),
+    },
     FieldSpec {
         name: "id",
         sql: "id",
@@ -6378,7 +6611,7 @@ mod tests {
         assert!(DATA_OVERVIEW_RECENT_REQUESTS_SQL.contains("FROM trace_requests"));
         assert!(DATA_OVERVIEW_RECENT_REQUESTS_SQL.contains("WHERE started_at >= $1"));
         assert!(DATA_OVERVIEW_RECENT_REQUESTS_SQL.contains(
-            "COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count"
+            "COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 400)::bigint AS error_count"
         ));
         assert!(DATA_OVERVIEW_RECENT_REQUESTS_SQL.contains(
             "COUNT(DISTINCT upstream_host) FILTER (WHERE upstream_host IS NOT NULL AND upstream_host <> '')::bigint AS upstream_count"
@@ -6440,7 +6673,7 @@ mod tests {
             assert!(query.contains("combined AS"));
             assert!(query.contains("diffs AS"));
             assert!(query.contains("FULL OUTER JOIN rollups USING (bucket)"));
-            assert!(query.contains("COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)"));
+            assert!(query.contains("COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 400)"));
             assert!(query.contains("raw_total IS DISTINCT FROM rollup_total"));
         }
 
@@ -6584,7 +6817,7 @@ mod tests {
             USER_USAGE_SQL.contains("COALESCE(NULLIF(s.user_name, ''), 'unknown') AS user_name")
         );
         assert!(USER_USAGE_SQL.contains(
-            "COUNT(*) FILTER (WHERE r.error IS NOT NULL OR r.status >= 500)::bigint AS error_count"
+            "COUNT(*) FILTER (WHERE r.error IS NOT NULL OR r.status >= 400)::bigint AS error_count"
         ));
         assert!(USER_USAGE_SQL.contains(
             "COUNT(DISTINCT r.session_id) FILTER (WHERE r.session_id IS NOT NULL)::bigint AS session_count"
@@ -6629,11 +6862,11 @@ mod tests {
         assert!(LIST_REQUESTS_SQL.contains("AND ($11::bigint IS NULL OR duration_ms <= $11)"));
         assert!(LIST_REQUESTS_SQL.contains("$12::boolean IS NULL"));
         assert!(
-            LIST_REQUESTS_SQL.contains("OR ($12 = true AND (error IS NOT NULL OR status >= 500))")
+            LIST_REQUESTS_SQL.contains("OR ($12 = true AND (error IS NOT NULL OR status >= 400))")
         );
         assert!(
             LIST_REQUESTS_SQL.contains(
-                "OR ($12 = false AND error IS NULL AND (status IS NULL OR status < 500))"
+                "OR ($12 = false AND error IS NULL AND (status IS NULL OR status < 400))"
             )
         );
         assert!(LIST_REQUESTS_SQL.contains("$13::text IS NULL"));
@@ -6669,7 +6902,7 @@ mod tests {
             .find("WHERE started_at >= $1")
             .unwrap();
         let error_filter = RECENT_ERROR_REQUESTS_SQL
-            .find("AND (error IS NOT NULL OR status >= 500)")
+            .find("AND (error IS NOT NULL OR status >= 400)")
             .unwrap();
         let request_order = RECENT_ERROR_REQUESTS_SQL
             .find("ORDER BY started_at DESC, id DESC")
@@ -6706,7 +6939,7 @@ mod tests {
         assert!(SESSION_REQUEST_STATS_SQL.contains("FROM request_traces"));
         assert!(SESSION_REQUEST_STATS_SQL.contains("WHERE session_id = $1"));
         assert!(SESSION_REQUEST_STATS_SQL.contains(
-            "COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count"
+            "COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 400)::bigint AS error_count"
         ));
         assert!(SESSION_REQUEST_STATS_SQL.contains(
             "COALESCE(SUM(request_body_bytes + response_body_bytes), 0)::bigint AS captured_bytes"
@@ -6723,7 +6956,7 @@ mod tests {
     fn error_summary_queries_scope_to_failed_requests() {
         assert!(ERROR_SUMMARY_TOTALS_SQL.contains("FROM trace_requests"));
         assert!(ERROR_SUMMARY_TOTALS_SQL.contains("WHERE started_at >= $1"));
-        assert!(ERROR_SUMMARY_TOTALS_SQL.contains("AND (error IS NOT NULL OR status >= 500)"));
+        assert!(ERROR_SUMMARY_TOTALS_SQL.contains("AND (error IS NOT NULL OR status >= 400)"));
         assert!(ERROR_SUMMARY_TOTALS_SQL.contains(
             "COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::bigint AS affected_sessions"
         ));
@@ -6738,7 +6971,7 @@ mod tests {
         ] {
             assert!(query.contains("FROM trace_requests"));
             assert!(query.contains("WHERE started_at >= $1"));
-            assert!(query.contains("AND (error IS NOT NULL OR status >= 500)"));
+            assert!(query.contains("AND (error IS NOT NULL OR status >= 400)"));
             assert!(query.contains("GROUP BY 1"));
             assert!(query.contains("ORDER BY error_count DESC, name ASC"));
             assert!(query.contains("LIMIT $2"));
@@ -6818,7 +7051,7 @@ mod tests {
         assert!(API_KEY_USAGE_SQL.contains("LIMIT $2"));
         assert!(API_KEY_USAGE_SQL.contains("COUNT(*)::bigint AS request_count"));
         assert!(API_KEY_USAGE_SQL.contains(
-            "COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count"
+            "COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 400)::bigint AS error_count"
         ));
         assert!(API_KEY_USAGE_SQL.contains(
             "COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::bigint AS session_count"
@@ -6848,7 +7081,7 @@ mod tests {
                 .contains("COALESCE(NULLIF(upstream_host, ''), 'unknown') AS upstream_host")
         );
         assert!(UPSTREAM_HEALTH_SQL.contains(
-            "COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count"
+            "COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 400)::bigint AS error_count"
         ));
         assert!(UPSTREAM_HEALTH_SQL.contains(
             "COUNT(*) FILTER (WHERE status BETWEEN 400 AND 499)::bigint AS http_4xx_count"
@@ -6883,7 +7116,7 @@ mod tests {
         assert!(MODEL_USAGE_SQL.contains("LIMIT $2"));
         assert!(MODEL_USAGE_SQL.contains("COALESCE(NULLIF(model, ''), 'unknown') AS model"));
         assert!(MODEL_USAGE_SQL.contains(
-            "COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 500)::bigint AS error_count"
+            "COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 400)::bigint AS error_count"
         ));
         assert!(MODEL_USAGE_SQL.contains(
             "COUNT(DISTINCT upstream_host) FILTER (WHERE upstream_host IS NOT NULL AND upstream_host <> '')::bigint AS upstream_count"
@@ -6930,7 +7163,7 @@ mod tests {
         assert!(REQUEST_FACET_ERROR_STATES_SQL.contains("WHERE started_at >= $1"));
         assert!(
             REQUEST_FACET_ERROR_STATES_SQL
-                .contains("error IS NOT NULL OR COALESCE(status >= 500, false)")
+                .contains("error IS NOT NULL OR COALESCE(status >= 400, false)")
         );
         assert!(REQUEST_FACET_ERROR_STATES_SQL.contains("GROUP BY 1"));
     }

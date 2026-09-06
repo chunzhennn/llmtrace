@@ -1,5 +1,9 @@
 import { api } from '../client';
-import type { MeResponse } from '../types';
+import type { MeResponse, LoginMethods } from '../types';
+
+export function methods(): Promise<LoginMethods> {
+	return api.probe<LoginMethods>('/auth/methods');
+}
 
 export function me(signal?: AbortSignal): Promise<MeResponse> {
 	return api.probe<MeResponse>('/auth/me', signal);

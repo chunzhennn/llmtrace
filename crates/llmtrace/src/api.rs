@@ -94,6 +94,11 @@ struct SessionDetailQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct RequestDetailQuery {
+    include_bodies: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
 struct SessionRequestListQuery {
     limit: Option<i64>,
     offset: Option<i64>,
@@ -267,14 +272,7 @@ async fn security_posture_report(State(state): State<AppState>) -> Response {
 }
 
 async fn retention_status(State(state): State<AppState>) -> Response {
-    match storage::retention_status(
-        &state.pool,
-        state.config.storage.retention_days,
-        state.config.storage.retention_prune_interval_secs,
-        state.config.storage.retention_prune_batch_size,
-    )
-    .await
-    {
+    match storage::retention_status(&state.pool, &state.config.storage).await {
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
@@ -476,8 +474,19 @@ async fn slow_requests(
     }
 }
 
-async fn get_request(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
-    match storage::get_request(&state.pool, id, &state.config.archive).await {
+async fn get_request(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<RequestDetailQuery>,
+) -> Response {
+    match storage::get_request(
+        &state.pool,
+        id,
+        &state.config.archive,
+        query.include_bodies.unwrap_or(true),
+    )
+    .await
+    {
         Ok(Some(value)) => Json(value).into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -1168,15 +1177,19 @@ fn config_summary(config: &Config) -> Value {
     json!({
         "server": {
             "listen": &config.server.listen,
+            "admin_listen": &config.server.admin_listen,
             "public_url": &config.server.public_url,
+            "proxy_public_url": &config.server.proxy_public_url,
             "deployment": config.server.deployment.as_str(),
             "ui_enabled": config.server.ui_enabled,
         },
         "proxy": {
+            "preset": config.proxy.preset.as_str(),
             "default_upstream": &config.proxy.default_upstream,
             "allow_upstreams": &config.proxy.allow_upstreams,
             "allow_upstreams_count": config.proxy.allow_upstreams.len(),
-            "path_prefixes": &config.proxy.path_prefixes,
+            "path_prefixes": config.proxy.effective_path_prefixes(),
+            "capture_path_prefixes": config.proxy.effective_capture_path_prefixes(),
             "upstream_header": &config.proxy.upstream_header,
             "timeout_secs": config.proxy.timeout_secs,
             "max_request_body_bytes": config.proxy.max_request_body_bytes,
@@ -1194,10 +1207,14 @@ fn config_summary(config: &Config) -> Value {
             "max_connections": config.storage.max_connections,
             "acquire_timeout_secs": config.storage.acquire_timeout_secs,
             "trace_queue_capacity": config.storage.trace_queue_capacity,
+            "trace_queue_max_bytes": config.storage.trace_queue_max_bytes,
             "trace_worker_count": config.storage.trace_worker_count,
+            "journal": &config.storage.journal,
             "retention_days": config.storage.retention_days,
             "retention_prune_interval_secs": config.storage.retention_prune_interval_secs,
             "retention_prune_batch_size": config.storage.retention_prune_batch_size,
+            "rotate_size_bytes": config.storage.rotate_size_bytes,
+            "rotate_check_interval_secs": config.storage.rotate_check_interval_secs,
         },
         "auth": {
             "cookie_secure": config.auth.cookie_secure,
@@ -1295,7 +1312,7 @@ fn security_posture(config: &Config) -> Value {
         config.storage.retention_days.is_some(),
         "warn",
         "storage retention is configured",
-        "storage.retention_days is not configured; captured data will grow until manually pruned",
+        "storage.retention_days is not configured; age-based trace and UI audit cleanup is disabled",
     );
     push_posture_check(
         &mut checks,
@@ -1522,17 +1539,19 @@ mod tests {
                 public_url: "https://llmtrace.example.com".to_string(),
                 deployment: DeploymentMode::Production,
                 ui_enabled: true,
+                ..Default::default()
             },
             proxy: crate::config::ProxyConfig {
                 default_upstream: "https://api.openai.com".to_string(),
                 allow_upstreams: vec!["api.openai.com".to_string()],
-                path_prefixes: vec!["/v1".to_string()],
+                path_prefixes: Some(vec!["/v1".to_string()]),
                 upstream_header: "x-llmtrace-upstream".to_string(),
                 timeout_secs: 120,
                 max_request_body_bytes: 8192,
                 max_response_body_bytes: 4096,
                 max_websocket_message_bytes: 16384,
                 max_websocket_session_bytes: 32768,
+                ..Default::default()
             },
             storage: crate::config::StorageConfig {
                 postgres_url: "postgres://db-user:db-pass@db.internal/llmtrace".to_string(),
@@ -1564,11 +1583,13 @@ mod tests {
                 metrics_bearer_token: Some("metrics-secret".to_string()),
             },
             redaction: Default::default(),
+            pricing: Default::default(),
             plugins: vec![PluginConfig {
                 name: "classifier".to_string(),
                 wasm_path: "/secret/plugin/classifier.wasm".into(),
                 hooks: vec![PluginHook::ResponseEnd],
                 timeout_ms: 100,
+                http_get_urls: Vec::new(),
             }],
         };
 
@@ -1627,6 +1648,7 @@ mod tests {
                 public_url: "https://llmtrace.example.com".to_string(),
                 deployment: DeploymentMode::Production,
                 ui_enabled: true,
+                ..Default::default()
             },
             proxy: crate::config::ProxyConfig {
                 allow_upstreams: vec!["api.openai.com".to_string()],

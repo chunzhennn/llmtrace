@@ -11,10 +11,10 @@
 	let { label, value, mono = false, children }: Props = $props();
 </script>
 
-<div class="flex flex-col gap-0.5 py-1.5">
+<div class="flex min-w-0 flex-col gap-0.5 py-1.5">
 	<span class="text-fg-muted text-xs font-medium uppercase tracking-wide">{label}</span>
 	{#if children}
-		<div class="text-sm">{@render children()}</div>
+		<div class="text-sm [overflow-wrap:anywhere]">{@render children()}</div>
 	{:else}
 		<span class="text-sm break-all" class:font-mono={mono}>
 			{value === null || value === undefined || value === '' ? '—' : value}

@@ -9,6 +9,7 @@ use crate::config::{Config, PathPrefixAllowlist, UpstreamAllowlist};
 use crate::login_throttle::LoginThrottle;
 use crate::metrics::RuntimeMetrics;
 use crate::plugins::PluginManager;
+use crate::routing::CapturePolicy;
 use crate::trace::TraceRecorder;
 
 #[derive(Clone)]
@@ -20,6 +21,7 @@ pub struct AppState {
     pub traces: TraceRecorder,
     pub upstream_allowlist: UpstreamAllowlist,
     pub path_prefixes: PathPrefixAllowlist,
+    pub capture_policy: CapturePolicy,
     pub login_throttle: LoginThrottle,
     pub runtime_metrics: RuntimeMetrics,
 }
@@ -49,6 +51,7 @@ impl AppState {
             .build()
             .context("failed to build http client")?;
         let login_throttle = LoginThrottle::new(&config.auth.login_rate_limit);
+        let capture_policy = CapturePolicy::new(&config.proxy).map_err(anyhow::Error::msg)?;
 
         Ok(Self {
             config: Arc::new(config),
@@ -58,6 +61,7 @@ impl AppState {
             traces,
             upstream_allowlist,
             path_prefixes,
+            capture_policy,
             login_throttle,
             runtime_metrics,
         })

@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::storage::ParsedMessage;
@@ -9,6 +10,19 @@ pub struct ParsedTrace {
     pub model: Option<String>,
     pub messages: Vec<ParsedMessage>,
     pub session_key_hint: Option<String>,
+    pub response: ResponseDetails,
+}
+
+mod response;
+pub use response::{ResponseDetails, ToolCall};
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TokenUsage {
+    /// Total input, including cache reads and cache writes for all providers.
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cached_input_tokens: Option<i64>,
+    pub cache_creation_input_tokens: Option<i64>,
 }
 
 pub fn parse_trace(uri: &str, request_body: &[u8], response_body: &[u8]) -> ParsedTrace {
@@ -16,18 +30,21 @@ pub fn parse_trace(uri: &str, request_body: &[u8], response_body: &[u8]) -> Pars
     let response_json = serde_json::from_slice::<Value>(response_body).ok();
 
     let request_kind = classify(uri, request_json.as_ref());
-    let model = request_json
-        .as_ref()
-        .and_then(|value| value.get("model"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .or_else(|| {
-            response_json
-                .as_ref()
-                .and_then(|value| value.get("model"))
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        });
+    let response = ResponseDetails::parse(response_body, response_json.as_ref(), request_kind);
+    let model = response.model.clone().or_else(|| {
+        request_json
+            .as_ref()
+            .and_then(|value| value.get("model"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                response_json
+                    .as_ref()
+                    .and_then(|value| value.get("model"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+    });
 
     let mut messages = Vec::new();
     if let Some(value) = request_json.as_ref() {
@@ -35,10 +52,16 @@ pub fn parse_trace(uri: &str, request_body: &[u8], response_body: &[u8]) -> Pars
     }
     if let Some(value) = response_json.as_ref() {
         collect_response_messages(&mut messages, value);
-    } else if let Some(text) = parse_sse_text(response_body) {
+    } else if !response.text.is_empty() {
         messages.push(ParsedMessage {
             role: "assistant".to_string(),
-            content: text,
+            content: response.text.clone(),
+        });
+    }
+    for tool in &response.tool_calls {
+        messages.push(ParsedMessage {
+            role: "tool_call".to_string(),
+            content: serde_json::to_string(tool).unwrap_or_default(),
         });
     }
 
@@ -48,6 +71,7 @@ pub fn parse_trace(uri: &str, request_body: &[u8], response_body: &[u8]) -> Pars
             value
                 .pointer("/metadata/session_id")
                 .or_else(|| value.pointer("/metadata/conversation_id"))
+                .or_else(|| value.pointer("/conversation/id"))
                 .or_else(|| value.get("conversation"))
         })
         .and_then(Value::as_str)
@@ -58,15 +82,18 @@ pub fn parse_trace(uri: &str, request_body: &[u8], response_body: &[u8]) -> Pars
         model,
         messages,
         session_key_hint,
+        response,
     }
 }
 
 fn classify(uri: &str, request_json: Option<&Value>) -> RequestKind {
-    if uri.contains("/chat/completions") {
+    let path = uri.split('?').next().unwrap_or(uri);
+    if path.ends_with("/chat/completions") {
         RequestKind::OpenAiChatCompletions
-    } else if uri.contains("/responses") {
+    } else if path.ends_with("/responses") {
         RequestKind::OpenAiResponses
-    } else if uri.contains("/messages") && request_json.and_then(|v| v.get("max_tokens")).is_some()
+    } else if path.ends_with("/messages")
+        && request_json.and_then(|v| v.get("max_tokens")).is_some()
     {
         RequestKind::AnthropicMessages
     } else if request_json.is_some() {
@@ -77,6 +104,14 @@ fn classify(uri: &str, request_json: Option<&Value>) -> RequestKind {
 }
 
 fn collect_request_messages(messages: &mut Vec<ParsedMessage>, kind: RequestKind, value: &Value) {
+    if let Some(content) =
+        stringify_content(value.get("system").or_else(|| value.get("instructions")))
+    {
+        messages.push(ParsedMessage {
+            role: "system".to_string(),
+            content,
+        });
+    }
     if let Some(items) = value.get("messages").and_then(Value::as_array) {
         for item in items {
             let role = item
@@ -86,6 +121,14 @@ fn collect_request_messages(messages: &mut Vec<ParsedMessage>, kind: RequestKind
                 .to_string();
             if let Some(content) = stringify_content(item.get("content")) {
                 messages.push(ParsedMessage { role, content });
+            }
+            if let Some(tools) = item.get("tool_calls").and_then(Value::as_array) {
+                for tool in tools {
+                    messages.push(ParsedMessage {
+                        role: "tool_call".to_string(),
+                        content: tool.to_string(),
+                    });
+                }
             }
         }
         return;
@@ -181,6 +224,21 @@ fn responses_input_messages(input: &Value) -> Vec<ParsedMessage> {
                 content: text.clone(),
             }),
             Value::Object(_) => {
+                if matches!(
+                    item.get("type").and_then(Value::as_str),
+                    Some("function_call" | "function_call_output")
+                ) {
+                    messages.push(ParsedMessage {
+                        role: if item["type"] == "function_call" {
+                            "tool_call"
+                        } else {
+                            "tool"
+                        }
+                        .to_string(),
+                        content: item.to_string(),
+                    });
+                    continue;
+                }
                 let role = item
                     .get("role")
                     .and_then(Value::as_str)
@@ -209,8 +267,17 @@ fn responses_input_messages(input: &Value) -> Vec<ParsedMessage> {
 
 fn stringify_content(value: Option<&Value>) -> Option<String> {
     match value? {
+        Value::Null => None,
         Value::String(text) => Some(text.clone()),
         Value::Array(items) => {
+            if items.iter().any(|item| {
+                matches!(
+                    item.get("type").and_then(Value::as_str),
+                    Some("tool_use" | "tool_result")
+                )
+            }) {
+                return serde_json::to_string(items).ok();
+            }
             let parts = items
                 .iter()
                 .filter_map(|item| {
@@ -227,80 +294,6 @@ fn stringify_content(value: Option<&Value>) -> Option<String> {
             }
         }
         other => serde_json::to_string(other).ok(),
-    }
-}
-
-fn parse_sse_text(body: &[u8]) -> Option<String> {
-    let text = std::str::from_utf8(body).ok()?;
-    if !text.contains("data:") {
-        return None;
-    }
-
-    // Accumulate incremental deltas; keep the last "done" full text as a
-    // fallback for streams that only emit the final assembled text.
-    let mut deltas = String::new();
-    let mut done_text: Option<String> = None;
-
-    for line in text.lines() {
-        let Some(data) = line.strip_prefix("data:") else {
-            continue;
-        };
-        let data = data.trim();
-        if data == "[DONE]" || data.is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(data) else {
-            continue;
-        };
-
-        match value.get("type").and_then(Value::as_str) {
-            // OpenAI Responses streaming. The delta event carries an incremental
-            // fragment in a top-level "delta" string; the done event carries the
-            // fully assembled text. Collecting both would duplicate the text, so
-            // deltas are preferred and the done text is only a fallback.
-            Some("response.output_text.delta") => {
-                if let Some(delta) = value.get("delta").and_then(Value::as_str) {
-                    deltas.push_str(delta);
-                }
-            }
-            Some("response.output_text.done") => {
-                if let Some(text) = value.get("text").and_then(Value::as_str) {
-                    done_text = Some(text.to_string());
-                }
-            }
-            _ => {
-                if let Some(delta) = value
-                    .pointer("/choices/0/delta/content")
-                    .and_then(Value::as_str)
-                {
-                    // OpenAI Chat Completions streaming.
-                    deltas.push_str(delta);
-                } else if let Some(text) = value
-                    .pointer("/content_block/delta/text")
-                    .and_then(Value::as_str)
-                    .or_else(|| value.pointer("/delta/text").and_then(Value::as_str))
-                {
-                    // Anthropic Messages streaming: {"type":"content_block_delta",
-                    // "delta":{"type":"text_delta","text":"..."}}.
-                    deltas.push_str(text);
-                } else if let Some(delta) = value.get("delta").and_then(Value::as_str) {
-                    // Generic top-level string delta (provider-specific streaming).
-                    deltas.push_str(delta);
-                }
-            }
-        }
-    }
-
-    let output = if !deltas.is_empty() {
-        deltas
-    } else {
-        done_text.unwrap_or_default()
-    };
-
-    if output.is_empty() {
-        None
-    } else {
-        Some(output)
     }
 }
 

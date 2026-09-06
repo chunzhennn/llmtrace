@@ -14,8 +14,8 @@ export function listRequests(
 	return api.get<RequestListResponse>('/requests', params, signal);
 }
 
-export function getRequest(id: string, signal?: AbortSignal): Promise<RequestDetail> {
-	return api.get<RequestDetail>(`/requests/${id}`, undefined, signal);
+export function getRequest(id: string, signal?: AbortSignal, includeBodies = false): Promise<RequestDetail> {
+	return api.get<RequestDetail>(`/requests/${id}`, { include_bodies: includeBodies }, signal);
 }
 
 export function requestFacets(

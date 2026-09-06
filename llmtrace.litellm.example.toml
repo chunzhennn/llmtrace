@@ -1,0 +1,25 @@
+# Local development: employees use 127.0.0.1:3000, admins use localhost:3001/ui.
+# Point default_upstream/allow_upstreams at your existing LiteLLM deployment.
+# Production settings, TLS ingress, and environment overrides: docs/litellm.md.
+[server]
+listen = "127.0.0.1:3000"
+admin_listen = "127.0.0.1:3001"
+public_url = "http://localhost:3001"
+proxy_public_url = "http://127.0.0.1:3000"
+
+[proxy]
+preset = "litellm"
+default_upstream = "http://127.0.0.1:4000"
+allow_upstreams = ["http://127.0.0.1:4000", "ws://127.0.0.1:4000"]
+# Omit path_prefixes/capture_path_prefixes to use the preset defaults.
+# To transparently expose the entire LiteLLM application, including its UI and
+# management API, explicitly set path_prefixes = ["/"]. LiteLLM controls access.
+
+[storage]
+postgres_url = "postgres://postgres:postgres@localhost:5432/llmtrace"
+retention_days = 30
+rotate_size_bytes = 10737418240
+
+[auth.local_admin]
+username = "admin"
+password = "admin" # development only; use password_hash in production

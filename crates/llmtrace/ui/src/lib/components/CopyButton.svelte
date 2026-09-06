@@ -2,7 +2,7 @@
 	import Icon from './Icon.svelte';
 
 	interface Props {
-		text: string;
+		text: string | (() => string);
 		label?: string;
 		class?: string;
 	}
@@ -14,7 +14,7 @@
 
 	async function copy() {
 		try {
-			await navigator.clipboard.writeText(text);
+			await navigator.clipboard.writeText(typeof text === 'function' ? text() : text);
 			copied = true;
 			clearTimeout(timer);
 			timer = setTimeout(() => (copied = false), 1500);

@@ -1,5 +1,17 @@
 // Formatting helpers shared across the dashboard.
 
+export function requestKindLabel(kind: string): string {
+	const labels: Record<string, string> = {
+		openai_chat_completions: 'Chat completions',
+		openai_responses: 'Responses',
+		anthropic_messages: 'Messages',
+		websocket: 'WebSocket',
+		generic_json: 'JSON',
+		generic_http: 'HTTP'
+	};
+	return labels[kind] ?? kind;
+}
+
 export function formatNumber(value: number | null | undefined): string {
 	if (value === null || value === undefined || Number.isNaN(value)) return '-';
 	return new Intl.NumberFormat().format(value);
@@ -125,4 +137,16 @@ export function safeJsonParse(text: string): { ok: boolean; value: unknown } {
 	} catch {
 		return { ok: false, value: null };
 	}
+}
+
+// Missing usage/pricing is different from a measured zero.
+export function formatCost(microusd: number | null | undefined): string {
+    if (microusd == null) return 'Unknown';
+    return new Intl.NumberFormat('en-US', {
+        style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 6
+    }).format(microusd / 1_000_000);
+}
+
+export function formatTokens(count: number | null | undefined): string {
+    return count == null ? 'Unknown' : formatNumber(count);
 }

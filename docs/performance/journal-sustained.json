@@ -1,0 +1,184 @@
+[
+  {
+    "case": "postgres_mixed_200rps_rotation",
+    "concurrency": 64,
+    "drain_secs": 0.052368314,
+    "elapsed_secs": 59.995764115,
+    "failures": [],
+    "first_byte_p95_ms": 0.447596,
+    "large_request_every": 100,
+    "latency_p50_ms": 0.243726,
+    "latency_p95_ms": 0.44864699999999996,
+    "latency_p99_ms": 4.816006000000001,
+    "metrics": {
+      "llmtrace_db_pool_idle": 7.0,
+      "llmtrace_db_pool_size": 7.0,
+      "llmtrace_journal_ack_failed_total": 0.0,
+      "llmtrace_journal_blocked_records": 0.0,
+      "llmtrace_journal_dropped_full_total": 0.0,
+      "llmtrace_journal_enabled": 1.0,
+      "llmtrace_journal_max_bytes": 1073741824.0,
+      "llmtrace_journal_max_records": 100000.0,
+      "llmtrace_journal_oldest_pending_age_secs": 0.0,
+      "llmtrace_journal_pending_bytes": 0.0,
+      "llmtrace_journal_pending_records": 0.0,
+      "llmtrace_journal_quarantined_bytes": 0.0,
+      "llmtrace_journal_quarantined_records": 0.0,
+      "llmtrace_journal_read_failed_total": 0.0,
+      "llmtrace_journal_recovered_total": 0.0,
+      "llmtrace_journal_retry_total": 0.0,
+      "llmtrace_journal_write_failed_total": 0.0,
+      "llmtrace_journal_written_total": 12000.0,
+      "llmtrace_retention_failures_total": 0.0,
+      "llmtrace_retention_last_deleted_oauth_states": 0.0,
+      "llmtrace_retention_last_deleted_request_traces": 200.0,
+      "llmtrace_retention_last_deleted_total": 200.0,
+      "llmtrace_retention_last_deleted_trace_rollups_minute": 0.0,
+      "llmtrace_retention_last_deleted_trace_sessions": 0.0,
+      "llmtrace_retention_last_deleted_ui_audit_events": 0.0,
+      "llmtrace_retention_last_deleted_ui_sessions": 0.0,
+      "llmtrace_retention_last_failure_timestamp_seconds": 0.0,
+      "llmtrace_retention_last_success_timestamp_seconds": 1788628163.0,
+      "llmtrace_retention_runs_total": 53.0,
+      "llmtrace_trace_pipeline_build_failures_total": 0.0,
+      "llmtrace_trace_pipeline_dropped_closed_total": 0.0,
+      "llmtrace_trace_pipeline_dropped_full_total": 0.0,
+      "llmtrace_trace_pipeline_dropped_memory_total": 0.0,
+      "llmtrace_trace_pipeline_enqueued_total": 12000.0,
+      "llmtrace_trace_pipeline_memory_limit_bytes": 268435456.0,
+      "llmtrace_trace_pipeline_memory_used_bytes": 0.0,
+      "llmtrace_trace_pipeline_persist_failures_total": 0.0,
+      "llmtrace_trace_pipeline_persisted_total": 12000.0,
+      "llmtrace_trace_pipeline_queue_available": 1024.0,
+      "llmtrace_trace_pipeline_queue_capacity": 1024.0,
+      "llmtrace_trace_pipeline_queue_depth": 0.0
+    },
+    "peak_rss_bytes": 362233856,
+    "request_bytes": 1082,
+    "requests": 12000,
+    "retained_requests": 599,
+    "rotation": {
+      "check_interval_secs": 1,
+      "enabled": true,
+      "over_limit": false,
+      "pending_delete_bytes": 0,
+      "pending_delete_files": 0,
+      "retained_bytes": 31929614,
+      "size_bytes": 33554432
+    },
+    "rps": 200.01412061355492,
+    "rss_timeline": [
+      {
+        "elapsed_secs": 2.5e-7,
+        "rss_bytes": 14688256
+      },
+      {
+        "elapsed_secs": 15.003085975,
+        "rss_bytes": 304386048
+      },
+      {
+        "elapsed_secs": 30.004357181,
+        "rss_bytes": 330584064
+      },
+      {
+        "elapsed_secs": 45.005292933,
+        "rss_bytes": 339091456
+      },
+      {
+        "elapsed_secs": 60.006173933,
+        "rss_bytes": 362233856
+      }
+    ]
+  },
+  {
+    "case": "filesystem_mixed_200rps_rotation",
+    "concurrency": 64,
+    "drain_secs": 0.051745093,
+    "elapsed_secs": 59.995605094,
+    "failures": [],
+    "first_byte_p95_ms": 0.411437,
+    "large_request_every": 100,
+    "latency_p50_ms": 0.238296,
+    "latency_p95_ms": 0.412038,
+    "latency_p99_ms": 4.91791,
+    "metrics": {
+      "llmtrace_db_pool_idle": 7.0,
+      "llmtrace_db_pool_size": 7.0,
+      "llmtrace_journal_ack_failed_total": 0.0,
+      "llmtrace_journal_blocked_records": 0.0,
+      "llmtrace_journal_dropped_full_total": 0.0,
+      "llmtrace_journal_enabled": 1.0,
+      "llmtrace_journal_max_bytes": 1073741824.0,
+      "llmtrace_journal_max_records": 100000.0,
+      "llmtrace_journal_oldest_pending_age_secs": 0.0,
+      "llmtrace_journal_pending_bytes": 0.0,
+      "llmtrace_journal_pending_records": 0.0,
+      "llmtrace_journal_quarantined_bytes": 0.0,
+      "llmtrace_journal_quarantined_records": 0.0,
+      "llmtrace_journal_read_failed_total": 0.0,
+      "llmtrace_journal_recovered_total": 0.0,
+      "llmtrace_journal_retry_total": 0.0,
+      "llmtrace_journal_write_failed_total": 0.0,
+      "llmtrace_journal_written_total": 12000.0,
+      "llmtrace_retention_failures_total": 0.0,
+      "llmtrace_retention_last_deleted_oauth_states": 0.0,
+      "llmtrace_retention_last_deleted_request_traces": 300.0,
+      "llmtrace_retention_last_deleted_total": 300.0,
+      "llmtrace_retention_last_deleted_trace_rollups_minute": 0.0,
+      "llmtrace_retention_last_deleted_trace_sessions": 0.0,
+      "llmtrace_retention_last_deleted_ui_audit_events": 0.0,
+      "llmtrace_retention_last_deleted_ui_sessions": 0.0,
+      "llmtrace_retention_last_failure_timestamp_seconds": 0.0,
+      "llmtrace_retention_last_success_timestamp_seconds": 1788628223.0,
+      "llmtrace_retention_runs_total": 46.0,
+      "llmtrace_trace_pipeline_build_failures_total": 0.0,
+      "llmtrace_trace_pipeline_dropped_closed_total": 0.0,
+      "llmtrace_trace_pipeline_dropped_full_total": 0.0,
+      "llmtrace_trace_pipeline_dropped_memory_total": 0.0,
+      "llmtrace_trace_pipeline_enqueued_total": 12000.0,
+      "llmtrace_trace_pipeline_memory_limit_bytes": 268435456.0,
+      "llmtrace_trace_pipeline_memory_used_bytes": 0.0,
+      "llmtrace_trace_pipeline_persist_failures_total": 0.0,
+      "llmtrace_trace_pipeline_persisted_total": 12000.0,
+      "llmtrace_trace_pipeline_queue_available": 1024.0,
+      "llmtrace_trace_pipeline_queue_capacity": 1024.0,
+      "llmtrace_trace_pipeline_queue_depth": 0.0
+    },
+    "peak_rss_bytes": 322838528,
+    "request_bytes": 1082,
+    "requests": 12000,
+    "retained_requests": 599,
+    "rotation": {
+      "check_interval_secs": 1,
+      "enabled": true,
+      "over_limit": false,
+      "pending_delete_bytes": 0,
+      "pending_delete_files": 0,
+      "retained_bytes": 31929607,
+      "size_bytes": 33554432
+    },
+    "rps": 200.01465075981187,
+    "rss_timeline": [
+      {
+        "elapsed_secs": 2.61e-7,
+        "rss_bytes": 14569472
+      },
+      {
+        "elapsed_secs": 15.000680397,
+        "rss_bytes": 312131584
+      },
+      {
+        "elapsed_secs": 30.005039315,
+        "rss_bytes": 316432384
+      },
+      {
+        "elapsed_secs": 45.006106601,
+        "rss_bytes": 322813952
+      },
+      {
+        "elapsed_secs": 60.007136286,
+        "rss_bytes": 322838528
+      }
+    ]
+  }
+]

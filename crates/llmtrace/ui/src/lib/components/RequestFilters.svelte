@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { requestKindLabel } from '$lib/utils/format';
 	import { untrack } from 'svelte';
 	import Field from './Field.svelte';
 	import Icon from './Icon.svelte';
@@ -102,8 +103,8 @@
 </script>
 
 <form onsubmit={submit} class="card mb-4 flex flex-col gap-3 p-3">
-	<div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-		<Field label="Search" class="lg:col-span-2">
+	<div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
+		<Field label="Search" class="col-span-2">
 			<input class="input" type="text" placeholder="URI, model, host, session…" bind:value={q} />
 		</Field>
 		<Field label="Model">
@@ -126,7 +127,7 @@
 			<select class="input" bind:value={requestKind}>
 				<option value="">All kinds</option>
 				{#each REQUEST_KINDS as kind (kind)}
-					<option value={kind}>{kind}</option>
+					<option value={kind}>{requestKindLabel(kind)}</option>
 				{/each}
 			</select>
 		</Field>

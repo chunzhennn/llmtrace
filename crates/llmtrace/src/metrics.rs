@@ -15,7 +15,16 @@ pub struct RuntimeMetrics {
 #[derive(Debug, Default)]
 struct RuntimeMetricsInner {
     traces_enqueued: AtomicU64,
+    journal_written: AtomicU64,
+    journal_dropped_full: AtomicU64,
+    journal_write_failed: AtomicU64,
+    journal_read_failed: AtomicU64,
+    journal_ack_failed: AtomicU64,
+    journal_retry: AtomicU64,
+    journal_recovered: AtomicU64,
+
     traces_dropped_full: AtomicU64,
+    traces_dropped_memory: AtomicU64,
     traces_dropped_closed: AtomicU64,
     trace_build_failures: AtomicU64,
     trace_persist_failures: AtomicU64,
@@ -38,6 +47,9 @@ pub struct TraceQueueMetrics {
     pub capacity: u64,
     pub available: u64,
     pub depth: u64,
+    pub memory_limit_bytes: u64,
+    pub memory_used_bytes: u64,
+    pub journal: crate::trace::journal::JournalSnapshot,
 }
 
 impl TraceQueueMetrics {
@@ -47,11 +59,60 @@ impl TraceQueueMetrics {
             capacity: usize_to_u64(capacity),
             available: usize_to_u64(available),
             depth: usize_to_u64(capacity.saturating_sub(available)),
+            ..Default::default()
         }
     }
 }
 
 impl RuntimeMetrics {
+    pub fn journal_written(&self) {
+        self.inner.journal_written.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn journal_dropped_full(&self) {
+        let dropped = self
+            .inner
+            .journal_dropped_full
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        if dropped.is_power_of_two() {
+            tracing::warn!(dropped, "capture journal is full; new captures rejected");
+        }
+    }
+    pub fn journal_write_failed(&self) -> bool {
+        self.inner
+            .journal_write_failed
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+            .is_power_of_two()
+    }
+    pub fn journal_read_failed(&self) -> bool {
+        self.inner
+            .journal_read_failed
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+            .is_power_of_two()
+    }
+    pub fn journal_ack_failed(&self) {
+        self.inner
+            .journal_ack_failed
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn journal_retry(&self) -> bool {
+        self.inner
+            .journal_retry
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+            .is_power_of_two()
+    }
+    pub fn journal_recovered(&self) {
+        self.inner.journal_recovered.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn trace_dropped_memory(&self) {
+        self.inner
+            .traces_dropped_memory
+            .fetch_add(1, Ordering::Relaxed);
+    }
     pub fn trace_enqueued(&self) {
         self.inner.traces_enqueued.fetch_add(1, Ordering::Relaxed);
     }
@@ -119,12 +180,38 @@ impl RuntimeMetrics {
                 "enqueued": self.inner.traces_enqueued.load(Ordering::Relaxed),
                 "persisted": self.inner.traces_persisted.load(Ordering::Relaxed),
                 "dropped_full": self.inner.traces_dropped_full.load(Ordering::Relaxed),
+                "dropped_memory": self.inner.traces_dropped_memory.load(Ordering::Relaxed),
                 "dropped_closed": self.inner.traces_dropped_closed.load(Ordering::Relaxed),
                 "build_failures": self.inner.trace_build_failures.load(Ordering::Relaxed),
                 "persist_failures": self.inner.trace_persist_failures.load(Ordering::Relaxed),
                 "queue_capacity": trace_queue.capacity,
                 "queue_available": trace_queue.available,
                 "queue_depth": trace_queue.depth,
+                "memory_limit_bytes": trace_queue.memory_limit_bytes,
+                "memory_used_bytes": trace_queue.memory_used_bytes,
+            },
+            "trace_journal": {
+                "enabled": trace_queue.journal.enabled,
+                "acknowledgement": "background_fsync_after_response",
+                "not_yet_durable": if trace_queue.journal.enabled { self.inner.traces_enqueued.load(Ordering::Relaxed)
+                    .saturating_sub(self.inner.journal_written.load(Ordering::Relaxed))
+                    .saturating_sub(self.inner.journal_dropped_full.load(Ordering::Relaxed))
+                    .saturating_sub(self.inner.journal_write_failed.load(Ordering::Relaxed)) } else { 0 },
+                "pending_records": trace_queue.journal.pending_records,
+                "pending_bytes": trace_queue.journal.pending_bytes,
+                "max_bytes": trace_queue.journal.max_bytes,
+                "max_records": trace_queue.journal.max_records,
+                "quarantined_records": trace_queue.journal.quarantined_records,
+                "quarantined_bytes": trace_queue.journal.quarantined_bytes,
+                "oldest_pending_age_secs": trace_queue.journal.oldest_pending_age_secs,
+                "blocked_records": trace_queue.journal.blocked_records,
+                "written": self.inner.journal_written.load(Ordering::Relaxed),
+                "dropped_full": self.inner.journal_dropped_full.load(Ordering::Relaxed),
+                "write_failed": self.inner.journal_write_failed.load(Ordering::Relaxed),
+                "read_failed": self.inner.journal_read_failed.load(Ordering::Relaxed),
+                "ack_failed": self.inner.journal_ack_failed.load(Ordering::Relaxed),
+                "retry": self.inner.journal_retry.load(Ordering::Relaxed),
+                "recovered": self.inner.journal_recovered.load(Ordering::Relaxed),
             },
             "retention": {
                 "runs": retention.runs,
@@ -154,6 +241,140 @@ impl RuntimeMetrics {
         let counters = self.counters();
         let retention = self.retention_snapshot();
         let mut output = String::new();
+        push_metric(
+            &mut output,
+            "counter",
+            "llmtrace_journal_written_total",
+            "Process lifetime journal written count.",
+            self.inner.journal_written.load(Ordering::Relaxed),
+        );
+        push_metric(
+            &mut output,
+            "counter",
+            "llmtrace_journal_dropped_full_total",
+            "Process lifetime journal dropped full count.",
+            self.inner.journal_dropped_full.load(Ordering::Relaxed),
+        );
+        push_metric(
+            &mut output,
+            "counter",
+            "llmtrace_journal_write_failed_total",
+            "Process lifetime journal write failed count.",
+            self.inner.journal_write_failed.load(Ordering::Relaxed),
+        );
+        push_metric(
+            &mut output,
+            "counter",
+            "llmtrace_journal_read_failed_total",
+            "Process lifetime journal read failed count.",
+            self.inner.journal_read_failed.load(Ordering::Relaxed),
+        );
+        push_metric(
+            &mut output,
+            "counter",
+            "llmtrace_journal_ack_failed_total",
+            "Process lifetime journal ack failed count.",
+            self.inner.journal_ack_failed.load(Ordering::Relaxed),
+        );
+        push_metric(
+            &mut output,
+            "counter",
+            "llmtrace_journal_retry_total",
+            "Process lifetime journal retry count.",
+            self.inner.journal_retry.load(Ordering::Relaxed),
+        );
+        push_metric(
+            &mut output,
+            "counter",
+            "llmtrace_journal_recovered_total",
+            "Process lifetime journal recovered count.",
+            self.inner.journal_recovered.load(Ordering::Relaxed),
+        );
+        push_metric(
+            &mut output,
+            "gauge",
+            "llmtrace_journal_pending_records",
+            "Capture journal pending records.",
+            trace_queue.journal.pending_records,
+        );
+        push_metric(
+            &mut output,
+            "gauge",
+            "llmtrace_journal_pending_bytes",
+            "Capture journal pending bytes.",
+            trace_queue.journal.pending_bytes,
+        );
+        push_metric(
+            &mut output,
+            "gauge",
+            "llmtrace_journal_max_bytes",
+            "Capture journal max bytes.",
+            trace_queue.journal.max_bytes,
+        );
+        push_metric(
+            &mut output,
+            "gauge",
+            "llmtrace_journal_max_records",
+            "Capture journal max records.",
+            trace_queue.journal.max_records,
+        );
+        push_metric(
+            &mut output,
+            "gauge",
+            "llmtrace_journal_quarantined_records",
+            "Capture journal quarantined records.",
+            trace_queue.journal.quarantined_records,
+        );
+        push_metric(
+            &mut output,
+            "gauge",
+            "llmtrace_journal_quarantined_bytes",
+            "Capture journal quarantined bytes.",
+            trace_queue.journal.quarantined_bytes,
+        );
+        push_metric(
+            &mut output,
+            "gauge",
+            "llmtrace_journal_oldest_pending_age_secs",
+            "Capture journal oldest pending age secs.",
+            trace_queue.journal.oldest_pending_age_secs,
+        );
+        push_metric(
+            &mut output,
+            "gauge",
+            "llmtrace_journal_blocked_records",
+            "Capture journal blocked records.",
+            trace_queue.journal.blocked_records,
+        );
+        push_metric(
+            &mut output,
+            "gauge",
+            "llmtrace_journal_enabled",
+            "Whether asynchronous durable capture is enabled.",
+            u64::from(trace_queue.journal.enabled),
+        );
+
+        push_metric(
+            &mut output,
+            "counter",
+            "llmtrace_trace_pipeline_dropped_memory_total",
+            "Trace events dropped because the memory budget was full.",
+            self.inner.traces_dropped_memory.load(Ordering::Relaxed),
+        );
+        push_metric(
+            &mut output,
+            "gauge",
+            "llmtrace_trace_pipeline_memory_limit_bytes",
+            "Memory budget for captured events queued or being processed.",
+            trace_queue.memory_limit_bytes,
+        );
+        push_metric(
+            &mut output,
+            "gauge",
+            "llmtrace_trace_pipeline_memory_used_bytes",
+            "Estimated captured event allocations queued or being processed; excludes processing scratch space and live captures.",
+            trace_queue.memory_used_bytes,
+        );
 
         push_metric(
             &mut output,
@@ -371,6 +592,7 @@ mod tests {
                 capacity: 10,
                 available: 7,
                 depth: 3,
+                ..Default::default()
             }
         );
     }
@@ -383,6 +605,7 @@ mod tests {
                 capacity: 4,
                 available: 4,
                 depth: 0,
+                ..Default::default()
             }
         );
     }
@@ -393,6 +616,7 @@ mod tests {
 
         metrics.trace_enqueued();
         metrics.trace_dropped_full();
+        metrics.trace_dropped_memory();
         metrics.trace_dropped_closed();
         metrics.trace_build_failed();
         metrics.trace_persist_failed();
@@ -401,6 +625,7 @@ mod tests {
         let snapshot = metrics.snapshot(TraceQueueMetrics::new(10, 7));
         assert_eq!(snapshot["trace_pipeline"]["enqueued"], 1);
         assert_eq!(snapshot["trace_pipeline"]["dropped_full"], 1);
+        assert_eq!(snapshot["trace_pipeline"]["dropped_memory"], 1);
         assert_eq!(snapshot["trace_pipeline"]["dropped_closed"], 1);
         assert_eq!(snapshot["trace_pipeline"]["build_failures"], 1);
         assert_eq!(snapshot["trace_pipeline"]["persist_failures"], 1);

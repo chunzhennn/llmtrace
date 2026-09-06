@@ -31,7 +31,7 @@
 	const color = $derived(toneColor[tone]);
 </script>
 
-<div class="card p-4">
+<div class="card min-w-0 p-3 sm:p-4">
 	<div class="flex items-start justify-between gap-2">
 		<span class="text-fg-muted text-xs font-medium uppercase tracking-wide">{label}</span>
 		{#if icon}
@@ -41,7 +41,7 @@
 	{#if loading}
 		<div class="mt-2 h-7 w-24 animate-pulse rounded" style="background-color: var(--color-surface-muted);"></div>
 	{:else}
-		<div class="mt-1 text-2xl font-semibold tabular-nums">{value}</div>
+		<div class="mt-1 text-xl font-semibold tabular-nums [overflow-wrap:anywhere] sm:text-2xl">{value}</div>
 	{/if}
 	{#if hint}
 		<div class="text-fg-muted mt-1 text-xs">{hint}</div>

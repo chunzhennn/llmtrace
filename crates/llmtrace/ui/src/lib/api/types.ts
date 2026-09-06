@@ -39,15 +39,45 @@ export interface MeResponse {
 	user?: MeUser;
 }
 
+export interface LoginMethods {
+	local: boolean;
+	oauth: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Stats / runtime
 // ---------------------------------------------------------------------------
 
+export interface JournalMetrics {
+    enabled: boolean;
+    acknowledgement: string;
+    not_yet_durable: number;
+    pending_records: number;
+    pending_bytes: number;
+    max_bytes: number;
+    max_records: number;
+    quarantined_records: number;
+    quarantined_bytes: number;
+    oldest_pending_age_secs: number;
+    blocked_records: number;
+    written: number;
+    dropped_full: number;
+    write_failed: number;
+    read_failed: number;
+    ack_failed: number;
+    retry: number;
+    recovered: number;
+}
+
 export interface RuntimeMetrics {
+    trace_journal: JournalMetrics;
 	trace_pipeline: {
 		enqueued: number;
 		persisted: number;
 		dropped_full: number;
+		dropped_memory: number;
+		memory_limit_bytes: number;
+		memory_used_bytes: number;
 		dropped_closed: number;
 		build_failures: number;
 		persist_failures: number;
@@ -79,7 +109,23 @@ export interface Stats {
 // Requests
 // ---------------------------------------------------------------------------
 
-export interface RequestSummary {
+export interface TokenUsage {
+    input_tokens: number | null;
+    output_tokens: number | null;
+    cached_input_tokens: number | null;
+    cache_creation_input_tokens: number | null;
+    usage_complete: boolean;
+    estimated_cost_microusd: number | null;
+    tool_call_count: number;
+}
+
+export interface ToolCall {
+    id: string;
+    name: string;
+    arguments: string;
+}
+
+export interface RequestSummary extends TokenUsage {
 	id: Uuid;
 	started_at: Rfc3339;
 	completed_at: Rfc3339 | null;
@@ -94,6 +140,7 @@ export interface RequestSummary {
 	api_key_hash: string | null;
 	session_id: Uuid | null;
 	ttft_ms: number | null;
+	ttfb_ms: number | null;
 	duration_ms: number | null;
 	bytes_in: number;
 	bytes_out: number;
@@ -116,6 +163,8 @@ export interface RedactedHeader {
 export type HeaderValue = string | RedactedHeader;
 
 export interface RequestDetail extends RequestSummary {
+	tool_calls: ToolCall[];
+	bodies_included: boolean;
 	session_key: string | null;
 	request_headers: Record<string, HeaderValue>;
 	response_headers: Record<string, HeaderValue>;
@@ -189,6 +238,13 @@ export interface SessionDetail {
 	user_name: string | null;
 	summary: Record<string, unknown>;
 	request_stats: {
+        input_tokens: number | null;
+        output_tokens: number | null;
+        estimated_cost_microusd: number | null;
+        tool_call_count: number;
+        usage_known_count: number;
+        priced_request_count: number;
+        incomplete_capture_count: number;
 		request_count: number;
 		error_count: number;
 		bytes_in: number;
@@ -278,7 +334,16 @@ export interface LatencySummary {
 	request_kinds: (LatencyMetric & { name: string })[];
 }
 
-export interface ApiKeyUsageItem {
+export interface UsageTotals {
+    input_tokens: number | null;
+    output_tokens: number | null;
+    estimated_cost_microusd: number | null;
+    tool_call_count: number | null;
+    usage_known_count: number;
+    priced_request_count: number;
+}
+
+export interface ApiKeyUsageItem extends UsageTotals {
 	api_key_hash: string;
 	request_count: number;
 	error_count: number;
@@ -299,7 +364,7 @@ export interface ApiKeyUsage {
 	items: ApiKeyUsageItem[];
 }
 
-export interface ModelUsageItem {
+export interface ModelUsageItem extends UsageTotals {
 	model: string;
 	request_count: number;
 	error_count: number;
@@ -325,7 +390,7 @@ export interface ModelUsage {
 	items: ModelUsageItem[];
 }
 
-export interface UserUsageItem {
+export interface UserUsageItem extends UsageTotals {
 	user_id: string | null;
 	user_name: string | null;
 	request_count: number;
@@ -566,15 +631,19 @@ export interface PluginsResponse {
 export interface RuntimeConfig {
 	server: {
 		listen: string;
+		admin_listen: string | null;
 		public_url: string;
+		proxy_public_url: string | null;
 		deployment: string;
 		ui_enabled: boolean;
 	};
 	proxy: {
+		preset: 'custom' | 'litellm';
 		default_upstream: string;
 		allow_upstreams: string[];
 		allow_upstreams_count: number;
 		path_prefixes: string[];
+		capture_path_prefixes: string[];
 		upstream_header: string;
 		timeout_secs: number;
 		max_request_body_bytes: number;
@@ -592,10 +661,14 @@ export interface RuntimeConfig {
 		max_connections: number;
 		acquire_timeout_secs: number;
 		trace_queue_capacity: number;
+		trace_queue_max_bytes: number;
 		trace_worker_count: number;
+        journal: { enabled: boolean; directory: string; max_bytes: number; max_records: number; retry_interval_secs: number };
 		retention_days: number | null;
 		retention_prune_interval_secs: number;
 		retention_prune_batch_size: number;
+		rotate_size_bytes: number;
+		rotate_check_interval_secs: number;
 	};
 	auth: Record<string, unknown>;
 	observability: { metrics_bearer_token_configured: boolean };
@@ -626,6 +699,15 @@ export interface RetentionStatus {
 	checked_at: Rfc3339;
 	prune_interval_secs: number;
 	prune_batch_size: number;
+	rotation: {
+		enabled: boolean;
+		size_bytes: number;
+		check_interval_secs: number;
+		retained_bytes: number;
+		pending_delete_bytes: number;
+		pending_delete_files: number;
+		over_limit: boolean;
+	};
 	expired: Record<string, number>;
 }
 

@@ -1,0 +1,152 @@
+[
+  {
+    "case": "postgres_mixed_200rps_rotation",
+    "concurrency": 64,
+    "drain_secs": 0.050809763,
+    "elapsed_secs": 59.995651468,
+    "failures": [],
+    "first_byte_p95_ms": 0.435643,
+    "large_request_every": 100,
+    "latency_p50_ms": 0.242434,
+    "latency_p95_ms": 0.436244,
+    "latency_p99_ms": 4.611035,
+    "metrics": {
+      "llmtrace_db_pool_idle": 7.0,
+      "llmtrace_db_pool_size": 7.0,
+      "llmtrace_retention_failures_total": 0.0,
+      "llmtrace_retention_last_deleted_oauth_states": 0.0,
+      "llmtrace_retention_last_deleted_request_traces": 200.0,
+      "llmtrace_retention_last_deleted_total": 200.0,
+      "llmtrace_retention_last_deleted_trace_rollups_minute": 0.0,
+      "llmtrace_retention_last_deleted_trace_sessions": 0.0,
+      "llmtrace_retention_last_deleted_ui_audit_events": 0.0,
+      "llmtrace_retention_last_deleted_ui_sessions": 0.0,
+      "llmtrace_retention_last_failure_timestamp_seconds": 0.0,
+      "llmtrace_retention_last_success_timestamp_seconds": 1788624141.0,
+      "llmtrace_retention_runs_total": 54.0,
+      "llmtrace_trace_pipeline_build_failures_total": 0.0,
+      "llmtrace_trace_pipeline_dropped_closed_total": 0.0,
+      "llmtrace_trace_pipeline_dropped_full_total": 0.0,
+      "llmtrace_trace_pipeline_dropped_memory_total": 0.0,
+      "llmtrace_trace_pipeline_enqueued_total": 12000.0,
+      "llmtrace_trace_pipeline_memory_limit_bytes": 268435456.0,
+      "llmtrace_trace_pipeline_memory_used_bytes": 0.0,
+      "llmtrace_trace_pipeline_persist_failures_total": 0.0,
+      "llmtrace_trace_pipeline_persisted_total": 12000.0,
+      "llmtrace_trace_pipeline_queue_available": 1024.0,
+      "llmtrace_trace_pipeline_queue_capacity": 1024.0,
+      "llmtrace_trace_pipeline_queue_depth": 0.0
+    },
+    "peak_rss_bytes": 239243264,
+    "request_bytes": 1082,
+    "requests": 12000,
+    "retained_requests": 599,
+    "rotation": {
+      "check_interval_secs": 1,
+      "enabled": true,
+      "over_limit": false,
+      "pending_delete_bytes": 0,
+      "pending_delete_files": 0,
+      "retained_bytes": 31929646,
+      "size_bytes": 33554432
+    },
+    "rps": 200.0144961572834,
+    "rss_timeline": [
+      {
+        "elapsed_secs": 2.01e-07,
+        "rss_bytes": 13897728
+      },
+      {
+        "elapsed_secs": 15.003252296,
+        "rss_bytes": 211980288
+      },
+      {
+        "elapsed_secs": 30.004767509,
+        "rss_bytes": 223371264
+      },
+      {
+        "elapsed_secs": 45.005148455,
+        "rss_bytes": 235028480
+      },
+      {
+        "elapsed_secs": 60.007050779,
+        "rss_bytes": 239243264
+      }
+    ]
+  },
+  {
+    "case": "filesystem_mixed_200rps_rotation",
+    "concurrency": 64,
+    "drain_secs": 0.051977705,
+    "elapsed_secs": 59.996795373,
+    "failures": [],
+    "first_byte_p95_ms": 0.39050599999999996,
+    "large_request_every": 100,
+    "latency_p50_ms": 0.233877,
+    "latency_p95_ms": 0.391038,
+    "latency_p99_ms": 4.543826,
+    "metrics": {
+      "llmtrace_db_pool_idle": 6.0,
+      "llmtrace_db_pool_size": 6.0,
+      "llmtrace_retention_failures_total": 0.0,
+      "llmtrace_retention_last_deleted_oauth_states": 0.0,
+      "llmtrace_retention_last_deleted_request_traces": 300.0,
+      "llmtrace_retention_last_deleted_total": 300.0,
+      "llmtrace_retention_last_deleted_trace_rollups_minute": 0.0,
+      "llmtrace_retention_last_deleted_trace_sessions": 0.0,
+      "llmtrace_retention_last_deleted_ui_audit_events": 0.0,
+      "llmtrace_retention_last_deleted_ui_sessions": 0.0,
+      "llmtrace_retention_last_failure_timestamp_seconds": 0.0,
+      "llmtrace_retention_last_success_timestamp_seconds": 1788624200.0,
+      "llmtrace_retention_runs_total": 46.0,
+      "llmtrace_trace_pipeline_build_failures_total": 0.0,
+      "llmtrace_trace_pipeline_dropped_closed_total": 0.0,
+      "llmtrace_trace_pipeline_dropped_full_total": 0.0,
+      "llmtrace_trace_pipeline_dropped_memory_total": 0.0,
+      "llmtrace_trace_pipeline_enqueued_total": 12000.0,
+      "llmtrace_trace_pipeline_memory_limit_bytes": 268435456.0,
+      "llmtrace_trace_pipeline_memory_used_bytes": 0.0,
+      "llmtrace_trace_pipeline_persist_failures_total": 0.0,
+      "llmtrace_trace_pipeline_persisted_total": 12000.0,
+      "llmtrace_trace_pipeline_queue_available": 1024.0,
+      "llmtrace_trace_pipeline_queue_capacity": 1024.0,
+      "llmtrace_trace_pipeline_queue_depth": 0.0
+    },
+    "peak_rss_bytes": 225812480,
+    "request_bytes": 1082,
+    "requests": 12000,
+    "retained_requests": 599,
+    "rotation": {
+      "check_interval_secs": 1,
+      "enabled": true,
+      "over_limit": false,
+      "pending_delete_bytes": 0,
+      "pending_delete_files": 0,
+      "retained_bytes": 31929607,
+      "size_bytes": 33554432
+    },
+    "rps": 200.01068266056572,
+    "rss_timeline": [
+      {
+        "elapsed_secs": 1.5e-07,
+        "rss_bytes": 14528512
+      },
+      {
+        "elapsed_secs": 15.000839601,
+        "rss_bytes": 202502144
+      },
+      {
+        "elapsed_secs": 30.003993949,
+        "rss_bytes": 215052288
+      },
+      {
+        "elapsed_secs": 45.007671316,
+        "rss_bytes": 221372416
+      },
+      {
+        "elapsed_secs": 60.009080117,
+        "rss_bytes": 225812480
+      }
+    ]
+  }
+]

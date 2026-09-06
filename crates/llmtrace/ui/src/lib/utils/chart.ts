@@ -1,4 +1,5 @@
 import type { ChartOptions } from 'chart.js';
+import { theme } from '$lib/state/theme.svelte';
 
 function cssVar(name: string, fallback: string): string {
 	if (typeof window === 'undefined') return fallback;
@@ -7,6 +8,8 @@ function cssVar(name: string, fallback: string): string {
 }
 
 export function chartColors() {
+	// Register the theme dependency when called inside a Svelte derived value.
+	void theme.dark;
 	return {
 		brand: cssVar('--color-brand', '#6366f1'),
 		danger: cssVar('--color-danger', '#f87171'),

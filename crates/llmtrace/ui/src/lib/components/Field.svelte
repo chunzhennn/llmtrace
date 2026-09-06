@@ -12,8 +12,8 @@
 	let { label, for: forId, hint, class: className = '', children }: Props = $props();
 </script>
 
-<div class="flex flex-col {className}">
-	<label class="label" for={forId}>{label}</label>
+<label class="flex min-w-0 flex-col {className}" for={forId}>
+	<span class="label">{label}</span>
 	{@render children()}
 	{#if hint}<span class="text-fg-muted mt-1 text-xs">{hint}</span>{/if}
-</div>
+</label>

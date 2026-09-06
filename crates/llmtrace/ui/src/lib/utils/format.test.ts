@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
 	formatNumber,
+	formatCost,
+	formatTokens,
 	formatBytes,
 	formatDuration,
 	formatMs,
@@ -104,4 +106,14 @@ describe('formatSecondsDuration', () => {
 		expect(formatSecondsDuration(3700)).toBe('1h 1m');
 		expect(formatSecondsDuration(-1)).toBe('expired');
 	});
+});
+
+describe('usage display', () => {
+    it('distinguishes unknown usage and cost from measured zero', () => {
+        expect(formatTokens(null)).toBe('Unknown');
+        expect(formatTokens(0)).toBe('0');
+        expect(formatCost(undefined)).toBe('Unknown');
+        expect(formatCost(0)).toBe('$0.00');
+        expect(formatCost(1600)).toBe('$0.0016');
+    });
 });

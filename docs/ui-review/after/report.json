@@ -1,0 +1,680 @@
+{
+  "synthetic": true,
+  "screenshots": [
+    {
+      "name": "desktop-login",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1440,
+      "clientWidth": 1440,
+      "title": "Sign in · llmtrace",
+      "text": "llmtrace\n\nLLM proxy observability\n\nUSERNAME\nPASSWORD\nSign in"
+    },
+    {
+      "name": "desktop-overview",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1430,
+      "clientWidth": 1430,
+      "title": "Overview · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nadmin\nlocal\nOverview\n\nStored traffic totals, with trends and investigations for the last 24 hours.\n\nTOTAL REQUESTS\n96\nAll retained history\nLAST HOUR\n5\nERRORS (ALL)\n8\n8.3% error rate\nCAPTURED\n76.8 KB\nAVG DURATION\n2807 ms\nAVG TTFT\n205 ms\nRequests & errors (24h, hourly)\nOperational health\n\nCapture counters since this instance started\n\nSecurity posture\nattention · 8 warnings / 0 failures\nTrace queue depth\n0 / 1,024\nDropped traces\n0\nPersisted traces\n0\nRetention\ndisabled\nTop models (24h)\nclaude-sonnet-4\n32 · 2 err\ngemini-2.5-flash\n32 · 3 err\ngpt-4.1-mini\n32 · 3 err\nTop upstreams (24h)\ngateway.example.com\n96 · 8 err\nRecent errors (24h)\nView all\nTIME\tSTATUS\tMODEL\tUPSTREAM\tDURATION\nSep 06, 2026, 12:36:42 PM\t429\tgemini-2.5-flash\tgateway.example.com\t2.81 s\nSep 06, 2026, 09:34:41 AM\t429\tgpt-4.1-mini\tgateway.example.com\t2.51 s\nSep 06, 2026, 06:32:41 AM\t429\tclaude-sonnet-4\tgateway.example.com\t2.21 s\nSep 06, 2026, 03:30:41 AM\t429\tgemini-2.5-flash\tgateway.example.com\t1.92 s\nSep 06, 2026, 12:28:41 AM\t429\tgpt-4.1-mini\tgateway.example.com\t1.62 s\nSep 05, 2026, 09:26:41 PM\t429\tclaude-sonnet-4\tgateway.example.com\t1.32 s\nSep 05, 2026, 06:24:41 PM\t429\tgemini-2.5-flash\tgateway.example.com\t1.02 s\nSep 05, 2026, 03:22:41 PM\t429\tgpt-4.1-mini\tgateway.example.com\t12.3 s\nSlowest requests (24h)\nView all\nTIME\tDURATION\tSTATUS\tMODEL\tUPSTREAM\nSep 06, 2026, 11:54:42 AM\t12.3 s\t200\tgemini-2.5-flash\tgateway.example.com\nSep 06, 2026, 09:20:41 AM\t12.3 s\t200\tclaude-sonnet-4\tgateway.example.com\nSep 06, 2026, 06:46:41 AM\t12.3 s\t200\tgpt-4.1-mini\tgateway.example.com\nSep 06, 2026, 04:12:41 AM\t12.3 s\t200\tgemini-2.5-flash\tgateway.example.com\nSep 06, 2026, 01:38:41 AM\t12.3 s\t200\tclaude-sonnet-4\tgateway.example.com\nSep 05, 2026, 11:04:41 PM\t12.3 s\t200\tgpt-4.1-mini\tgateway.example.com\nSep 05, 2026, 08:30:41 PM\t12.3 s\t200\tgemini-2.5-flash\tgateway.example.com\nSep 05, 2026, 05:56:41 PM\t12.3 s\t200\tclaude-sonnet-4\tgateway.example.com"
+    },
+    {
+      "name": "desktop-requests",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1430,
+      "clientWidth": 1430,
+      "title": "Requests · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nadmin\nlocal\nRequests\n\nExplore captured proxy requests with filters, facets, and export.\n\nExport page (JSONL)\nSEARCH\nMODEL\nAll models\nUPSTREAM HOST\nAll upstreams\nREQUEST KIND\nAll kinds\nChat completions\nResponses\nMessages\nWebSocket\nJSON\nHTTP\nSTATUS CLASS\nAll statuses\nno_status\n1xx\n2xx\n3xx\n4xx\n5xx\nother\nERRORS ONLY\nAny\nErrors only\nSuccess only\nROWS\n25\n50\n100\n200\nApply filters\nMore filters\nSTARTED\tSTATUS\tMETHOD\tREQUEST\tMODEL\tUPSTREAM\tDURATION\tSIZE\nSep 06, 2026, 01:32:42 PM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.90 s\t932 B\nSep 06, 2026, 01:18:42 PM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.88 s\t827 B\nSep 06, 2026, 01:04:42 PM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.86 s\t825 B\nSep 06, 2026, 12:50:42 PM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.84 s\t833 B\nSep 06, 2026, 12:36:42 PM\t429\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.81 s\t415 B\nSep 06, 2026, 12:22:42 PM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.79 s\t823 B\nSep 06, 2026, 12:08:42 PM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.77 s\t828 B\nSep 06, 2026, 11:54:42 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t12.3 s\t834 B\nSep 06, 2026, 11:40:42 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.72 s\t929 B\nSep 06, 2026, 11:26:42 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.70 s\t826 B\nSep 06, 2026, 11:12:42 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.67 s\t829 B\nSep 06, 2026, 10:58:42 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.65 s\t830 B\nSep 06, 2026, 10:44:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.63 s\t932 B\nSep 06, 2026, 10:30:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.61 s\t827 B\nSep 06, 2026, 10:16:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.58 s\t825 B\nSep 06, 2026, 10:02:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.56 s\t833 B\nSep 06, 2026, 09:48:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.54 s\t933 B\nSep 06, 2026, 09:34:41 AM\t429\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.51 s\t446 B\nSep 06, 2026, 09:20:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t12.3 s\t828 B\nSep 06, 2026, 09:06:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.47 s\t834 B\nSep 06, 2026, 08:52:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.44 s\t929 B\nSep 06, 2026, 08:38:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.42 s\t826 B\nSep 06, 2026, 08:24:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.40 s\t829 B\nSep 06, 2026, 08:10:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.38 s\t830 B\nSep 06, 2026, 07:56:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.35 s\t932 B\nSep 06, 2026, 07:42:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.33 s\t827 B\nSep 06, 2026, 07:28:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.31 s\t825 B\nSep 06, 2026, 07:14:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.28 s\t833 B\nSep 06, 2026, 07:00:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.26 s\t933 B\nSep 06, 2026, 06:46:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t12.3 s\t823 B\nSep 06, 2026, 06:32:41 AM\t429\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.21 s\t451 B\nSep 06, 2026, 06:18:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.19 s\t834 B\nSep 06, 2026, 06:04:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.17 s\t929 B\nSep 06, 2026, 05:50:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.15 s\t826 B\nSep 06, 2026, 05:36:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.12 s\t829 B\nSep 06, 2026, 05:22:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.10 s\t830 B\nSep 06, 2026, 05:08:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.08 s\t932 B\nSep 06, 2026, 04:54:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.05 s\t827 B\nSep 06, 2026, 04:40:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.03 s\t825 B\nSep 06, 2026, 04:26:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.01 s\t833 B\nSep 06, 2026, 04:12:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t12.3 s\t933 B\nSep 06, 2026, 03:58:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t1.96 s\t823 B\nSep 06, 2026, 03:44:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t1.94 s\t828 B\nSep 06, 2026, 03:30:41 AM\t429\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t1.92 s\t457 B\nSep 06, 2026, 03:16:41 AM\t200\tPOST\t\n/v"
+    },
+    {
+      "name": "desktop-sessions",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1440,
+      "clientWidth": 1440,
+      "title": "Sessions · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nadmin\nlocal\nSessions\n\nGrouped conversations and their captured requests.\n\nSearch\nEMPLOYEE / SESSION\tREQUESTS\tMAX DURATION\tFIRST SEEN\tLAST SEEN\nSam Rivera\nSession 1647b474\n\t12\t12.3 s\tSep 05, 2026, 05:00:41 PM\tSep 06, 2026, 01:32:44 PM\nPriya Shah\nSession 4c675942\n\t12\t12.3 s\tSep 05, 2026, 04:46:41 PM\tSep 06, 2026, 01:18:44 PM\nAlex Morgan\nSession 83c28a1c\n\t12\t12.3 s\tSep 05, 2026, 04:32:41 PM\tSep 06, 2026, 01:04:44 PM\nMaya Chen\nSession 5944531f\n\t12\t12.3 s\tSep 05, 2026, 04:18:41 PM\tSep 06, 2026, 12:50:44 PM\nSam Rivera\nSession b5e5e6c4\n\t12\t12.3 s\tSep 05, 2026, 04:04:41 PM\tSep 06, 2026, 12:36:44 PM\nPriya Shah\nSession 87569790\n\t12\t12.3 s\tSep 05, 2026, 03:50:41 PM\tSep 06, 2026, 12:22:44 PM\nAlex Morgan\nSession a17b8ef5\n\t12\t12.3 s\tSep 05, 2026, 03:36:41 PM\tSep 06, 2026, 12:08:44 PM\nMaya Chen\nSession 64cc5822\n\t12\t12.3 s\tSep 05, 2026, 03:22:41 PM\tSep 06, 2026, 11:54:54 AM\nShowing 1–8\nPrev\nNext"
+    },
+    {
+      "name": "desktop-session",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1430,
+      "clientWidth": 1430,
+      "title": "Session · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nadmin\nlocal\nSession detail\n\nSam Rivera · Session 1647b474\n\nBack\nCopy ID\nView transcript\nREQUESTS\n12\nERRORS\n1\nCAPTURED\n10.4 KB\nAVG DURATION\n2.76 s\nMAX DURATION\n12.3 s\nAVG TTFT\n214 ms\nINPUT TOKENS\n43,866\nOUTPUT TOKENS\n5,239\nTOOL CALLS CAPTURED\n11\nESTIMATED TOKEN COST\n$0.054795\n\nEmployee: Sam Rivera\n\nUsage reported for 11 of 12 requests. Cost estimated for 11. Totals include available values only.\n\nTranscript previews\n\n46 messages loaded · request snapshots may repeat conversation history\n\nExport first 50\nOpen request eb8c8e40\nSYSTEM\nSep 05, 2026, 05:00:41 PM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request eb8c8e40\nUSER\nSep 05, 2026, 05:00:41 PM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request eb8c8e40\nASSISTANT\nSep 05, 2026, 05:00:41 PM\nStart with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no employee conversations are included.\nOpen request eb8c8e40\nTOOL_CALL\nSep 05, 2026, 05:00:41 PM\n{\"id\":\"demo-search\",\"name\":\"search_internal_docs\",\"arguments\":\"{\\\"query\\\":\\\"deployment rollback checklist\\\"}\"}\nOpen request 7fdd2980\nSYSTEM\nSep 05, 2026, 06:52:41 PM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request 7fdd2980\nUSER\nSep 05, 2026, 06:52:41 PM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request 7fdd2980\nASSISTANT\nSep 05, 2026, 06:52:41 PM\nStart with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no employee conversations are included.\nOpen request 7fdd2980\nTOOL_CALL\nSep 05, 2026, 06:52:41 PM\n{\"id\":\"demo-search\",\"name\":\"search_internal_docs\",\"arguments\":\"{\\\"query\\\":\\\"deployment rollback checklist\\\"}\"}\nOpen request ee968b60\nSYSTEM\nSep 05, 2026, 08:44:41 PM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request ee968b60\nUSER\nSep 05, 2026, 08:44:41 PM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request ee968b60\nASSISTANT\nSep 05, 2026, 08:44:41 PM\nStart with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no employee conversations are included.\nOpen request ee968b60\nTOOL_CALL\nSep 05, 2026, 08:44:41 PM\n{\"id\":\"demo-search\",\"name\":\"search_internal_docs\",\"arguments\":\"{\\\"query\\\":\\\"deployment rollback checklist\\\"}\"}\nOpen request 45c718e4\nSYSTEM\nSep 05, 2026, 10:36:41 PM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request 45c718e4\nUSER\nSep 05, 2026, 10:36:41 PM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request 45c718e4\nASSISTANT\nSep 05, 2026, 10:36:41 PM\nStart with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no employee conversations are included.\nOpen request 45c718e4\nTOOL_CALL\nSep 05, 2026, 10:36:41 PM\n{\"id\":\"demo-search\",\"name\":\"search_internal_docs\",\"arguments\":\"{\\\"query\\\":\\\"deployment rollback checklist\\\"}\"}\nOpen request 84af62f6\nSYSTEM\nSep 06, 2026, 12:28:41 AM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request 84af62f6\nUSER\nSep 06, 2026, 12:28:41 AM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request 0bb05277\nSYSTEM\nSep 06, 2026, 02:20:41 AM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request 0bb05277\nUSER\nSep 06, 2026, 02:20:41 AM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request 0bb05277\nASSISTANT\nSep 06, 2026, 02:20:41 AM\nStart with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no employee conversations are included.\nOpen request 0bb05277\nTOOL_CALL\nSep 06, 2026, 02:20:41 AM\n{\"id\":\"demo-search\",\"name\":\"search_internal_docs\",\"arguments\":\"{\\\"query\\\":\\\"deployment rollback checklist\\\"}\"}\nOpen request 370e8e8b\nSYSTEM\nSep 06, 2026, 04:12:41 AM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request 370e8e8b\nUSER\nSep 06, 2026, 04:12:41 AM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request 370e8e8b\nASSISTANT\nSep 06, 2026, 04:12:41 AM\nStart with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no employee conversations are included.\nOpen request 370e8e8b\nTOOL_CALL\nSep 06, 2026, 04:12:41 AM\n{\"id\":\"demo-search\",\"name\":\"search_internal_docs\",\"arguments\":\"{\\\"query\\\":\\\"deployment rollback checklist\\\"}\"}\nOpen request b94edb26\nSYSTEM\nSep 06, 2026, 06:04:41 AM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen requ"
+    },
+    {
+      "name": "desktop-request",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1440,
+      "clientWidth": 1440,
+      "title": "Request · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nadmin\nlocal\nRequest detail\n\n46936c05-ff07-4d91-87b0-d140851efa76\n\nBack\nCopy ID\n200\nPOST\nChat completions\nclaude-sonnet-4\nOverview\nRequest\nResponse\nTool calls (1)\nPlugins (1)\nRaw\nSummary\nSTARTED\nSep 06, 2026, 01:32:42 PM\nCOMPLETED\nSep 06, 2026, 01:32:44 PM\nDURATION\n2.90 s\nFIRST OUTPUT (TTFT)\n300 ms\nFIRST BYTE (TTFB)\n180 ms\nBYTES IN\n320 B\nBYTES OUT\n612 B\nREQUEST KIND\nChat completions\nMODEL\nclaude-sonnet-4\nINPUT TOKENS\n5,790\nOUTPUT TOKENS\n605\nCACHED INPUT\nUnknown\nESTIMATED TOKEN COST\n$0.005625\nPAYLOAD CAPTURE\nNo truncation recorded\nUSAGE COVERAGE\nReported by upstream\nRouting & identity\nMETHOD\nPOST\nORIGINAL URI\n/v1/chat/completions\nUPSTREAM URL\nhttps://gateway.example.com/v1/chat/completions\nUPSTREAM HOST\ngateway.example.com\nAPI KEY HASH\nsynthetic-employee-3\nSESSION\nsession:1b30852221b3bbe92f15ff7621ad0a325a1ebcbba328708339634cc62f6977e9"
+    },
+    {
+      "name": "desktop-analytics",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1440,
+      "clientWidth": 1440,
+      "title": "Analytics · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nadmin\nlocal\nAnalytics\n\nUsage, latency, and error breakdowns across the selected window.\n\n1h\n6h\n24h\n7d\n30d\nSummary\nTimeseries\nLatency\nAPI keys\nUsers\nModels\nUpstreams\nErrors\nREQUESTS\n96\nERRORS\n8\nBYTES IN\n32.6 KB\nBYTES OUT\n44.2 KB\nAVG DURATION\n2807 ms\nAVG TTFT\n205 ms\nTop models\nclaude-sonnet-4\n32 · 2 err\ngemini-2.5-flash\n32 · 3 err\ngpt-4.1-mini\n32 · 3 err\nTop upstreams\ngateway.example.com\n96 · 8 err\nStatus classes\n2xx: 88\n4xx: 8\nRequest kinds\nChat completions: 96"
+    },
+    {
+      "name": "desktop-query",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1430,
+      "clientWidth": 1430,
+      "title": "Query · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nadmin\nlocal\nQuery\n\nBuild structured queries over allowlisted datasets and fields.\n\nDataset & fields\nDATASET\nrequests\nsessions\nmessages\nrollups_minute\nFIELDS (12)\nAll\nClear\nttfb_ms\ninput_tokens\noutput_tokens\ncached_input_tokens\ncache_creation_input_tokens\nestimated_cost_microusd\ntool_call_count\nusage_complete\nid\nstarted_at\ncompleted_at\nmethod\noriginal_uri\nupstream_url\nupstream_host\nstatus\nerror\nrequest_kind\nmodel\napi_key_hash\nsession_key\nsession_id\nttft_ms\nduration_ms\nbytes_in\nbytes_out\nrequest_headers\nresponse_headers\nrequest_body_bytes\nresponse_body_bytes\nrequest_body_truncated\nresponse_body_truncated\ncontent_type\nplugin_metadata\ntags\n\nLeave empty to use dataset defaults. Max 64.\n\nLIMIT\nMax 500\nFilters\nFilter\n\nNo filters. All rows match.\n\nPlugin metadata filter\nSort\nSort\nttfb_ms\ninput_tokens\noutput_tokens\ncached_input_tokens\ncache_creation_input_tokens\nestimated_cost_microusd\ntool_call_count\nusage_complete\nid\nstarted_at\ncompleted_at\nmethod\noriginal_uri\nupstream_url\nupstream_host\nstatus\nerror\nrequest_kind\nmodel\napi_key_hash\nsession_key\nsession_id\nttft_ms\nduration_ms\nbytes_in\nbytes_out\nrequest_headers\nresponse_headers\nrequest_body_bytes\nresponse_body_bytes\nrequest_body_truncated\nresponse_body_truncated\ncontent_type\nplugin_metadata\ntags\nasc\ndesc\nRun query\nExport\nResults\n\nNo results yet\n\nConfigure the query and run it."
+    },
+    {
+      "name": "desktop-system",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1430,
+      "clientWidth": 1430,
+      "title": "System · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nadmin\nlocal\nSystem\n\nRead-only runtime configuration, security posture, retention, and storage.\n\nSecurity posture\nattention · 2✓ 8! 0✗\nwarn\ndeployment_mode\nserver.deployment is development; set production before public deployment\nwarn\npublic_url_https\nserver.public_url is not HTTPS; this can be acceptable behind an HTTP-only reverse proxy, but browser traffic should terminate at HTTPS\nwarn\nsecure_cookies\nsession cookies are not marked Secure; enable auth.cookie_secure when browser traffic uses HTTPS\nwarn\nretention\nstorage.retention_days is not configured; age-based trace and UI audit cleanup is disabled\nwarn\nupstream_allowlist\nproxy.allow_upstreams is empty; restrict upstream overrides before public deployment\nwarn\nmetrics_auth\nmetrics bearer token is not configured; protect /metrics before public deployment\nwarn\nlocal_plaintext_password\nlocal admin plaintext password is configured; use auth.local_admin.password_hash before production\nwarn\nlocal_password_hash\nno local password hash or OAuth provider is configured for production authentication\npass\nlogin_rate_limit\nlogin rate limiting is enabled\npass\noauth_allowlist\nOAuth is disabled or constrained by an allowlist\nConfiguration\nDEPLOYMENT\ndevelopment\nPUBLIC URL\nhttp://127.0.0.1:38955\nLISTEN\n127.0.0.1:38955\nUI ENABLED\nyes\nDEFAULT UPSTREAM\nhttp://127.0.0.1:9\nUPSTREAM HEADER\nx-llmtrace-upstream\nALLOWED UPSTREAMS\n0\nPROXY TIMEOUT\n300s\nMAX REQ BODY\n16.0 MB\nMAX RESP BODY\n16.0 MB\nARCHIVE BACKEND\npostgres\nSEGMENT SIZE\n32.0 MB\nDB CONNECTIONS\n10\nTRACE WORKERS\n4\nQUEUE CAPACITY\n1,024\nTRACE MEMORY BUDGET\n256 MB\nRETENTION DAYS\ndisabled\nARCHIVE SIZE LIMIT\ndisabled\nSENSITIVE HEADERS\n9\nBODY STORAGE\nunredacted_archive\nSTORE HEADER HASH\nyes\nMETRICS TOKEN\nnone\nRuntime\nQUEUE DEPTH\n0 / 1,024\nENQUEUED\n0\nPERSISTED\n0\nDROPPED (FULL)\n0\nDROPPED (MEMORY)\n0\nTRACE EVENT MEMORY\n0 B / 256 MB\nDROPPED (CLOSED)\n0\nBUILD FAILURES\n0\nPERSIST FAILURES\n0\nRETENTION RUNS\n0\nRETENTION FAILURES\n0\nLAST PRUNE OK\n-\nCapture journal\n\nQueued captures become recoverable after a background disk sync. Live streams and captures awaiting that sync can be lost if the process stops.\n\nDURABLE JOURNAL\nEnabled\nAWAITING DISK SYNC\n0\nPENDING PERSISTENCE / CLEANUP\n0\nJOURNAL SIZE\n0 B / 1.0 GB\nOLDEST PENDING CAPTURE\n0s\nRECOVERED AFTER RESTART\n0\nREJECTED (JOURNAL FULL)\n0\nDISK WRITE FAILURES\n0\nRETRY ATTEMPTS\n0\nQUARANTINED RECORDS\n0\nEXCEEDING REPLAY MEMORY LIMIT\n0\n\nFailure, rejection, and recovery counters reset when this instance restarts. Pending and quarantined files are rediscovered from disk. A successful proxied response does not confirm that its audit capture is durable.\n\nRetention\nSTATUS\ndisabled\nCUTOFF\n-\nPRUNE INTERVAL\n1h 0m\nBATCH SIZE\n1,000\nEXPIRED ROWS PENDING PRUNE\noauth_states: 0\nrequest_traces: 0\ntotal: 0\ntrace_rollups_minute: 0\ntrace_sessions: 0\nui_audit_events: 0\nui_sessions: 0\nArchive size rotation\ndisabled\nCOMPRESSED PAYLOADS\n58.7 KB\nSIZE LIMIT\ndisabled\nCHECK INTERVAL\n1s\nFILES PENDING DELETION\n0 · 0 B\n\nRemoves the oldest requests and their payloads when compressed archives exceed the limit. Database metadata and operational logs are excluded. Set the limit in your configuration file or environment and restart to apply it.\n\nStorage\n1.3 MB across 11 relations\nRELATION\tROWS\tTOTAL\tTABLE\tINDEX\nrequest_traces\t96\t352 KB\t56.0 KB\t264 KB\npayload_archive_segments\t96\t112 KB\t32.0 KB\t48.0 KB\npayload_archive_segment_blobs\t96\t112 KB\t64.0 KB\t16.0 KB\npayload_archive_records\t192\t176 KB\t48.0 KB\t96.0 KB\ntrace_rollups_minute\t96\t72.0 KB\t16.0 KB\t32.0 KB\ntrace_sessions\t8\t112 KB\t8.0 KB\t64.0 KB\nsession_messages\t302\t216 KB\t80.0 KB\t104 KB\nui_audit_events\t1\t64.0 KB\t8.0 KB\t48.0 KB\nui_sessions\t1\t48.0 KB\t8.0 KB\t32.0 KB\noauth_states\t0\t24.0 KB\t0 B\t16.0 KB\narchive_file_deletions\t0\t24.0 KB\t0 B\t16.0 KB"
+    },
+    {
+      "name": "desktop-plugins",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1440,
+      "clientWidth": 1440,
+      "title": "Plugins · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nadmin\nlocal\nPlugins\n\nWASM trace-enrichment plugins and their load status.\n\nRefresh\nCONFIGURED\n0\nLOADED\n0\nFAILED\n0\n\nNo plugins\n\nNo WASM plugins are configured."
+    },
+    {
+      "name": "desktop-audit",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1440,
+      "clientWidth": 1440,
+      "title": "Audit Log · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nadmin\nlocal\nAudit Log\n\nUI authentication and administrative events.\n\nExport\nEVENTS (7D)\n1\nDISTINCT USERS\n1\nREMOTE ADDRS\n1\nEVENT TYPES\n1\nEvent types (7d)\nlogin_ok: 1\nEVENT TYPE\nUSER ID\nApply\nTIME\tEVENT\tUSER\tREMOTE ADDR\tDETAIL\nSep 06, 2026, 01:32:59 PM\tlogin_ok\tadmin\t127.0.0.1\t{\"method\":\"local\"}\nShowing 1–1\nPrev\nNext"
+    },
+    {
+      "name": "desktop-ui-sessions",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1440,
+      "clientWidth": 1440,
+      "title": "UI Sessions · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nadmin\nlocal\nUI Sessions\n\nActive dashboard sessions. Revoke to force re-authentication.\n\nInclude expired\nUSER\tLOGIN\tCREATED\tEXPIRES\tSTATUS\t\n\nadmin\nadmin\n\tlocal\tSep 06, 2026, 01:32:59 PM\tSep 07, 2026, 01:32:59 PM\t23h 59m left\t\nRevoke\nShowing 1–1\nPrev\nNext"
+    },
+    {
+      "name": "desktop-redaction",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1440,
+      "clientWidth": 1440,
+      "title": "Redaction · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nadmin\nlocal\nRedaction preview\n\nTest how headers, URIs, and bodies are redacted before persistence.\n\nInput\nHEADERS\nOne per line, as Name: value\nURI\nBODY\nPreview redaction\n\nNo preview yet\n\nEnter sample data and run the preview."
+    },
+    {
+      "name": "desktop-overview-light",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1430,
+      "clientWidth": 1430,
+      "title": "Overview · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nadmin\nlocal\nOverview\n\nStored traffic totals, with trends and investigations for the last 24 hours.\n\nTOTAL REQUESTS\n96\nAll retained history\nLAST HOUR\n5\nERRORS (ALL)\n8\n8.3% error rate\nCAPTURED\n76.8 KB\nAVG DURATION\n2807 ms\nAVG TTFT\n205 ms\nRequests & errors (24h, hourly)\nOperational health\n\nCapture counters since this instance started\n\nSecurity posture\nattention · 8 warnings / 0 failures\nTrace queue depth\n0 / 1,024\nDropped traces\n0\nPersisted traces\n0\nRetention\ndisabled\nTop models (24h)\nclaude-sonnet-4\n32 · 2 err\ngemini-2.5-flash\n32 · 3 err\ngpt-4.1-mini\n32 · 3 err\nTop upstreams (24h)\ngateway.example.com\n96 · 8 err\nRecent errors (24h)\nView all\nTIME\tSTATUS\tMODEL\tUPSTREAM\tDURATION\nSep 06, 2026, 12:36:42 PM\t429\tgemini-2.5-flash\tgateway.example.com\t2.81 s\nSep 06, 2026, 09:34:41 AM\t429\tgpt-4.1-mini\tgateway.example.com\t2.51 s\nSep 06, 2026, 06:32:41 AM\t429\tclaude-sonnet-4\tgateway.example.com\t2.21 s\nSep 06, 2026, 03:30:41 AM\t429\tgemini-2.5-flash\tgateway.example.com\t1.92 s\nSep 06, 2026, 12:28:41 AM\t429\tgpt-4.1-mini\tgateway.example.com\t1.62 s\nSep 05, 2026, 09:26:41 PM\t429\tclaude-sonnet-4\tgateway.example.com\t1.32 s\nSep 05, 2026, 06:24:41 PM\t429\tgemini-2.5-flash\tgateway.example.com\t1.02 s\nSep 05, 2026, 03:22:41 PM\t429\tgpt-4.1-mini\tgateway.example.com\t12.3 s\nSlowest requests (24h)\nView all\nTIME\tDURATION\tSTATUS\tMODEL\tUPSTREAM\nSep 06, 2026, 11:54:42 AM\t12.3 s\t200\tgemini-2.5-flash\tgateway.example.com\nSep 06, 2026, 09:20:41 AM\t12.3 s\t200\tclaude-sonnet-4\tgateway.example.com\nSep 06, 2026, 06:46:41 AM\t12.3 s\t200\tgpt-4.1-mini\tgateway.example.com\nSep 06, 2026, 04:12:41 AM\t12.3 s\t200\tgemini-2.5-flash\tgateway.example.com\nSep 06, 2026, 01:38:41 AM\t12.3 s\t200\tclaude-sonnet-4\tgateway.example.com\nSep 05, 2026, 11:04:41 PM\t12.3 s\t200\tgpt-4.1-mini\tgateway.example.com\nSep 05, 2026, 08:30:41 PM\t12.3 s\t200\tgemini-2.5-flash\tgateway.example.com\nSep 05, 2026, 05:56:41 PM\t12.3 s\t200\tclaude-sonnet-4\tgateway.example.com"
+    },
+    {
+      "name": "mobile-overview",
+      "width": 390,
+      "height": 844,
+      "documentWidth": 380,
+      "clientWidth": 380,
+      "title": "Overview · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nllmtrace\nOverview\n\nStored traffic totals, with trends and investigations for the last 24 hours.\n\nTOTAL REQUESTS\n96\nAll retained history\nLAST HOUR\n5\nERRORS (ALL)\n8\n8.3% error rate\nCAPTURED\n76.8 KB\nAVG DURATION\n2807 ms\nAVG TTFT\n205 ms\nRequests & errors (24h, hourly)\nOperational health\n\nCapture counters since this instance started\n\nSecurity posture\nattention · 8 warnings / 0 failures\nTrace queue depth\n0 / 1,024\nDropped traces\n0\nPersisted traces\n0\nRetention\ndisabled\nTop models (24h)\nclaude-sonnet-4\n32 · 2 err\ngemini-2.5-flash\n32 · 3 err\ngpt-4.1-mini\n32 · 3 err\nTop upstreams (24h)\ngateway.example.com\n96 · 8 err\nRecent errors (24h)\nView all\nTIME\tSTATUS\tMODEL\tUPSTREAM\tDURATION\nSep 06, 2026, 12:36:42 PM\t429\tgemini-2.5-flash\tgateway.example.com\t2.81 s\nSep 06, 2026, 09:34:41 AM\t429\tgpt-4.1-mini\tgateway.example.com\t2.51 s\nSep 06, 2026, 06:32:41 AM\t429\tclaude-sonnet-4\tgateway.example.com\t2.21 s\nSep 06, 2026, 03:30:41 AM\t429\tgemini-2.5-flash\tgateway.example.com\t1.92 s\nSep 06, 2026, 12:28:41 AM\t429\tgpt-4.1-mini\tgateway.example.com\t1.62 s\nSep 05, 2026, 09:26:41 PM\t429\tclaude-sonnet-4\tgateway.example.com\t1.32 s\nSep 05, 2026, 06:24:41 PM\t429\tgemini-2.5-flash\tgateway.example.com\t1.02 s\nSep 05, 2026, 03:22:41 PM\t429\tgpt-4.1-mini\tgateway.example.com\t12.3 s\nSlowest requests (24h)\nView all\nTIME\tDURATION\tSTATUS\tMODEL\tUPSTREAM\nSep 06, 2026, 11:54:42 AM\t12.3 s\t200\tgemini-2.5-flash\tgateway.example.com\nSep 06, 2026, 09:20:41 AM\t12.3 s\t200\tclaude-sonnet-4\tgateway.example.com\nSep 06, 2026, 06:46:41 AM\t12.3 s\t200\tgpt-4.1-mini\tgateway.example.com\nSep 06, 2026, 04:12:41 AM\t12.3 s\t200\tgemini-2.5-flash\tgateway.example.com\nSep 06, 2026, 01:38:41 AM\t12.3 s\t200\tclaude-sonnet-4\tgateway.example.com\nSep 05, 2026, 11:04:41 PM\t12.3 s\t200\tgpt-4.1-mini\tgateway.example.com\nSep 05, 2026, 08:30:41 PM\t12.3 s\t200\tgemini-2.5-flash\tgateway.example.com\nSep 05, 2026, 05:56:41 PM\t12.3 s\t200\tclaude-sonnet-4\tgateway.example.com"
+    },
+    {
+      "name": "mobile-requests",
+      "width": 390,
+      "height": 844,
+      "documentWidth": 380,
+      "clientWidth": 380,
+      "title": "Requests · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nllmtrace\nRequests\n\nExplore captured proxy requests with filters, facets, and export.\n\nExport page (JSONL)\nSEARCH\nMODEL\nAll models\nUPSTREAM HOST\nAll upstreams\nREQUEST KIND\nAll kinds\nChat completions\nResponses\nMessages\nWebSocket\nJSON\nHTTP\nSTATUS CLASS\nAll statuses\nno_status\n1xx\n2xx\n3xx\n4xx\n5xx\nother\nERRORS ONLY\nAny\nErrors only\nSuccess only\nROWS\n25\n50\n100\n200\nApply filters\nMore filters\nSTARTED\tSTATUS\tMETHOD\tREQUEST\tMODEL\tUPSTREAM\tDURATION\tSIZE\nSep 06, 2026, 01:32:42 PM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.90 s\t932 B\nSep 06, 2026, 01:18:42 PM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.88 s\t827 B\nSep 06, 2026, 01:04:42 PM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.86 s\t825 B\nSep 06, 2026, 12:50:42 PM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.84 s\t833 B\nSep 06, 2026, 12:36:42 PM\t429\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.81 s\t415 B\nSep 06, 2026, 12:22:42 PM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.79 s\t823 B\nSep 06, 2026, 12:08:42 PM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.77 s\t828 B\nSep 06, 2026, 11:54:42 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t12.3 s\t834 B\nSep 06, 2026, 11:40:42 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.72 s\t929 B\nSep 06, 2026, 11:26:42 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.70 s\t826 B\nSep 06, 2026, 11:12:42 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.67 s\t829 B\nSep 06, 2026, 10:58:42 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.65 s\t830 B\nSep 06, 2026, 10:44:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.63 s\t932 B\nSep 06, 2026, 10:30:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.61 s\t827 B\nSep 06, 2026, 10:16:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.58 s\t825 B\nSep 06, 2026, 10:02:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.56 s\t833 B\nSep 06, 2026, 09:48:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.54 s\t933 B\nSep 06, 2026, 09:34:41 AM\t429\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.51 s\t446 B\nSep 06, 2026, 09:20:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t12.3 s\t828 B\nSep 06, 2026, 09:06:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.47 s\t834 B\nSep 06, 2026, 08:52:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.44 s\t929 B\nSep 06, 2026, 08:38:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.42 s\t826 B\nSep 06, 2026, 08:24:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.40 s\t829 B\nSep 06, 2026, 08:10:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.38 s\t830 B\nSep 06, 2026, 07:56:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.35 s\t932 B\nSep 06, 2026, 07:42:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.33 s\t827 B\nSep 06, 2026, 07:28:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.31 s\t825 B\nSep 06, 2026, 07:14:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.28 s\t833 B\nSep 06, 2026, 07:00:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.26 s\t933 B\nSep 06, 2026, 06:46:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t12.3 s\t823 B\nSep 06, 2026, 06:32:41 AM\t429\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.21 s\t451 B\nSep 06, 2026, 06:18:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.19 s\t834 B\nSep 06, 2026, 06:04:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.17 s\t929 B\nSep 06, 2026, 05:50:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.15 s\t826 B\nSep 06, 2026, 05:36:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.12 s\t829 B\nSep 06, 2026, 05:22:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.10 s\t830 B\nSep 06, 2026, 05:08:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.08 s\t932 B\nSep 06, 2026, 04:54:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.05 s\t827 B\nSep 06, 2026, 04:40:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.03 s\t825 B\nSep 06, 2026, 04:26:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.01 s\t833 B\nSep 06, 2026, 04:12:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t12.3 s\t933 B\nSep 06, 2026, 03:58:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t1.96 s\t823 B\nSep 06, 2026, 03:44:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t1.94 s\t828 B\nSep 06, 2026, 03:30:41 AM\t429\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t1.92 s\t457 B\nSep 06, 2026, 03:16:41 AM\t200\tPOST\t\n/v1/c"
+    },
+    {
+      "name": "mobile-sessions",
+      "width": 390,
+      "height": 844,
+      "documentWidth": 390,
+      "clientWidth": 390,
+      "title": "Sessions · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nllmtrace\nSessions\n\nGrouped conversations and their captured requests.\n\nSearch\nEMPLOYEE / SESSION\tREQUESTS\tMAX DURATION\tFIRST SEEN\tLAST SEEN\nSam Rivera\nSession 1647b474\n\t12\t12.3 s\tSep 05, 2026, 05:00:41 PM\tSep 06, 2026, 01:32:44 PM\nPriya Shah\nSession 4c675942\n\t12\t12.3 s\tSep 05, 2026, 04:46:41 PM\tSep 06, 2026, 01:18:44 PM\nAlex Morgan\nSession 83c28a1c\n\t12\t12.3 s\tSep 05, 2026, 04:32:41 PM\tSep 06, 2026, 01:04:44 PM\nMaya Chen\nSession 5944531f\n\t12\t12.3 s\tSep 05, 2026, 04:18:41 PM\tSep 06, 2026, 12:50:44 PM\nSam Rivera\nSession b5e5e6c4\n\t12\t12.3 s\tSep 05, 2026, 04:04:41 PM\tSep 06, 2026, 12:36:44 PM\nPriya Shah\nSession 87569790\n\t12\t12.3 s\tSep 05, 2026, 03:50:41 PM\tSep 06, 2026, 12:22:44 PM\nAlex Morgan\nSession a17b8ef5\n\t12\t12.3 s\tSep 05, 2026, 03:36:41 PM\tSep 06, 2026, 12:08:44 PM\nMaya Chen\nSession 64cc5822\n\t12\t12.3 s\tSep 05, 2026, 03:22:41 PM\tSep 06, 2026, 11:54:54 AM\nShowing 1–8\nPrev\nNext"
+    },
+    {
+      "name": "mobile-session",
+      "width": 390,
+      "height": 844,
+      "documentWidth": 380,
+      "clientWidth": 380,
+      "title": "Session · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nllmtrace\nSession detail\n\nSam Rivera · Session 1647b474\n\nBack\nCopy ID\nView transcript\nREQUESTS\n12\nERRORS\n1\nCAPTURED\n10.4 KB\nAVG DURATION\n2.76 s\nMAX DURATION\n12.3 s\nAVG TTFT\n214 ms\nINPUT TOKENS\n43,866\nOUTPUT TOKENS\n5,239\nTOOL CALLS CAPTURED\n11\nESTIMATED TOKEN COST\n$0.054795\n\nEmployee: Sam Rivera\n\nUsage reported for 11 of 12 requests. Cost estimated for 11. Totals include available values only.\n\nTranscript previews\n\n46 messages loaded · request snapshots may repeat conversation history\n\nExport first 50\nOpen request eb8c8e40\nSYSTEM\nSep 05, 2026, 05:00:41 PM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request eb8c8e40\nUSER\nSep 05, 2026, 05:00:41 PM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request eb8c8e40\nASSISTANT\nSep 05, 2026, 05:00:41 PM\nStart with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no employee conversations are included.\nOpen request eb8c8e40\nTOOL_CALL\nSep 05, 2026, 05:00:41 PM\n{\"id\":\"demo-search\",\"name\":\"search_internal_docs\",\"arguments\":\"{\\\"query\\\":\\\"deployment rollback checklist\\\"}\"}\nOpen request 7fdd2980\nSYSTEM\nSep 05, 2026, 06:52:41 PM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request 7fdd2980\nUSER\nSep 05, 2026, 06:52:41 PM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request 7fdd2980\nASSISTANT\nSep 05, 2026, 06:52:41 PM\nStart with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no employee conversations are included.\nOpen request 7fdd2980\nTOOL_CALL\nSep 05, 2026, 06:52:41 PM\n{\"id\":\"demo-search\",\"name\":\"search_internal_docs\",\"arguments\":\"{\\\"query\\\":\\\"deployment rollback checklist\\\"}\"}\nOpen request ee968b60\nSYSTEM\nSep 05, 2026, 08:44:41 PM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request ee968b60\nUSER\nSep 05, 2026, 08:44:41 PM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request ee968b60\nASSISTANT\nSep 05, 2026, 08:44:41 PM\nStart with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no employee conversations are included.\nOpen request ee968b60\nTOOL_CALL\nSep 05, 2026, 08:44:41 PM\n{\"id\":\"demo-search\",\"name\":\"search_internal_docs\",\"arguments\":\"{\\\"query\\\":\\\"deployment rollback checklist\\\"}\"}\nOpen request 45c718e4\nSYSTEM\nSep 05, 2026, 10:36:41 PM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request 45c718e4\nUSER\nSep 05, 2026, 10:36:41 PM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request 45c718e4\nASSISTANT\nSep 05, 2026, 10:36:41 PM\nStart with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no employee conversations are included.\nOpen request 45c718e4\nTOOL_CALL\nSep 05, 2026, 10:36:41 PM\n{\"id\":\"demo-search\",\"name\":\"search_internal_docs\",\"arguments\":\"{\\\"query\\\":\\\"deployment rollback checklist\\\"}\"}\nOpen request 84af62f6\nSYSTEM\nSep 06, 2026, 12:28:41 AM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request 84af62f6\nUSER\nSep 06, 2026, 12:28:41 AM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request 0bb05277\nSYSTEM\nSep 06, 2026, 02:20:41 AM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request 0bb05277\nUSER\nSep 06, 2026, 02:20:41 AM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request 0bb05277\nASSISTANT\nSep 06, 2026, 02:20:41 AM\nStart with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no employee conversations are included.\nOpen request 0bb05277\nTOOL_CALL\nSep 06, 2026, 02:20:41 AM\n{\"id\":\"demo-search\",\"name\":\"search_internal_docs\",\"arguments\":\"{\\\"query\\\":\\\"deployment rollback checklist\\\"}\"}\nOpen request 370e8e8b\nSYSTEM\nSep 06, 2026, 04:12:41 AM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request 370e8e8b\nUSER\nSep 06, 2026, 04:12:41 AM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request 370e8e8b\nASSISTANT\nSep 06, 2026, 04:12:41 AM\nStart with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no employee conversations are included.\nOpen request 370e8e8b\nTOOL_CALL\nSep 06, 2026, 04:12:41 AM\n{\"id\":\"demo-search\",\"name\":\"search_internal_docs\",\"arguments\":\"{\\\"query\\\":\\\"deployment rollback checklist\\\"}\"}\nOpen request b94edb26\nSYSTEM\nSep 06, 2026, 06:04:41 AM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request"
+    },
+    {
+      "name": "mobile-request",
+      "width": 390,
+      "height": 844,
+      "documentWidth": 380,
+      "clientWidth": 380,
+      "title": "Request · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nllmtrace\nRequest detail\n\n46936c05-ff07-4d91-87b0-d140851efa76\n\nBack\nCopy ID\n200\nPOST\nChat completions\nclaude-sonnet-4\nOverview\nRequest\nResponse\nTool calls (1)\nPlugins (1)\nRaw\nSummary\nSTARTED\nSep 06, 2026, 01:32:42 PM\nCOMPLETED\nSep 06, 2026, 01:32:44 PM\nDURATION\n2.90 s\nFIRST OUTPUT (TTFT)\n300 ms\nFIRST BYTE (TTFB)\n180 ms\nBYTES IN\n320 B\nBYTES OUT\n612 B\nREQUEST KIND\nChat completions\nMODEL\nclaude-sonnet-4\nINPUT TOKENS\n5,790\nOUTPUT TOKENS\n605\nCACHED INPUT\nUnknown\nESTIMATED TOKEN COST\n$0.005625\nPAYLOAD CAPTURE\nNo truncation recorded\nUSAGE COVERAGE\nReported by upstream\nRouting & identity\nMETHOD\nPOST\nORIGINAL URI\n/v1/chat/completions\nUPSTREAM URL\nhttps://gateway.example.com/v1/chat/completions\nUPSTREAM HOST\ngateway.example.com\nAPI KEY HASH\nsynthetic-employee-3\nSESSION\nsession:1b30852221b3bbe92f15ff7621ad0a325a1ebcbba328708339634cc62f6977e9"
+    },
+    {
+      "name": "mobile-analytics",
+      "width": 390,
+      "height": 844,
+      "documentWidth": 380,
+      "clientWidth": 380,
+      "title": "Analytics · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nllmtrace\nAnalytics\n\nUsage, latency, and error breakdowns across the selected window.\n\n1h\n6h\n24h\n7d\n30d\nSummary\nTimeseries\nLatency\nAPI keys\nUsers\nModels\nUpstreams\nErrors\nREQUESTS\n96\nERRORS\n8\nBYTES IN\n32.6 KB\nBYTES OUT\n44.2 KB\nAVG DURATION\n2807 ms\nAVG TTFT\n205 ms\nTop models\nclaude-sonnet-4\n32 · 2 err\ngemini-2.5-flash\n32 · 3 err\ngpt-4.1-mini\n32 · 3 err\nTop upstreams\ngateway.example.com\n96 · 8 err\nStatus classes\n2xx: 88\n4xx: 8\nRequest kinds\nChat completions: 96"
+    },
+    {
+      "name": "mobile-query",
+      "width": 390,
+      "height": 844,
+      "documentWidth": 380,
+      "clientWidth": 380,
+      "title": "Query · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nllmtrace\nQuery\n\nBuild structured queries over allowlisted datasets and fields.\n\nDataset & fields\nDATASET\nrequests\nsessions\nmessages\nrollups_minute\nFIELDS (12)\nAll\nClear\nttfb_ms\ninput_tokens\noutput_tokens\ncached_input_tokens\ncache_creation_input_tokens\nestimated_cost_microusd\ntool_call_count\nusage_complete\nid\nstarted_at\ncompleted_at\nmethod\noriginal_uri\nupstream_url\nupstream_host\nstatus\nerror\nrequest_kind\nmodel\napi_key_hash\nsession_key\nsession_id\nttft_ms\nduration_ms\nbytes_in\nbytes_out\nrequest_headers\nresponse_headers\nrequest_body_bytes\nresponse_body_bytes\nrequest_body_truncated\nresponse_body_truncated\ncontent_type\nplugin_metadata\ntags\n\nLeave empty to use dataset defaults. Max 64.\n\nLIMIT\nMax 500\nFilters\nFilter\n\nNo filters. All rows match.\n\nPlugin metadata filter\nSort\nSort\nttfb_ms\ninput_tokens\noutput_tokens\ncached_input_tokens\ncache_creation_input_tokens\nestimated_cost_microusd\ntool_call_count\nusage_complete\nid\nstarted_at\ncompleted_at\nmethod\noriginal_uri\nupstream_url\nupstream_host\nstatus\nerror\nrequest_kind\nmodel\napi_key_hash\nsession_key\nsession_id\nttft_ms\nduration_ms\nbytes_in\nbytes_out\nrequest_headers\nresponse_headers\nrequest_body_bytes\nresponse_body_bytes\nrequest_body_truncated\nresponse_body_truncated\ncontent_type\nplugin_metadata\ntags\nasc\ndesc\nRun query\nExport\nResults\n\nNo results yet\n\nConfigure the query and run it."
+    },
+    {
+      "name": "mobile-menu",
+      "width": 390,
+      "height": 844,
+      "documentWidth": 390,
+      "clientWidth": 390,
+      "title": "Query · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nllmtrace\nQuery\n\nBuild structured queries over allowlisted datasets and fields.\n\nDataset & fields\nDATASET\nrequests\nsessions\nmessages\nrollups_minute\nFIELDS (12)\nAll\nClear\nttfb_ms\ninput_tokens\noutput_tokens\ncached_input_tokens\ncache_creation_input_tokens\nestimated_cost_microusd\ntool_call_count\nusage_complete\nid\nstarted_at\ncompleted_at\nmethod\noriginal_uri\nupstream_url\nupstream_host\nstatus\nerror\nrequest_kind\nmodel\napi_key_hash\nsession_key\nsession_id\nttft_ms\nduration_ms\nbytes_in\nbytes_out\nrequest_headers\nresponse_headers\nrequest_body_bytes\nresponse_body_bytes\nrequest_body_truncated\nresponse_body_truncated\ncontent_type\nplugin_metadata\ntags\n\nLeave empty to use dataset defaults. Max 64.\n\nLIMIT\nMax 500\nFilters\nFilter\n\nNo filters. All rows match.\n\nPlugin metadata filter\nSort\nSort\nttfb_ms\ninput_tokens\noutput_tokens\ncached_input_tokens\ncache_creation_input_tokens\nestimated_cost_microusd\ntool_call_count\nusage_complete\nid\nstarted_at\ncompleted_at\nmethod\noriginal_uri\nupstream_url\nupstream_host\nstatus\nerror\nrequest_kind\nmodel\napi_key_hash\nsession_key\nsession_id\nttft_ms\nduration_ms\nbytes_in\nbytes_out\nrequest_headers\nresponse_headers\nrequest_body_bytes\nresponse_body_bytes\nrequest_body_truncated\nresponse_body_truncated\ncontent_type\nplugin_metadata\ntags\nasc\ndesc\nRun query\nExport\nResults\n\nNo results yet\n\nConfigure the query and run it."
+    },
+    {
+      "name": "desktop-empty-search",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1440,
+      "clientWidth": 1440,
+      "title": "Sessions · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nadmin\nlocal\nSessions\n\nGrouped conversations and their captured requests.\n\nSearch\nClear\nEMPLOYEE / SESSION\tREQUESTS\tMAX DURATION\tFIRST SEEN\tLAST SEEN\n\n\nNo sessions\n\nNo sessions matched your search.\n\nNo results\nPrev\nNext"
+    },
+    {
+      "name": "desktop-tool-call",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1440,
+      "clientWidth": 1440,
+      "title": "Request · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nadmin\nlocal\nRequest detail\n\n46936c05-ff07-4d91-87b0-d140851efa76\n\nBack\nCopy ID\n200\nPOST\nChat completions\nclaude-sonnet-4\nOverview\nRequest\nResponse\nTool calls (1)\nPlugins (1)\nRaw\nGenerated tool calls\n\nArguments are captured previews. Tool execution happens in the client or upstream.\n\nsearch_internal_docs demo-search\n\nView raw\nCopy\nDownload\nCopy\n{\n  \"query\": \"deployment rollback checklist\"\n}"
+    },
+    {
+      "name": "desktop-employee-analytics",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1440,
+      "clientWidth": 1440,
+      "title": "Analytics · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nadmin\nlocal\nAnalytics\n\nUsage, latency, and error breakdowns across the selected window.\n\n1h\n6h\n24h\n7d\n30d\nSummary\nTimeseries\nLatency\nAPI keys\nUsers\nModels\nUpstreams\nErrors\n\nTotals cover reported usage in the selected window. Missing prices and usage are excluded; estimates cover configured token rates only.\n\nUSER\tREQUESTS\tERROR RATE\tKEYS\tSESSIONS\tINPUT / OUTPUT TOKENS\tTOOL CALLS\tESTIMATED TOKEN COST\tUSAGE / PRICE COVERAGE\nMaya Chen\t24\t8.3%\t1\t2\t83,784 / 10,196\t0\t$0.10818\t22 / 22 of 24\nAlex Morgan\t24\t8.3%\t1\t2\t83,700 / 10,190\t0\t$0.10815\t22 / 22 of 24\nPriya Shah\t24\t8.3%\t1\t2\t83,616 / 10,184\t0\t$0.10812\t22 / 22 of 24\nSam Rivera\t24\t8.3%\t1\t2\t83,532 / 10,178\t22\t$0.10809\t22 / 22 of 24\nAnalytics · llmtrace"
+    },
+    {
+      "name": "desktop-query-results",
+      "width": 1440,
+      "height": 1000,
+      "documentWidth": 1430,
+      "clientWidth": 1430,
+      "title": "Query · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nadmin\nlocal\nQuery\n\nBuild structured queries over allowlisted datasets and fields.\n\nDataset & fields\nDATASET\nrequests\nsessions\nmessages\nrollups_minute\nFIELDS (12)\nAll\nClear\nttfb_ms\ninput_tokens\noutput_tokens\ncached_input_tokens\ncache_creation_input_tokens\nestimated_cost_microusd\ntool_call_count\nusage_complete\nid\nstarted_at\ncompleted_at\nmethod\noriginal_uri\nupstream_url\nupstream_host\nstatus\nerror\nrequest_kind\nmodel\napi_key_hash\nsession_key\nsession_id\nttft_ms\nduration_ms\nbytes_in\nbytes_out\nrequest_headers\nresponse_headers\nrequest_body_bytes\nresponse_body_bytes\nrequest_body_truncated\nresponse_body_truncated\ncontent_type\nplugin_metadata\ntags\n\nLeave empty to use dataset defaults. Max 64.\n\nLIMIT\nMax 500\nFilters\nFilter\n\nNo filters. All rows match.\n\nPlugin metadata filter\nSort\nSort\nttfb_ms\ninput_tokens\noutput_tokens\ncached_input_tokens\ncache_creation_input_tokens\nestimated_cost_microusd\ntool_call_count\nusage_complete\nid\nstarted_at\ncompleted_at\nmethod\noriginal_uri\nupstream_url\nupstream_host\nstatus\nerror\nrequest_kind\nmodel\napi_key_hash\nsession_key\nsession_id\nttft_ms\nduration_ms\nbytes_in\nbytes_out\nrequest_headers\nresponse_headers\nrequest_body_bytes\nresponse_body_bytes\nrequest_body_truncated\nresponse_body_truncated\ncontent_type\nplugin_metadata\ntags\nasc\ndesc\nRun query\nExport\nResults\n\n96 rows · limit 100\n\nrequests\nid\tstarted_at\tmethod\toriginal_uri\tupstream_host\tstatus\trequest_kind\tmodel\tduration_ms\tbytes_in\tbytes_out\ttags\n46936c05-ff07-4d91-87b0-d140851efa76\t2026-09-06T05:32:42.036625+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tclaude-sonnet-4\t2905\t320\t612\t[]\n4b748d5e-8de5-4c53-9dd5-6caea1459b18\t2026-09-06T05:18:42.034148+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tgemini-2.5-flash\t2882\t356\t471\t[]\nb63c6223-215e-4e75-ada0-5195be08d7a8\t2026-09-06T05:04:42.031725+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tgpt-4.1-mini\t2859\t354\t471\t[]\nab3c2394-7e61-4cd8-a224-497a88b06951\t2026-09-06T04:50:42.0291+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tclaude-sonnet-4\t2836\t362\t471\t[]\ne037d0b3-a070-4dc2-ab2d-34b3376ad667\t2026-09-06T04:36:42.026757+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t429\topenai_chat_completions\tgemini-2.5-flash\t2813\t321\t94\t[]\n7bc3e710-711d-4250-8ecc-d92126de4d5a\t2026-09-06T04:22:42.02273+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tgpt-4.1-mini\t2790\t352\t471\t[]\n5536ed1e-dbe5-4337-9cd2-023a6876ac14\t2026-09-06T04:08:42.017949+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tclaude-sonnet-4\t2767\t357\t471\t[]\nbc6a9985-b7ac-4f2f-8f37-db7cb962fdca\t2026-09-06T03:54:42.010959+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tgemini-2.5-flash\t12340\t363\t471\t[]\n2a6558eb-9d2c-486f-abda-22f46988f861\t2026-09-06T03:40:42.008594+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tgpt-4.1-mini\t2721\t317\t612\t[]\n09a0521b-0b67-4aa4-af5a-e885e5fb3db0\t2026-09-06T03:26:42.005333+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tclaude-sonnet-4\t2698\t355\t471\t[]\n23eec9c2-6807-4e57-becc-1818971c8630\t2026-09-06T03:12:42.002838+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tgemini-2.5-flash\t2675\t358\t471\t[]\n69687b2e-c617-4bb1-9059-a708a663f0cf\t2026-09-06T02:58:42.000602+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tgpt-4.1-mini\t2652\t359\t471\t[]\n0787e923-4cd4-4a86-8d29-cdcdad6fcbc0\t2026-09-06T02:44:41.998391+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tclaude-sonnet-4\t2629\t320\t612\t[]\nae8867c9-8c81-402a-bf69-e40c18b98632\t2026-09-06T02:30:41.995668+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tgemini-2.5-flash\t2606\t356\t471\t[]\n642f4ce9-d4c0-4070-b9f0-17b49c6dd843\t2026-09-06T02:16:41.992535+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tgpt-4.1-mini\t2583\t354\t471\t[]\n6f837e44-de56-4398-afdd-a8a57950691a\t2026-09-06T02:02:41.989059+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tclaude-sonnet-4\t2560\t362\t471\t[]\n4c8a60d1-fe05-43ca-8246-aa606ff7d0bd\t2026-09-06T01:48:41.986468+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tgemini-2.5-flash\t2537\t321\t612\t[]\na2369c72-aea2-4044-956e-64ef77284dc9\t2026-09-06T01:34:41.984291+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t429\topenai_chat_completions\tgpt-4.1-mini\t2514\t352\t94\t[]\n825c5727-23c8-4d0a-b6ca-baf0564de2be\t2026-09-06T01:20:41.982097+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tclaude-sonnet-4\t12340\t357\t471\t[]\n42bfb9cb-6233-48da-b7ea-ab5a09bd4b00\t2026-09-06T01:06:41.979919+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tgemini-2.5-flash\t2468\t363\t471\t[]\n28bebaa1-4a94-4c8e-aa20-491f64e6718e\t2026-09-06T00:52:41.977495+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tgpt-4.1-mini\t2445\t317\t612\t[]\nf412c394-33a1-49db-9736-a4d306efa9de\t2026-09-06T00:38:41.974715+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tclaude-sonnet-4\t2422\t355\t471\t[]\n2ca6c8d7-b958-453c-ae77-4ff566f8c6c1\t2026-09-06T00:24:41.972523+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tgemini-2.5-flash\t2399\t358\t471\t[]\n9bbc22b4-582d-4c71-843b-30be31b636cc\t2026-09-06T00:10:41.97033+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tgpt-4.1-mini\t2376\t359\t471\t[]\n161764ac-fe1f-4f83-9ecd-84ac868bdb5f\t2026-09-05T23:56:41.96766+00:00\tPOST\t/v1/chat/completions\tgateway.example.com\t200\topenai_chat_completions\tclaude-sonnet-4\t2353\t320\t612\t[]\n94674429-2fcc-4704-ae85-6c1e7972f589\t2026-09-05T23:42:41.96529"
+    },
+    {
+      "name": "narrow-overview",
+      "width": 320,
+      "height": 740,
+      "documentWidth": 310,
+      "clientWidth": 310,
+      "title": "Overview · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nllmtrace\nOverview\n\nStored traffic totals, with trends and investigations for the last 24 hours.\n\nTOTAL REQUESTS\n96\nAll retained history\nLAST HOUR\n5\nERRORS (ALL)\n8\n8.3% error rate\nCAPTURED\n76.8 KB\nAVG DURATION\n2807 ms\nAVG TTFT\n205 ms\nRequests & errors (24h, hourly)\nOperational health\n\nCapture counters since this instance started\n\nSecurity posture\nattention · 8 warnings / 0 failures\nTrace queue depth\n0 / 1,024\nDropped traces\n0\nPersisted traces\n0\nRetention\ndisabled\nTop models (24h)\nclaude-sonnet-4\n32 · 2 err\ngemini-2.5-flash\n32 · 3 err\ngpt-4.1-mini\n32 · 3 err\nTop upstreams (24h)\ngateway.example.com\n96 · 8 err\nRecent errors (24h)\nView all\nTIME\tSTATUS\tMODEL\tUPSTREAM\tDURATION\nSep 06, 2026, 12:36:42 PM\t429\tgemini-2.5-flash\tgateway.example.com\t2.81 s\nSep 06, 2026, 09:34:41 AM\t429\tgpt-4.1-mini\tgateway.example.com\t2.51 s\nSep 06, 2026, 06:32:41 AM\t429\tclaude-sonnet-4\tgateway.example.com\t2.21 s\nSep 06, 2026, 03:30:41 AM\t429\tgemini-2.5-flash\tgateway.example.com\t1.92 s\nSep 06, 2026, 12:28:41 AM\t429\tgpt-4.1-mini\tgateway.example.com\t1.62 s\nSep 05, 2026, 09:26:41 PM\t429\tclaude-sonnet-4\tgateway.example.com\t1.32 s\nSep 05, 2026, 06:24:41 PM\t429\tgemini-2.5-flash\tgateway.example.com\t1.02 s\nSep 05, 2026, 03:22:41 PM\t429\tgpt-4.1-mini\tgateway.example.com\t12.3 s\nSlowest requests (24h)\nView all\nTIME\tDURATION\tSTATUS\tMODEL\tUPSTREAM\nSep 06, 2026, 11:54:42 AM\t12.3 s\t200\tgemini-2.5-flash\tgateway.example.com\nSep 06, 2026, 09:20:41 AM\t12.3 s\t200\tclaude-sonnet-4\tgateway.example.com\nSep 06, 2026, 06:46:41 AM\t12.3 s\t200\tgpt-4.1-mini\tgateway.example.com\nSep 06, 2026, 04:12:41 AM\t12.3 s\t200\tgemini-2.5-flash\tgateway.example.com\nSep 06, 2026, 01:38:41 AM\t12.3 s\t200\tclaude-sonnet-4\tgateway.example.com\nSep 05, 2026, 11:04:41 PM\t12.3 s\t200\tgpt-4.1-mini\tgateway.example.com\nSep 05, 2026, 08:30:41 PM\t12.3 s\t200\tgemini-2.5-flash\tgateway.example.com\nSep 05, 2026, 05:56:41 PM\t12.3 s\t200\tclaude-sonnet-4\tgateway.example.com"
+    },
+    {
+      "name": "narrow-requests",
+      "width": 320,
+      "height": 740,
+      "documentWidth": 310,
+      "clientWidth": 310,
+      "title": "Requests · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nllmtrace\nRequests\n\nExplore captured proxy requests with filters, facets, and export.\n\nExport page (JSONL)\nSEARCH\nMODEL\nAll models\nUPSTREAM HOST\nAll upstreams\nREQUEST KIND\nAll kinds\nChat completions\nResponses\nMessages\nWebSocket\nJSON\nHTTP\nSTATUS CLASS\nAll statuses\nno_status\n1xx\n2xx\n3xx\n4xx\n5xx\nother\nERRORS ONLY\nAny\nErrors only\nSuccess only\nROWS\n25\n50\n100\n200\nApply filters\nMore filters\nSTARTED\tSTATUS\tMETHOD\tREQUEST\tMODEL\tUPSTREAM\tDURATION\tSIZE\nSep 06, 2026, 01:32:42 PM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.90 s\t932 B\nSep 06, 2026, 01:18:42 PM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.88 s\t827 B\nSep 06, 2026, 01:04:42 PM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.86 s\t825 B\nSep 06, 2026, 12:50:42 PM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.84 s\t833 B\nSep 06, 2026, 12:36:42 PM\t429\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.81 s\t415 B\nSep 06, 2026, 12:22:42 PM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.79 s\t823 B\nSep 06, 2026, 12:08:42 PM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.77 s\t828 B\nSep 06, 2026, 11:54:42 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t12.3 s\t834 B\nSep 06, 2026, 11:40:42 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.72 s\t929 B\nSep 06, 2026, 11:26:42 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.70 s\t826 B\nSep 06, 2026, 11:12:42 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.67 s\t829 B\nSep 06, 2026, 10:58:42 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.65 s\t830 B\nSep 06, 2026, 10:44:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.63 s\t932 B\nSep 06, 2026, 10:30:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.61 s\t827 B\nSep 06, 2026, 10:16:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.58 s\t825 B\nSep 06, 2026, 10:02:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.56 s\t833 B\nSep 06, 2026, 09:48:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.54 s\t933 B\nSep 06, 2026, 09:34:41 AM\t429\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.51 s\t446 B\nSep 06, 2026, 09:20:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t12.3 s\t828 B\nSep 06, 2026, 09:06:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.47 s\t834 B\nSep 06, 2026, 08:52:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.44 s\t929 B\nSep 06, 2026, 08:38:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.42 s\t826 B\nSep 06, 2026, 08:24:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.40 s\t829 B\nSep 06, 2026, 08:10:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.38 s\t830 B\nSep 06, 2026, 07:56:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.35 s\t932 B\nSep 06, 2026, 07:42:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.33 s\t827 B\nSep 06, 2026, 07:28:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.31 s\t825 B\nSep 06, 2026, 07:14:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.28 s\t833 B\nSep 06, 2026, 07:00:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.26 s\t933 B\nSep 06, 2026, 06:46:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t12.3 s\t823 B\nSep 06, 2026, 06:32:41 AM\t429\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.21 s\t451 B\nSep 06, 2026, 06:18:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.19 s\t834 B\nSep 06, 2026, 06:04:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.17 s\t929 B\nSep 06, 2026, 05:50:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.15 s\t826 B\nSep 06, 2026, 05:36:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.12 s\t829 B\nSep 06, 2026, 05:22:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.10 s\t830 B\nSep 06, 2026, 05:08:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.08 s\t932 B\nSep 06, 2026, 04:54:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t2.05 s\t827 B\nSep 06, 2026, 04:40:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t2.03 s\t825 B\nSep 06, 2026, 04:26:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t2.01 s\t833 B\nSep 06, 2026, 04:12:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t12.3 s\t933 B\nSep 06, 2026, 03:58:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tgpt-4.1-mini\tgateway.example.com\t1.96 s\t823 B\nSep 06, 2026, 03:44:41 AM\t200\tPOST\t\n/v1/chat/completions\nChat completions\tclaude-sonnet-4\tgateway.example.com\t1.94 s\t828 B\nSep 06, 2026, 03:30:41 AM\t429\tPOST\t\n/v1/chat/completions\nChat completions\tgemini-2.5-flash\tgateway.example.com\t1.92 s\t457 B\nSep 06, 2026, 03:16:41 AM\t200\tPOST\t\n/v1/c"
+    },
+    {
+      "name": "narrow-sessions",
+      "width": 320,
+      "height": 740,
+      "documentWidth": 310,
+      "clientWidth": 310,
+      "title": "Sessions · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nllmtrace\nSessions\n\nGrouped conversations and their captured requests.\n\nSearch\nEMPLOYEE / SESSION\tREQUESTS\tMAX DURATION\tFIRST SEEN\tLAST SEEN\nSam Rivera\nSession 1647b474\n\t12\t12.3 s\tSep 05, 2026, 05:00:41 PM\tSep 06, 2026, 01:32:44 PM\nPriya Shah\nSession 4c675942\n\t12\t12.3 s\tSep 05, 2026, 04:46:41 PM\tSep 06, 2026, 01:18:44 PM\nAlex Morgan\nSession 83c28a1c\n\t12\t12.3 s\tSep 05, 2026, 04:32:41 PM\tSep 06, 2026, 01:04:44 PM\nMaya Chen\nSession 5944531f\n\t12\t12.3 s\tSep 05, 2026, 04:18:41 PM\tSep 06, 2026, 12:50:44 PM\nSam Rivera\nSession b5e5e6c4\n\t12\t12.3 s\tSep 05, 2026, 04:04:41 PM\tSep 06, 2026, 12:36:44 PM\nPriya Shah\nSession 87569790\n\t12\t12.3 s\tSep 05, 2026, 03:50:41 PM\tSep 06, 2026, 12:22:44 PM\nAlex Morgan\nSession a17b8ef5\n\t12\t12.3 s\tSep 05, 2026, 03:36:41 PM\tSep 06, 2026, 12:08:44 PM\nMaya Chen\nSession 64cc5822\n\t12\t12.3 s\tSep 05, 2026, 03:22:41 PM\tSep 06, 2026, 11:54:54 AM\nShowing 1–8\nPrev\nNext"
+    },
+    {
+      "name": "narrow-session",
+      "width": 320,
+      "height": 740,
+      "documentWidth": 310,
+      "clientWidth": 310,
+      "title": "Session · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nllmtrace\nSession detail\n\nSam Rivera · Session 1647b474\n\nBack\nCopy ID\nView transcript\nREQUESTS\n12\nERRORS\n1\nCAPTURED\n10.4 KB\nAVG DURATION\n2.76 s\nMAX DURATION\n12.3 s\nAVG TTFT\n214 ms\nINPUT TOKENS\n43,866\nOUTPUT TOKENS\n5,239\nTOOL CALLS CAPTURED\n11\nESTIMATED TOKEN COST\n$0.054795\n\nEmployee: Sam Rivera\n\nUsage reported for 11 of 12 requests. Cost estimated for 11. Totals include available values only.\n\nTranscript previews\n\n46 messages loaded · request snapshots may repeat conversation history\n\nExport first 50\nOpen request eb8c8e40\nSYSTEM\nSep 05, 2026, 05:00:41 PM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request eb8c8e40\nUSER\nSep 05, 2026, 05:00:41 PM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request eb8c8e40\nASSISTANT\nSep 05, 2026, 05:00:41 PM\nStart with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no employee conversations are included.\nOpen request eb8c8e40\nTOOL_CALL\nSep 05, 2026, 05:00:41 PM\n{\"id\":\"demo-search\",\"name\":\"search_internal_docs\",\"arguments\":\"{\\\"query\\\":\\\"deployment rollback checklist\\\"}\"}\nOpen request 7fdd2980\nSYSTEM\nSep 05, 2026, 06:52:41 PM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request 7fdd2980\nUSER\nSep 05, 2026, 06:52:41 PM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request 7fdd2980\nASSISTANT\nSep 05, 2026, 06:52:41 PM\nStart with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no employee conversations are included.\nOpen request 7fdd2980\nTOOL_CALL\nSep 05, 2026, 06:52:41 PM\n{\"id\":\"demo-search\",\"name\":\"search_internal_docs\",\"arguments\":\"{\\\"query\\\":\\\"deployment rollback checklist\\\"}\"}\nOpen request ee968b60\nSYSTEM\nSep 05, 2026, 08:44:41 PM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request ee968b60\nUSER\nSep 05, 2026, 08:44:41 PM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request ee968b60\nASSISTANT\nSep 05, 2026, 08:44:41 PM\nStart with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no employee conversations are included.\nOpen request ee968b60\nTOOL_CALL\nSep 05, 2026, 08:44:41 PM\n{\"id\":\"demo-search\",\"name\":\"search_internal_docs\",\"arguments\":\"{\\\"query\\\":\\\"deployment rollback checklist\\\"}\"}\nOpen request 45c718e4\nSYSTEM\nSep 05, 2026, 10:36:41 PM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request 45c718e4\nUSER\nSep 05, 2026, 10:36:41 PM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request 45c718e4\nASSISTANT\nSep 05, 2026, 10:36:41 PM\nStart with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no employee conversations are included.\nOpen request 45c718e4\nTOOL_CALL\nSep 05, 2026, 10:36:41 PM\n{\"id\":\"demo-search\",\"name\":\"search_internal_docs\",\"arguments\":\"{\\\"query\\\":\\\"deployment rollback checklist\\\"}\"}\nOpen request 84af62f6\nSYSTEM\nSep 06, 2026, 12:28:41 AM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request 84af62f6\nUSER\nSep 06, 2026, 12:28:41 AM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request 0bb05277\nSYSTEM\nSep 06, 2026, 02:20:41 AM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request 0bb05277\nUSER\nSep 06, 2026, 02:20:41 AM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request 0bb05277\nASSISTANT\nSep 06, 2026, 02:20:41 AM\nStart with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no employee conversations are included.\nOpen request 0bb05277\nTOOL_CALL\nSep 06, 2026, 02:20:41 AM\n{\"id\":\"demo-search\",\"name\":\"search_internal_docs\",\"arguments\":\"{\\\"query\\\":\\\"deployment rollback checklist\\\"}\"}\nOpen request 370e8e8b\nSYSTEM\nSep 06, 2026, 04:12:41 AM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request 370e8e8b\nUSER\nSep 06, 2026, 04:12:41 AM\nFind the deployment checklist for the analytics pipeline and explain the rollback steps.\nOpen request 370e8e8b\nASSISTANT\nSep 06, 2026, 04:12:41 AM\nStart with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no employee conversations are included.\nOpen request 370e8e8b\nTOOL_CALL\nSep 06, 2026, 04:12:41 AM\n{\"id\":\"demo-search\",\"name\":\"search_internal_docs\",\"arguments\":\"{\\\"query\\\":\\\"deployment rollback checklist\\\"}\"}\nOpen request b94edb26\nSYSTEM\nSep 06, 2026, 06:04:41 AM\nYou are an internal engineering assistant. Use only the synthetic examples provided.\nOpen request"
+    },
+    {
+      "name": "narrow-request",
+      "width": 320,
+      "height": 740,
+      "documentWidth": 310,
+      "clientWidth": 310,
+      "title": "Request · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nllmtrace\nRequest detail\n\n46936c05-ff07-4d91-87b0-d140851efa76\n\nBack\nCopy ID\n200\nPOST\nChat completions\nclaude-sonnet-4\nOverview\nRequest\nResponse\nTool calls (1)\nPlugins (1)\nRaw\nSummary\nSTARTED\nSep 06, 2026, 01:32:42 PM\nCOMPLETED\nSep 06, 2026, 01:32:44 PM\nDURATION\n2.90 s\nFIRST OUTPUT (TTFT)\n300 ms\nFIRST BYTE (TTFB)\n180 ms\nBYTES IN\n320 B\nBYTES OUT\n612 B\nREQUEST KIND\nChat completions\nMODEL\nclaude-sonnet-4\nINPUT TOKENS\n5,790\nOUTPUT TOKENS\n605\nCACHED INPUT\nUnknown\nESTIMATED TOKEN COST\n$0.005625\nPAYLOAD CAPTURE\nNo truncation recorded\nUSAGE COVERAGE\nReported by upstream\nRouting & identity\nMETHOD\nPOST\nORIGINAL URI\n/v1/chat/completions\nUPSTREAM URL\nhttps://gateway.example.com/v1/chat/completions\nUPSTREAM HOST\ngateway.example.com\nAPI KEY HASH\nsynthetic-employee-3\nSESSION\nsession:1b30852221b3bbe92f15ff7621ad0a325a1ebcbba328708339634cc62f6977e9"
+    },
+    {
+      "name": "narrow-analytics",
+      "width": 320,
+      "height": 740,
+      "documentWidth": 310,
+      "clientWidth": 310,
+      "title": "Analytics · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nllmtrace\nAnalytics\n\nUsage, latency, and error breakdowns across the selected window.\n\n1h\n6h\n24h\n7d\n30d\nSummary\nTimeseries\nLatency\nAPI keys\nUsers\nModels\nUpstreams\nErrors\nREQUESTS\n96\nERRORS\n8\nBYTES IN\n32.6 KB\nBYTES OUT\n44.2 KB\nAVG DURATION\n2807 ms\nAVG TTFT\n205 ms\nTop models\nclaude-sonnet-4\n32 · 2 err\ngemini-2.5-flash\n32 · 3 err\ngpt-4.1-mini\n32 · 3 err\nTop upstreams\ngateway.example.com\n96 · 8 err\nStatus classes\n2xx: 88\n4xx: 8\nRequest kinds\nChat completions: 96"
+    },
+    {
+      "name": "narrow-query",
+      "width": 320,
+      "height": 740,
+      "documentWidth": 310,
+      "clientWidth": 310,
+      "title": "Query · llmtrace",
+      "text": "Skip to content\nllmtrace\nOBSERVE\nOverview\nRequests\nSessions\nAnalytics\nQuery\nADMIN\nAudit Log\nUI Sessions\nPlugins\nSystem\nRedaction\nllmtrace\nQuery\n\nBuild structured queries over allowlisted datasets and fields.\n\nDataset & fields\nDATASET\nrequests\nsessions\nmessages\nrollups_minute\nFIELDS (12)\nAll\nClear\nttfb_ms\ninput_tokens\noutput_tokens\ncached_input_tokens\ncache_creation_input_tokens\nestimated_cost_microusd\ntool_call_count\nusage_complete\nid\nstarted_at\ncompleted_at\nmethod\noriginal_uri\nupstream_url\nupstream_host\nstatus\nerror\nrequest_kind\nmodel\napi_key_hash\nsession_key\nsession_id\nttft_ms\nduration_ms\nbytes_in\nbytes_out\nrequest_headers\nresponse_headers\nrequest_body_bytes\nresponse_body_bytes\nrequest_body_truncated\nresponse_body_truncated\ncontent_type\nplugin_metadata\ntags\n\nLeave empty to use dataset defaults. Max 64.\n\nLIMIT\nMax 500\nFilters\nFilter\n\nNo filters. All rows match.\n\nPlugin metadata filter\nSort\nSort\nttfb_ms\ninput_tokens\noutput_tokens\ncached_input_tokens\ncache_creation_input_tokens\nestimated_cost_microusd\ntool_call_count\nusage_complete\nid\nstarted_at\ncompleted_at\nmethod\noriginal_uri\nupstream_url\nupstream_host\nstatus\nerror\nrequest_kind\nmodel\napi_key_hash\nsession_key\nsession_id\nttft_ms\nduration_ms\nbytes_in\nbytes_out\nrequest_headers\nresponse_headers\nrequest_body_bytes\nresponse_body_bytes\nrequest_body_truncated\nresponse_body_truncated\ncontent_type\nplugin_metadata\ntags\nasc\ndesc\nRun query\nExport\nResults\n\nNo results yet\n\nConfigure the query and run it."
+    }
+  ],
+  "errors": [],
+  "checks": {
+    "disabledSsoHidden": true,
+    "login": true,
+    "arrowKeyChangesTab": true,
+    "themePersists": true,
+    "menuFocusInside": true,
+    "menuFocusTrapped": true,
+    "escapeClosesMenu": true,
+    "menuExpandedAttribute": true,
+    "closedMenuInert": true,
+    "menuRestoresFocus": true,
+    "sessionSearchLabel": true,
+    "employeeSearch": true,
+    "sessionBackPreservesSearch": true,
+    "filterLabels": true,
+    "requestSearch": true,
+    "pagination": true,
+    "exportMatchesCurrentPage": true,
+    "requestBackPreservesFilters": true,
+    "emptySearchState": true,
+    "payloadIsLazy": true,
+    "payloadFetchShared": true,
+    "toolCallVisible": true,
+    "employeeCostsVisible": true,
+    "querySortReadable": true,
+    "structuredQuery": true,
+    "transcriptShortcut": true,
+    "noPageOverflow": true,
+    "logout": true
+  },
+  "timing": [
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 550,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 550,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 552,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 550,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 553,
+      "pending": 0
+    },
+    {
+      "wait_ms": 550,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 550,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 552,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 552,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 550,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 550,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 552,
+      "pending": 0
+    },
+    {
+      "wait_ms": 552,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 552,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 550,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 552,
+      "pending": 0
+    },
+    {
+      "wait_ms": 553,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 552,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 552,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 552,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 552,
+      "pending": 0
+    },
+    {
+      "wait_ms": 552,
+      "pending": 0
+    },
+    {
+      "wait_ms": 550,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    },
+    {
+      "wait_ms": 550,
+      "pending": 0
+    },
+    {
+      "wait_ms": 551,
+      "pending": 0
+    }
+  ],
+  "browser": "Chrome/151.0.7922.71"
+}

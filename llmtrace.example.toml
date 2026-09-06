@@ -1,6 +1,11 @@
 [server]
 listen = "127.0.0.1:3000"
 public_url = "http://127.0.0.1:3000"
+# Optional separate admin listener and employee API origin (set both).
+# public_url always refers to the ADMIN origin; it must use a different hostname.
+# admin_listen = "127.0.0.1:3001"
+# public_url = "http://localhost:3001" # replace public_url above
+# proxy_public_url = "http://127.0.0.1:3000"
 # Use "production" to enable stricter startup validation for secure deployments.
 deployment = "development"
 # Serve the embedded SvelteKit admin dashboard under /ui (build with
@@ -8,6 +13,9 @@ deployment = "development"
 ui_enabled = true
 
 [proxy]
+# "litellm" enables versioned/unversioned inference and supporting API routes.
+# See llmtrace.litellm.example.toml and docs/litellm.md for a split-domain setup.
+preset = "custom"
 default_upstream = "https://api.openai.com"
 # Required in production mode to avoid running as an open proxy.
 # Supported entries include "api.openai.com", "api.openai.com:443",
@@ -15,7 +23,12 @@ default_upstream = "https://api.openai.com"
 allow_upstreams = []
 # Only incoming paths matching one of these prefixes are proxied to upstream.
 # Other paths (for example /favicon.ico or /.well-known/*) return 404 locally.
-path_prefixes = ["/v1"]
+# Unset: custom preset uses ["/v1"]; litellm uses its built-in route list.
+# An explicit list replaces the preset's forwarding routes. ["/"] allows all.
+# path_prefixes = ["/v1"]
+# Unset: custom captures all forwarded routes; litellm captures inference only.
+# Explicit prefixes capture all methods on matching forwarded routes; [] disables.
+# capture_path_prefixes = ["/v1/chat/completions", "/v1/responses"]
 upstream_header = "x-llmtrace-upstream"
 timeout_secs = 300
 # Live proxy traffic limits. Oversized HTTP request bodies are rejected with 413.
@@ -31,7 +44,8 @@ max_websocket_session_bytes = 536870912
 # implemented yet.
 storage_backend = "filesystem"
 filesystem_root = "spool/archive"
-# Target uncompressed segment size before starting the next session segment.
+# Request/response bodies share one immutable segment when their combined
+# framed size fits this target; larger pairs use separate segments.
 segment_uncompressed_bytes = 33554432
 # Fast zstd compression; level 1 favors throughput for stream audit capture.
 compression_level = 1
@@ -41,12 +55,35 @@ postgres_url = "postgres://postgres:postgres@localhost:5432/llmtrace"
 max_connections = 10
 acquire_timeout_secs = 30
 trace_queue_capacity = 4096
+# Aggregate allocation budget for captured events waiting or being processed.
+# Worker scratch buffers and live proxy captures need additional memory.
+# Excess events are dropped without delaying traffic; monitor /metrics.
+# Environment override: LLMTRACE_TRACE_QUEUE_MAX_BYTES.
+trace_queue_max_bytes = 268435456
 trace_worker_count = 4
 # Production mode requires retention_days. Leave unset in development if you
 # do not want automatic trace/audit pruning.
 # retention_days = 30
 retention_prune_interval_secs = 3600
 retention_prune_batch_size = 1000
+# Size rotation removes oldest requests and their payloads when total compressed
+# archive bytes exceed this limit. 0 disables size rotation. For 10 GiB, use
+# 10737418240. Excludes database metadata/indexes/WAL and operational stdout logs.
+# Environment overrides: LLMTRACE_ROTATE_SIZE_BYTES,
+# LLMTRACE_ROTATE_CHECK_INTERVAL_SECS. Changes take effect on restart.
+rotate_size_bytes = 0
+rotate_check_interval_secs = 60
+
+# Persistent intake journal, separate from archive rotation. One stable directory
+# per instance. Files contain raw bodies AND unredacted plugin credentials.
+# Full journals reject new captures; pending captures are never size-rotated.
+# All fields have LLMTRACE_JOURNAL_* environment overrides (see README).
+[storage.journal]
+enabled = true
+directory = "spool/journal"
+max_bytes = 1073741824
+max_records = 100000
+retry_interval_secs = 2
 
 [observability]
 # Optional outside production. Production mode requires this so GET /metrics
@@ -114,3 +151,21 @@ store_header_hash = true
 # wasm_path = "./plugins/api_key_user_mapper.wasm"
 # hooks = ["on_request_start", "on_response_headers", "on_response_end"]
 # timeout_ms = 50
+
+# Optional deployment-specific text token rates in USD per million tokens.
+# Exact model name returned by the upstream; these are illustrative, not provider prices.
+# Missing usage, model prices, or necessary cache rates leave estimated cost unknown.
+# [pricing."your-model-name"]
+# input = 2.0
+# output = 8.0
+# cache_read = 0.5
+# cache_write = 2.5
+
+# Identity lookup plugins can import llmtrace.http_get (see docs/plugin-http.md).
+# This is an example configuration; provide your own WASM module and real lookup URL.
+# [[plugins]]
+# name = "employee-identity"
+# wasm_path = "plugins/employee-identity.wasm"
+# hooks = ["on_request_start"]
+# timeout_ms = 1000
+# http_get_urls = ["https://llm.example.com/v1/whoami"]

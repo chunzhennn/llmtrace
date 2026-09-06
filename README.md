@@ -2,7 +2,20 @@
 
 `llmtrace` is an application-layer reverse proxy for LLM traffic. It forwards HTTP, SSE, and WebSocket traffic to an upstream base URL while recording request/response metadata, redacted headers, archived bodies, timings, sessions, and plugin-enriched statistics.
 
-This repository currently contains only the Rust backend. The frontend has been removed and should be implemented separately.
+The Rust backend embeds a SvelteKit admin dashboard at `/ui`. Build it with `corepack pnpm --dir crates/llmtrace/ui install --frozen-lockfile` and `corepack pnpm --dir crates/llmtrace/ui build` before building the release binary. See the [enterprise capability audit](docs/enterprise-audit.md) for verified support, fixes, and remaining limitations.
+
+The [performance test report](docs/performance-testing.md) includes reproducible release-load and browser tests, before/after measurements, and the audit-dropping behavior under memory pressure.
+
+The [durable capture guide](docs/durable-capture.md) describes the default disk journal, crash recovery, capacity controls, and monitoring. Captures become durable after background synchronization; forwarding does not wait for disk or database writes.
+
+The [OpenRouter live test report](docs/openrouter-live-testing.md) covers cheap-model HTTP/SSE, tool calls, account identity lookup, and an upstream deployment-prefix routing fix.
+
+For an existing LiteLLM gateway, use the [LiteLLM preset and separate-domain guide](docs/litellm.md)
+and [example config](llmtrace.litellm.example.toml). `server.listen` serves employee
+traffic and optional `server.admin_listen` serves the dashboard, analytics, auth and
+probes. `server.public_url` is the admin origin; `server.proxy_public_url` is the
+employee API origin. The LiteLLM preset captures inference while forwarding common
+supporting APIs without creating conversation records.
 
 ## Quick start
 
@@ -20,7 +33,7 @@ Validate configuration without connecting to Postgres or running migrations:
 cargo run -p llmtrace -- --config llmtrace.toml --check-config
 ```
 
-Proxy traffic is proxied only when the request path matches one of `proxy.path_prefixes` (default `["/v1"]`). Paths outside `/api`, `/ui`, health probes, and the configured prefixes return `404` locally and are not forwarded upstream. HTTP requests on allowed paths are proxied as HTTP, and requests that negotiate a standard WebSocket upgrade with `Upgrade: websocket` and a `Connection: upgrade` token are proxied as WebSocket traffic on the original path. Set `server.ui_enabled = false` to make both `/` and `/ui/*` return `404`.
+Proxy traffic is forwarded only when the request path matches the effective `proxy.path_prefixes` (default `["/v1"]` for the custom preset). In combined mode llmtrace reserves `/api`, `/ui`, `/` and health/metrics routes; split mode places those only on the admin listener. Other disallowed paths return `404` locally. HTTP and standard WebSocket upgrades are forwarded on allowed paths. `proxy.capture_path_prefixes` independently selects which forwarded routes produce traces. Set `server.ui_enabled = false` to disable the llmtrace dashboard.
 
 ## Health and readiness probes
 
@@ -130,16 +143,40 @@ Cookie-authenticated unsafe requests are checked for same-origin browser metadat
 
 When `storage.retention_days` is set, a background task prunes old `request_traces`, minute rollups, empty trace sessions, and UI audit events in batches of `storage.retention_prune_batch_size` every `storage.retention_prune_interval_secs` seconds. Expired UI sessions and OAuth states are also cleaned up by the same task. Development mode leaves `retention_days` unset by default, so local data is not pruned unless you opt in.
 
-Useful environment overrides include:
+Size rotation is configured independently of age retention. For example:
 
-- Core: `LLMTRACE_DEPLOYMENT`, `LLMTRACE_PUBLIC_URL`, `LLMTRACE_LISTEN`, and `LLMTRACE_UI_ENABLED`.
-- Storage: `DATABASE_URL`, `LLMTRACE_STORAGE_MAX_CONNECTIONS`, `LLMTRACE_DB_ACQUIRE_TIMEOUT_SECS`, `LLMTRACE_TRACE_QUEUE_CAPACITY`, `LLMTRACE_TRACE_WORKER_COUNT`, `LLMTRACE_RETENTION_DAYS`, `LLMTRACE_RETENTION_PRUNE_INTERVAL_SECS`, and `LLMTRACE_RETENTION_PRUNE_BATCH_SIZE`.
-- Proxy: `LLMTRACE_DEFAULT_UPSTREAM`, `LLMTRACE_ALLOW_UPSTREAMS`, `LLMTRACE_PROXY_PATH_PREFIXES`, `LLMTRACE_UPSTREAM_HEADER`, `LLMTRACE_PROXY_TIMEOUT_SECS`, `LLMTRACE_MAX_REQUEST_BODY_BYTES`, `LLMTRACE_MAX_RESPONSE_BODY_BYTES`, `LLMTRACE_MAX_WEBSOCKET_MESSAGE_BYTES`, and `LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES`. `LLMTRACE_ALLOW_UPSTREAMS` and `LLMTRACE_PROXY_PATH_PREFIXES` are comma-separated lists using the same syntax as `proxy.allow_upstreams` and `proxy.path_prefixes`.
+```toml
+[storage]
+rotate_size_bytes = 10737418240 # 10 GiB; 0 (default) disables size rotation
+rotate_check_interval_secs = 60
+```
+
+Or set the equivalent environment variables:
+
+```sh
+export LLMTRACE_ROTATE_SIZE_BYTES=10737418240
+export LLMTRACE_ROTATE_CHECK_INTERVAL_SECS=60
+```
+
+The limit counts compressed payload bytes across filesystem archives, PostgreSQL archive blobs, and legacy inline bodies. When exceeded, background maintenance deletes whole requests, oldest `started_at` first (UUID breaks ties), until retained payloads fit. Associated messages, archive records, unused segments/blobs, and empty sessions are removed; minute statistics are adjusted to match retained requests. A request larger than the entire limit is eventually removed too. Historical segments shared by multiple requests remain until their last reference is removed. Age and size retention both apply when enabled.
+
+This is a soft payload limit: each maintenance pass uses bounded batches (`retention_prune_batch_size`) and a 30-second work budget, then resumes at the next check. Writes can briefly exceed the limit. Metadata, indexes, database free space/WAL, UI audit events, backups, and operational stdout/stderr logs are excluded. PostgreSQL reuses deleted space through vacuuming; its files need not shrink immediately. Unindexed files left by old failed writes are not scanned or counted. Apply `retention_days` for age-based UI audit cleanup and use your deployment's log rotation for stdout/stderr.
+
+Archive file deletion is queued transactionally and retried after commit, including after restart or disabling size rotation. Failed file removal pauses further size eviction; check the runtime retention error and pending-file counts in **Admin → System** or `GET /api/retention/status`. All instances sharing a database must use the same archive filesystem and root, including instances configured for PostgreSQL storage that may collect older filesystem archives. Keep that root stable while files or deletion jobs remain. Database migrations run automatically at startup; migration `005_archive_rotation.sql` adds deletion bookkeeping and indexes.
+
+Settings load from the TOML config file, then environment variables override supplied values. Restart the service to apply changes. Useful environment overrides include:
+
+- Core: `LLMTRACE_DEPLOYMENT`, `LLMTRACE_PUBLIC_URL` (admin origin), `LLMTRACE_LISTEN`, `LLMTRACE_ADMIN_LISTEN`, `LLMTRACE_PROXY_PUBLIC_URL`, and `LLMTRACE_UI_ENABLED`.
+- Storage: `DATABASE_URL`, `LLMTRACE_STORAGE_MAX_CONNECTIONS`, `LLMTRACE_DB_ACQUIRE_TIMEOUT_SECS`, `LLMTRACE_TRACE_QUEUE_CAPACITY`, `LLMTRACE_TRACE_QUEUE_MAX_BYTES`, `LLMTRACE_TRACE_WORKER_COUNT`, `LLMTRACE_RETENTION_DAYS`, `LLMTRACE_RETENTION_PRUNE_INTERVAL_SECS`, `LLMTRACE_RETENTION_PRUNE_BATCH_SIZE`, `LLMTRACE_ROTATE_SIZE_BYTES`, and `LLMTRACE_ROTATE_CHECK_INTERVAL_SECS`. The rotation interval must be between 1 and 86400 seconds.
+- Journal: `LLMTRACE_JOURNAL_ENABLED`, `LLMTRACE_JOURNAL_DIRECTORY`, `LLMTRACE_JOURNAL_MAX_BYTES`, `LLMTRACE_JOURNAL_MAX_RECORDS`, and `LLMTRACE_JOURNAL_RETRY_INTERVAL_SECS`. Defaults: enabled, `spool/journal`, 1 GiB, 100000 records, and two-second retries. See [configuration and recovery](docs/durable-capture.md).
+- Proxy: `LLMTRACE_PROXY_PRESET`, `LLMTRACE_DEFAULT_UPSTREAM`, `LLMTRACE_ALLOW_UPSTREAMS`, `LLMTRACE_PROXY_PATH_PREFIXES`, `LLMTRACE_CAPTURE_PATH_PREFIXES`, `LLMTRACE_UPSTREAM_HEADER`, `LLMTRACE_PROXY_TIMEOUT_SECS`, `LLMTRACE_MAX_REQUEST_BODY_BYTES`, `LLMTRACE_MAX_RESPONSE_BODY_BYTES`, `LLMTRACE_MAX_WEBSOCKET_MESSAGE_BYTES`, and `LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES`. Allowlists/prefixes are comma-separated lists. An empty `LLMTRACE_CAPTURE_PATH_PREFIXES` disables capture. Explicit prefix lists replace preset defaults.
 - Archive: `LLMTRACE_ARCHIVE_STORAGE_BACKEND`, `LLMTRACE_ARCHIVE_FILESYSTEM_ROOT`, `LLMTRACE_ARCHIVE_SEGMENT_UNCOMPRESSED_BYTES`, and `LLMTRACE_ARCHIVE_COMPRESSION_LEVEL`. `storage_backend` may be `filesystem` or `postgres`; filesystem is preferred and failed filesystem writes fall back to Postgres blobs. S3 archive storage is not implemented.
 - Auth: `LLMTRACE_AUTH_COOKIE_SECURE`, `LLMTRACE_SESSION_TTL_HOURS`, `LLMTRACE_LOGIN_RATE_LIMIT_ENABLED`, `LLMTRACE_LOGIN_RATE_LIMIT_MAX_FAILURES`, `LLMTRACE_LOGIN_RATE_LIMIT_WINDOW_SECS`, `LLMTRACE_LOGIN_RATE_LIMIT_LOCKOUT_SECS`, `LLMTRACE_LOGIN_RATE_LIMIT_MAX_TRACKED_ENTRIES`, `LLMTRACE_ADMIN_USERNAME`, `LLMTRACE_ADMIN_PASSWORD`, and `LLMTRACE_ADMIN_PASSWORD_HASH`.
 - OAuth: `LLMTRACE_OAUTH_ENABLED`, `LLMTRACE_OAUTH_ISSUER_URL`, `LLMTRACE_OAUTH_CLIENT_ID`, `LLMTRACE_OAUTH_CLIENT_SECRET`, `LLMTRACE_OAUTH_REDIRECT_URL`, `LLMTRACE_OAUTH_TIMEOUT_SECS`, `LLMTRACE_OAUTH_REQUIRE_EMAIL_VERIFIED`, `LLMTRACE_OAUTH_ALLOWED_EMAILS`, and `LLMTRACE_OAUTH_ALLOWED_DOMAINS`. The allowed email/domain variables are comma-separated lists and use the same validation as the toml fields.
 - Observability: `LLMTRACE_METRICS_BEARER_TOKEN`, which requires `Authorization: Bearer <token>` on `GET /metrics` when set and is required in production mode.
 - Redaction: `LLMTRACE_SENSITIVE_HEADERS` and `LLMTRACE_STORE_HEADER_HASH`.
+- Pricing: `LLMTRACE_PRICING_JSON`, for example `'{"your-model":{"input":2.0,"output":8.0}}'`, replaces the complete `[pricing]` map. Rates are USD per million tokens.
+- Plugins: `LLMTRACE_PLUGINS_JSON`, for example `'[{"name":"identity","wasm_path":"plugins/identity.wasm","http_get_urls":["https://llm.example.com/v1/me"]}]'`, replaces the complete `[[plugins]]` list. JSON uses the same fields and validation as TOML. Use `{}` for pricing or `[]` for plugins to clear file configuration.
 
 Startup validation rejects obviously dangerous resource limits before the service binds a port. Proxy timeout is capped at 3600 seconds; live HTTP request and response body capture are capped at 1 GiB each; archive segment decode size is capped at 2 GiB; WebSocket messages are capped at 64 MiB and sessions at 2 GiB. Storage pools are capped at 1024 connections, trace queues at 1000000 entries, trace workers at 128, DB acquire timeout at 300 seconds, and retention prune intervals at 86400 seconds. Login throttling is capped at 1000 failures, 86400 second windows/lockouts, and 1000000 tracked entries. OAuth provider timeout is capped at 300 seconds.
 
@@ -172,7 +209,7 @@ Per-request upstream override headers change the upstream target but do not bypa
 
 ## API pagination
 
-List endpoints clamp `limit` to the range `1..=500`. `GET /api/requests?q=...` and `GET /api/sessions?q=...` trim empty search strings, reject search terms over 512 bytes, and treat `%` and `_` as literal characters instead of SQL wildcard operators. Request list search matches `upstream_url`, `model`, and `request_kind`; `status`, `status_class`, `upstream_host`, `model`, `request_kind`, `session_id`, and `api_key_hash` apply exact filters. `status_class` must be one of `no_status`, `1xx`, `2xx`, `3xx`, `4xx`, `5xx`, or `other`; `request_kind` must be one of `openai_chat_completions`, `openai_responses`, `anthropic_messages`, `websocket`, `generic_json`, or `generic_http`. Use `has_error=true` to list failed traces, or `has_error=false` to exclude traces with stored errors or status codes `>=500`. Use non-negative `min_duration_ms` and `max_duration_ms` bounds for slow-request triage. Use RFC3339 `since` and `until` timestamps to constrain `started_at` with inclusive bounds, and use `limit` and `offset` to page through long request lists:
+List endpoints clamp `limit` to the range `1..=500`. `GET /api/requests?q=...` and `GET /api/sessions?q=...` trim empty search strings, reject search terms over 512 bytes, and treat `%` and `_` as literal characters instead of SQL wildcard operators. Request list search matches `upstream_url`, `model`, and `request_kind`; `status`, `status_class`, `upstream_host`, `model`, `request_kind`, `session_id`, and `api_key_hash` apply exact filters. `status_class` must be one of `no_status`, `1xx`, `2xx`, `3xx`, `4xx`, `5xx`, or `other`; `request_kind` must be one of `openai_chat_completions`, `openai_responses`, `anthropic_messages`, `websocket`, `generic_json`, or `generic_http`. Use `has_error=true` to list failed traces, or `has_error=false` to exclude traces with stored errors or status codes `>=400`. Use non-negative `min_duration_ms` and `max_duration_ms` bounds for slow-request triage. Use RFC3339 `since` and `until` timestamps to constrain `started_at` with inclusive bounds, and use `limit` and `offset` to page through long request lists:
 
 ```bash
 curl 'http://127.0.0.1:3000/api/requests?upstream_host=api.openai.com&model=gpt-4o&request_kind=openai_chat_completions&status_class=5xx&has_error=true&api_key_hash=sha256%3Aabc123&min_duration_ms=1000&since=2026-06-01T00:00:00Z&until=2026-06-02T00:00:00Z&limit=100&offset=0'
@@ -184,7 +221,7 @@ Request list responses include `page.has_more` and `page.next_offset` so clients
 
 `GET /api/requests/facets?since_hours=24&limit=25` returns bounded filter choices for request-list UIs: models, upstream hosts, request kinds, exact statuses, status classes, and error states with request counts. `since_hours` defaults to `24` and is capped at `2160`; `limit` defaults to `25` and is capped at `100` for each facet collection.
 
-`GET /api/requests/recent-errors?since_hours=24&limit=50` returns the newest failed request summaries for incident queues and dashboards. A failed request is any trace with a stored proxy error or an HTTP status `>=500`. `since_hours` defaults to `24` and is capped at `2160`; `limit` defaults to `50` and is capped at `200`. The response includes `window`, `items`, and `page.has_more`.
+`GET /api/requests/recent-errors?since_hours=24&limit=50` returns the newest failed request summaries for incident queues and dashboards. A failed request is any trace with a stored proxy error or an HTTP status `>=400`. `since_hours` defaults to `24` and is capped at `2160`; `limit` defaults to `50` and is capped at `200`. The response includes `window`, `items`, and `page.has_more`.
 
 `GET /api/requests/slow?since_hours=24&min_duration_ms=1000&limit=50&offset=0` returns the slowest request summaries in the lookback window, ordered by `duration_ms` descending and then newest first. `since_hours` defaults to `24` and is capped at `2160`; `min_duration_ms` defaults to `1000` and must be non-negative; `limit` defaults to `50` and is capped at `500`; `offset` is capped at `1000000`. The response includes `window`, `items`, `page.has_more`, and `page.next_offset`.
 
@@ -289,15 +326,16 @@ The proxy does not forward the inbound `Host`, `Cookie`, or `x-llmtrace-*` contr
 - UI authentication is login-only: local admin and optional OAuth/OIDC. There is no authorization or role model.
 - Authenticated UI/API JSON request bodies, including login and structured query payloads, are explicitly capped at 256 KiB. Proxied traffic uses the separate `proxy.max_request_body_bytes` limit.
 - Request/response bodies are stored unredacted for internal audit. Credential-like HTTP and WebSocket handshake headers, including `Cookie`, `Set-Cookie`, `Authorization`, and header names containing `token`, `secret`, `password`, `api-key`, or `apikey`, are redacted and hashed when `redaction.store_header_hash` is enabled. Persisted request/upstream URIs keep paths and query parameter names, but embedded credentials are stripped and all query values are replaced with `REDACTED`; the configured upstream override header receives the same URL query-value redaction, and request logs record only the path.
-- HTTP request and response bodies are streamed through the proxy and retained for parsing/storage up to the live audit limits `proxy.max_request_body_bytes` and `proxy.max_response_body_bytes`; oversized HTTP requests are rejected with `413 Payload Too Large`, while oversized responses continue streaming and are marked truncated for audit. Body payloads are written by the background trace pipeline into zstd-compressed archive segments grouped by session. Archive storage prefers filesystem segments under `archive.filesystem_root`; if filesystem writes fail, the segment is stored in Postgres. WebSocket upstream connection attempts are bounded by `proxy.timeout_secs`; messages and per-direction session bytes are capped by `proxy.max_websocket_message_bytes` and `proxy.max_websocket_session_bytes`. WebSocket traces finish when either peer closes or errors, and the other half of the tunnel is dropped instead of waiting indefinitely.
+- HTTP request and response bodies are streamed through the proxy and retained for parsing/storage up to the live audit limits `proxy.max_request_body_bytes` and `proxy.max_response_body_bytes`; oversized HTTP requests are rejected with `413 Payload Too Large`, while oversized responses continue streaming and are marked truncated for audit. Body payloads are written by the background trace pipeline into immutable zstd-compressed archive segments indexed by session. Each request creates sealed segments; existing segments are never recompressed or overwritten. Archive storage prefers filesystem segments under `archive.filesystem_root`; if filesystem writes fail, the segment is stored in Postgres. WebSocket upstream connection attempts are bounded by `proxy.timeout_secs`; messages and per-direction session bytes are capped by `proxy.max_websocket_message_bytes` and `proxy.max_websocket_session_bytes`. WebSocket traces finish when either peer closes or errors, and the other half of the tunnel is dropped instead of waiting indefinitely.
 - Parsed session messages derived from captured bodies are capped before persistence at 128 messages per trace, 64 bytes per role, and 16 KiB per message content. Truncated message captures add the `session_messages_truncated` trace tag.
-- Trace enrichment, compression, and Postgres writes run in a bounded background pipeline: at most `storage.trace_queue_capacity` events wait in the queue and at most `storage.trace_worker_count` events are processed concurrently. If the queue is full, the proxy drops trace events instead of delaying live traffic.
+- Captures first pass through a background disk journal (enabled by default), then replay into the database with transactional receipts to prevent duplicate accounting after restart. A full journal preserves pending evidence and rejects new captures; it has a separate capacity from archive rotation. In-flight and pre-sync captures can still be lost on process death. Monitor the journal counters and pending age in **Admin → System** alongside queue drops. See the [durability boundary and deployment requirements](docs/durable-capture.md).
+- Trace enrichment, compression, and Postgres writes run in a bounded background pipeline: at most `storage.trace_queue_capacity` events wait in the queue and at most `storage.trace_worker_count` events are processed concurrently. `storage.trace_queue_max_bytes` (default 256 MiB, environment `LLMTRACE_TRACE_QUEUE_MAX_BYTES`) limits estimated captured-event allocations across queued and active work. Either limit can drop events without delaying proxied traffic. Monitor `llmtrace_trace_pipeline_dropped_memory_total`, `llmtrace_trace_pipeline_dropped_full_total`, persistence failures, and memory/queue gauges. The memory budget excludes live captures, parser/compression scratch buffers, allocator overhead, and the rest of the process; size pod memory and concurrency accordingly. Archive framing/compression finishes on blocking workers before database connections or session locks are acquired.
 - WASM plugins use a small JSON ABI. They enrich traces asynchronously and cannot mutate live traffic. Startup validation allows at most 64 plugins; plugin names must be printable ASCII and at most 128 bytes; duplicate hooks in one plugin are rejected. Each invocation is bounded by the plugin's `timeout_ms` and trapped if it runs longer. Hook outputs are capped at 64 KiB before decoding so a faulty plugin cannot force unbounded allocations in the trace worker. Plugin-derived session keys, user identifiers, display names, and tags are bounded again before persistence; truncated enrichment adds the `trace_enrichment_truncated` tag. `GET /api/plugins` returns a low-sensitivity plugin status summary with configured/loaded/failed counts, plugin names, hooks, loaded flags, and generic load-failure markers; it intentionally omits plugin filesystem paths and raw loader errors.
 - Ad hoc analytics use a structured `/api/query` endpoint over allowlisted datasets, fields, filters, and sort keys. The legacy raw SQL endpoint is disabled.
 
 ## WASM plugin custom fields
 
-WASM hook functions receive a JSON `HookInput` and may return a JSON object with trace enrichment fields. Custom trace fields must be returned under `custom_fields`; unknown output fields are rejected so plugin schema mistakes fail visibly during trace enrichment:
+WASM hook functions receive a JSON `HookInput` and may return a JSON object with trace enrichment fields. Custom trace fields use `custom_fields` (the legacy `metadata` alias is also accepted); unknown output fields are rejected so plugin schema mistakes fail visibly during trace enrichment:
 
 ```json
 {
@@ -308,7 +346,7 @@ WASM hook functions receive a JSON `HookInput` and may return a JSON object with
     }
   },
   "tags": ["paid"],
-  "session_key": "tenant-a:user-123",
+  "session_key": "conversation-456",
   "user_id": "user-123",
   "user_name": "Ada"
 }
@@ -377,3 +415,20 @@ Invalid structured query definitions return `400` with a validation message. Dat
   ]
 }
 ```
+
+
+## Usage, costs, sessions, and timing
+
+The background parser extracts reported token usage, function/tool-use calls, and upstream error events from JSON and SSE for Chat Completions, Responses, and Anthropic Messages. Input tokens are normalized to include cache reads/writes. Streamed counters are cumulative snapshots, not summed deltas. Chat Completions clients must request `stream_options.include_usage` if supported by their upstream; the proxy does not modify requests to enable it. Missing usage stays `null`. WebSocket captures do not yet receive these per-response metrics.
+
+Configure exact model names under `[pricing."model-name"]` with `input`, `output`, and optional `cache_read`/`cache_write` rates in USD per million tokens. Estimates are persisted as integer `estimated_cost_microusd` (one million units per USD). Rates are deployment-specific; no provider prices are hardcoded. These are token estimates, excluding tool execution, multimodal surcharges, discounts, and invoice adjustments. Absent prices, incomplete usage, or absent rates for reported cached tokens leave cost unknown. Sessions and user/model/API-key summaries include usage and pricing coverage counts.
+
+`ttfb_ms` measures the first nonempty HTTP response chunk. `ttft_ms` measures receipt of the first complete SSE event with generated text or tool arguments (also Anthropic thinking deltas). Role-only events and heartbeats do not count. Parsing remains in the background; the proxy records at most 8192 chunk timestamps. Nonstreaming responses and output beyond that timing limit have unknown TTFT. Durations include upload, upstream processing, streaming, and downstream backpressure. Failures include HTTP 4xx/5xx, transport errors, provider error events, and recognized SSE streams ending without a terminal event (when the capture is complete).
+
+For conversation grouping, provide `metadata.session_id`, `metadata.conversation_id`, a Responses `conversation` string/object, or a plugin `session_key`. These hints are scoped by upstream origin and credential hash. With no hint, each request is its own session and is tagged `session_unlinked`; an API key is not a conversation ID. `previous_response_id` chain reconstruction is not implemented. Employee identity must come from trusted enrichment; client-supplied conversation metadata is not proof of identity.
+
+`GET /api/requests/{id}?include_bodies=false` loads metadata without opening archives. The UI uses this path for the overview, then fetches bodies when their tabs are opened. Transcript previews retain initial context and recent messages and link back to the captured request. Exports remain paginated; they do not implicitly export an entire session.
+
+Migration `004_llm_usage.sql` adds usage/tool/cost fields and a session/time index, moves historical first-byte values from `ttft_ms` to `ttfb_ms`, clears historical TTFT aggregates, and recalculates retained error rollups to include 4xx. Historical usage is not backfilled, and historical session groupings are not rewritten. This migration updates existing rows; schedule it according to database size and take a backup before production rollout.
+
+For network-capable identity enrichment, see the [plugin HTTP ABI](docs/plugin-http.md).

@@ -97,13 +97,24 @@ pub async fn proxy(
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
     request: Request<Body>,
 ) -> axum::response::Response {
+    if !crate::routing::unambiguous_path(request.uri().path()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": "ambiguous proxy path"})),
+        )
+            .into_response();
+    }
     if !state.path_prefixes.allows(request.uri().path()) {
         return not_proxied_response();
     }
+    let websocket = is_websocket(request.headers());
+    let capture = state
+        .capture_policy
+        .captures(request.method(), request.uri().path(), websocket);
 
-    if is_websocket(request.headers()) {
+    if websocket {
         return match ws {
-            Ok(ws) => proxy_websocket(state, ws, request).await,
+            Ok(ws) => proxy_websocket(state, ws, request, capture).await,
             Err(error) => (
                 StatusCode::BAD_REQUEST,
                 axum::Json(json!({"error": error.to_string()})),
@@ -112,13 +123,72 @@ pub async fn proxy(
         };
     }
 
-    match proxy_http(state, request).await {
+    let result = if capture {
+        proxy_http(state, request).await
+    } else {
+        proxy_passthrough_http(state, request).await
+    };
+    match result {
         Ok(response) => response,
         Err(error) => {
             tracing::warn!(%error, status = %error.status(), "proxy request failed");
             error.into_response()
         }
     }
+}
+
+/// Supporting APIs stream directly without body copies, plugin execution,
+/// journal entries or conversation records. Live upload limits still apply.
+async fn proxy_passthrough_http(
+    state: AppState,
+    request: Request<Body>,
+) -> Result<axum::response::Response, ProxySetupError> {
+    let (parts, body) = request.into_parts();
+    let url = resolve_upstream(&state, &parts.uri, &parts.headers)
+        .map_err(ProxySetupError::bad_request)?;
+    enforce_upstream_policy(&state, &url, HTTP_UPSTREAM_SCHEMES)?;
+    let limit = state.config.proxy.max_request_body_bytes;
+    let too_large = || {
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            axum::Json(json!({
+                "error": REQUEST_BODY_LIMIT_ERROR, "max_request_body_bytes": limit,
+            })),
+        )
+            .into_response()
+    };
+    if content_length_exceeds(&parts.headers, limit) {
+        return Ok(too_large());
+    }
+    let capture = SharedBodyCapture::default();
+    let stream = RequestCaptureStream::new(body, capture.clone(), 0, limit);
+    let mut upstream = state
+        .http
+        .request(parts.method, url)
+        .body(reqwest::Body::wrap_stream(stream));
+    for (name, value) in &parts.headers {
+        if should_forward_header(name, &parts.headers) {
+            upstream = upstream.header(name, value);
+        }
+    }
+    let upstream = match upstream.send().await {
+        Ok(response) => response,
+        Err(error) => {
+            if capture.take().limit_exceeded {
+                return Ok(too_large());
+            }
+            return Err(ProxySetupError::upstream(error));
+        }
+    };
+    let mut response = Response::builder().status(upstream.status());
+    for (name, value) in upstream.headers() {
+        if should_forward_response_header(name, upstream.headers()) {
+            response = response.header(name, value);
+        }
+    }
+    response
+        .body(Body::from_stream(upstream.bytes_stream()))
+        .map_err(ProxySetupError::upstream)
 }
 
 fn not_proxied_response() -> axum::response::Response {
@@ -199,8 +269,9 @@ async fn proxy_http(
     let upstream_response = match upstream_request.send().await {
         Ok(response) => response,
         Err(error) => {
-            let request = request_capture.snapshot();
+            let request = request_capture.take();
             let request_limit_exceeded = request.limit_exceeded;
+            let request_body_truncated = request.incomplete_request();
             let error_message = if request_limit_exceeded {
                 request_body_limit_message(max_request_body_bytes)
             } else {
@@ -221,7 +292,7 @@ async fn proxy_http(
                 request_headers: redacted_request_headers.json,
                 plugin_request_headers,
                 request_body: request.bytes,
-                request_body_truncated: request.truncated,
+                request_body_truncated,
                 run_plugins: true,
                 ..TraceEvent::base(trace_id, started_at)
             });
@@ -268,6 +339,7 @@ async fn proxy_http(
             response_builder = response_builder.header(name, value);
         }
     }
+    let expected_response_bytes = upstream_response.content_length();
     let response_body = ResponseCaptureStream::new(
         upstream_response.bytes_stream(),
         state.traces.clone(),
@@ -275,6 +347,7 @@ async fn proxy_http(
         event,
         started,
         max_response_body_bytes,
+        expected_response_bytes,
     );
     let mut response = response_builder
         .body(Body::from_stream(response_body))
@@ -288,12 +361,22 @@ struct SharedBodyCapture {
     inner: Arc<StdMutex<BodyCapture>>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 struct BodyCapture {
     bytes: Vec<u8>,
     total_bytes: i64,
     truncated: bool,
     limit_exceeded: bool,
+    finished: bool,
+    stream_ended: bool,
+    expected_bytes: Option<u64>,
+}
+
+impl BodyCapture {
+    fn incomplete_request(&self) -> bool {
+        self.truncated
+            || (!self.stream_ended && self.expected_bytes != Some(self.total_bytes as u64))
+    }
 }
 
 impl SharedBodyCapture {
@@ -309,11 +392,21 @@ impl SharedBodyCapture {
         capture.limit_exceeded
     }
 
-    fn snapshot(&self) -> BodyCapture {
-        self.inner
+    fn take(&self) -> BodyCapture {
+        let mut capture = self
+            .inner
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        capture.finished = true;
+        BodyCapture {
+            bytes: std::mem::take(&mut capture.bytes),
+            total_bytes: capture.total_bytes,
+            truncated: capture.truncated,
+            limit_exceeded: capture.limit_exceeded,
+            finished: true,
+            stream_ended: capture.stream_ended,
+            expected_bytes: capture.expected_bytes,
+        }
     }
 }
 
@@ -331,6 +424,15 @@ impl RequestCaptureStream {
         capture_limit: usize,
         live_limit: usize,
     ) -> Self {
+        use axum::body::HttpBody;
+        {
+            let mut captured = capture
+                .inner
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            captured.expected_bytes = body.size_hint().exact();
+            captured.stream_ended = body.is_end_stream();
+        }
         Self {
             inner: Box::pin(body.into_data_stream()),
             capture,
@@ -356,7 +458,14 @@ impl Stream for RequestCaptureStream {
                 }
             }
             Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(io::Error::other(error)))),
-            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Ready(None) => {
+                self.capture
+                    .inner
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .stream_ended = true;
+                Poll::Ready(None)
+            }
             Poll::Pending => Poll::Pending,
         }
     }
@@ -381,6 +490,7 @@ impl ResponseCaptureStream {
         event: TraceEvent,
         started: Instant,
         limit: usize,
+        expected_bytes: Option<u64>,
     ) -> Self {
         Self {
             inner: Box::pin(inner),
@@ -388,7 +498,10 @@ impl ResponseCaptureStream {
             request_capture,
             event: Some(event),
             started,
-            capture: BodyCapture::default(),
+            capture: BodyCapture {
+                expected_bytes,
+                ..BodyCapture::default()
+            },
             first_byte_ms: None,
             limit,
         }
@@ -399,17 +512,22 @@ impl ResponseCaptureStream {
             return;
         };
 
-        let request = self.request_capture.snapshot();
+        let request = self.request_capture.take();
         event.completed_at = Some(chrono::Utc::now());
         event.duration_ms = Some(self.started.elapsed().as_millis() as i64);
-        event.ttft_ms = self.first_byte_ms;
+        event.ttfb_ms = self.first_byte_ms;
+        let interrupted = error.is_some();
         event.error = error;
+        if interrupted {
+            event.tags.push("capture_interrupted".into());
+        }
+        event.request_body_truncated = request.incomplete_request();
         event.request_body = request.bytes;
         event.request_body_bytes = request.total_bytes;
-        event.request_body_truncated = request.truncated;
+
         event.response_body = std::mem::take(&mut self.capture.bytes);
         event.response_body_bytes = self.capture.total_bytes;
-        event.response_body_truncated = self.capture.truncated;
+        event.response_body_truncated = self.capture.truncated || interrupted;
         self.recorder.record(event);
     }
 }
@@ -420,11 +538,19 @@ impl Stream for ResponseCaptureStream {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.inner.as_mut().poll_next(cx) {
             Poll::Ready(Some(Ok(chunk))) => {
-                if self.first_byte_ms.is_none() {
+                if self.first_byte_ms.is_none() && !chunk.is_empty() {
                     self.first_byte_ms = Some(self.started.elapsed().as_millis() as i64);
                 }
                 let limit = self.limit;
                 push_body_capture(&mut self.capture, &chunk, limit);
+                let end = self.capture.bytes.len();
+                let elapsed = self.started.elapsed().as_millis() as i64;
+                if !chunk.is_empty()
+                    && let Some(event) = self.event.as_mut()
+                    && event.response_chunk_timings.len() < 8192
+                {
+                    event.response_chunk_timings.push((end, elapsed));
+                }
                 Poll::Ready(Some(Ok(chunk)))
             }
             Poll::Ready(Some(Err(error))) => {
@@ -443,9 +569,10 @@ impl Stream for ResponseCaptureStream {
 
 impl Drop for ResponseCaptureStream {
     fn drop(&mut self) {
-        self.finish(Some(
-            "response stream dropped before completion".to_string(),
-        ));
+        // Hyper may stop polling once it has the exact response length, including
+        // zero-length/HEAD responses. That does not imply an interrupted capture.
+        let complete = self.capture.expected_bytes == Some(self.capture.total_bytes as u64);
+        self.finish((!complete).then(|| "response stream dropped before completion".to_string()));
     }
 }
 
@@ -453,6 +580,7 @@ async fn proxy_websocket(
     state: AppState,
     ws: WebSocketUpgrade,
     request: Request<Body>,
+    capture: bool,
 ) -> axum::response::Response {
     let trace_id = Uuid::new_v4();
     let started_at = chrono::Utc::now();
@@ -490,10 +618,13 @@ async fn proxy_websocket(
             redacted_headers.json,
             redacted_headers.first_secret_hash,
             parts.headers,
+            capture,
         )
         .await;
     });
-    set_trace_id_header(response.headers_mut(), trace_id);
+    if capture {
+        set_trace_id_header(response.headers_mut(), trace_id);
+    }
     response
 }
 
@@ -509,11 +640,15 @@ async fn handle_websocket(
     request_headers: Value,
     api_key_hash: Option<String>,
     original_headers: HeaderMap,
+    capture: bool,
 ) {
     let started = Instant::now();
     let mut upstream_request = match upstream_url.to_string().into_client_request() {
         Ok(request) => request,
         Err(error) => {
+            if !capture {
+                return;
+            }
             persist_ws_error(
                 &state,
                 trace_id,
@@ -564,6 +699,9 @@ async fn handle_websocket(
     let (upstream_socket, upstream_response) = match upstream {
         Ok(value) => value,
         Err(error) => {
+            if !capture {
+                return;
+            }
             persist_ws_error(
                 &state,
                 trace_id,
@@ -609,7 +747,9 @@ async fn handle_websocket(
                     max_ws_session_bytes,
                 )?;
                 stats.client_frames += 1;
-                capture_ws_message(&mut stats, "client", &message, capture_limit);
+                if capture {
+                    capture_ws_message(&mut stats, "client", &message, capture_limit);
+                }
             }
             if let Some(message) = axum_to_tungstenite(message) {
                 upstream_tx.send(message).await?;
@@ -632,7 +772,9 @@ async fn handle_websocket(
                     max_ws_session_bytes,
                 )?;
                 stats.upstream_frames += 1;
-                capture_tungstenite_message(&mut stats, "upstream", &message, capture_limit);
+                if capture {
+                    capture_tungstenite_message(&mut stats, "upstream", &message, capture_limit);
+                }
             }
             if let Some(message) = tungstenite_to_axum(message) {
                 client_tx.send(message).await?;
@@ -647,12 +789,13 @@ async fn handle_websocket(
         result = &mut client_to_upstream => websocket_bridge_error(result),
         result = &mut upstream_to_client => websocket_bridge_error(result),
     };
+    if !capture {
+        return;
+    }
     let stats = stats.lock().await.clone();
     let (response_body, response_body_truncated) =
         websocket_response_body(&stats.frames, capture_limit);
     let duration_ms = started.elapsed().as_millis() as i64;
-    let session_key =
-        trace::fallback_session_key(upstream_host.as_deref(), api_key_hash.as_deref());
     state.traces.record(TraceEvent {
         completed_at: Some(chrono::Utc::now()),
         method: "GET".to_string(),
@@ -663,7 +806,6 @@ async fn handle_websocket(
         error,
         request_kind: Some(RequestKind::WebSocket),
         api_key_hash,
-        session_key,
         duration_ms: Some(duration_ms),
         request_body_bytes: stats.bytes_in,
         response_body_bytes: stats.bytes_out,
@@ -879,6 +1021,10 @@ fn push_body_capture(capture: &mut BodyCapture, chunk: &[u8], limit: usize) {
         .total_bytes
         .saturating_add(usize_to_i64_saturating(chunk.len()));
 
+    if capture.finished {
+        return;
+    }
+
     if capture.bytes.len() < limit {
         let remaining = limit - capture.bytes.len();
         let captured = remaining.min(chunk.len());
@@ -986,6 +1132,11 @@ fn add_ws_bytes(
 
 fn resolve_upstream(state: &AppState, uri: &Uri, headers: &HeaderMap) -> anyhow::Result<Url> {
     if let Some(value) = upstream_override_header(headers, &state.config.proxy.upstream_header)? {
+        if state.config.proxy.preset == crate::config::ProxyPreset::Litellm {
+            // Preserve the routed path. Otherwise an employee could target an
+            // inference URL through /models and bypass the capture policy.
+            return resolve_default_upstream(value, uri);
+        }
         let mut url = Url::parse(value)?;
         if url.path() == "/"
             && let Some(path_and_query) = uri.path_and_query()
@@ -1000,9 +1151,26 @@ fn resolve_upstream(state: &AppState, uri: &Uri, headers: &HeaderMap) -> anyhow:
         return Ok(Url::parse(&uri.to_string())?);
     }
 
-    let mut base = Url::parse(&state.config.proxy.default_upstream)?;
+    resolve_default_upstream(&state.config.proxy.default_upstream, uri)
+}
+
+fn resolve_default_upstream(upstream: &str, uri: &Uri) -> anyhow::Result<Url> {
+    let mut base = Url::parse(upstream)?;
     if let Some(path_and_query) = uri.path_and_query() {
-        base.set_path(path_and_query.path());
+        let prefix = base.path().trim_end_matches('/');
+        let path = path_and_query.path();
+        // Preserve deployment prefixes such as OpenRouter's /api. A path
+        // already rooted at that prefix must not acquire it twice.
+        let already_prefixed = path == prefix
+            || path
+                .strip_prefix(prefix)
+                .is_some_and(|suffix| suffix.starts_with('/'));
+        if prefix.is_empty() || already_prefixed {
+            base.set_path(path);
+        } else {
+            let path = format!("{prefix}{path}");
+            base.set_path(&path);
+        }
         base.set_query(path_and_query.query());
     }
     Ok(base)
@@ -1123,6 +1291,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_upstream_preserves_deployment_prefix_without_duplicating_it() {
+        for (base, path, expected) in [
+            (
+                "https://example.com",
+                "/v1/messages",
+                "https://example.com/v1/messages",
+            ),
+            (
+                "https://example.com/api",
+                "/v1/responses?stream=true",
+                "https://example.com/api/v1/responses?stream=true",
+            ),
+            (
+                "https://example.com/api/",
+                "/v1/chat/completions",
+                "https://example.com/api/v1/chat/completions",
+            ),
+            (
+                "https://example.com/v1",
+                "/v1/messages",
+                "https://example.com/v1/messages",
+            ),
+            (
+                "https://example.com/api",
+                "/api/v1/messages",
+                "https://example.com/api/v1/messages",
+            ),
+            (
+                "https://example.com/api",
+                "/apianother/v1/messages",
+                "https://example.com/api/apianother/v1/messages",
+            ),
+            (
+                "https://example.com/api",
+                "/v1/files/a%2Fb?key=a%2Fb",
+                "https://example.com/api/v1/files/a%2Fb?key=a%2Fb",
+            ),
+        ] {
+            assert_eq!(
+                resolve_default_upstream(base, &path.parse().unwrap())
+                    .unwrap()
+                    .as_str(),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn content_length_exceeds_detects_oversized_request() {
         let mut headers = HeaderMap::new();
         headers.insert(header::CONTENT_LENGTH, "1025".parse().unwrap());
@@ -1138,7 +1354,7 @@ mod tests {
         assert!(!capture.push_request(b"abc", 4, 5));
         assert!(capture.push_request(b"def", 4, 5));
 
-        let snapshot = capture.snapshot();
+        let snapshot = capture.take();
         assert_eq!(snapshot.bytes, b"abcd");
         assert_eq!(snapshot.total_bytes, 6);
         assert!(snapshot.truncated);
@@ -1157,6 +1373,47 @@ mod tests {
         assert_eq!(capture.total_bytes, i64::MAX);
         assert_eq!(capture.bytes, b"ab");
         assert!(capture.truncated);
+    }
+
+    #[tokio::test]
+    async fn upload_completeness_uses_exact_length_or_observed_end_of_stream() {
+        let capture = SharedBodyCapture::default();
+        let mut stream =
+            RequestCaptureStream::new(Body::from("hello"), capture.clone(), 1024, 1024);
+        assert_eq!(stream.next().await.unwrap().unwrap(), "hello");
+        // HTTP implementations can stop polling once the advertised length is read.
+        assert!(!capture.take().incomplete_request());
+        let capture = SharedBodyCapture::default();
+        let chunks = futures_util::stream::iter([
+            Ok::<_, io::Error>(Bytes::from_static(b"first")),
+            Ok(Bytes::from_static(b"second")),
+        ]);
+        let mut stream =
+            RequestCaptureStream::new(Body::from_stream(chunks), capture.clone(), 1024, 1024);
+        stream.next().await.unwrap().unwrap();
+        assert!(capture.take().incomplete_request());
+        let capture = SharedBodyCapture::default();
+        let chunks =
+            futures_util::stream::iter([Ok::<_, io::Error>(Bytes::from_static(b"complete"))]);
+        let mut stream =
+            RequestCaptureStream::new(Body::from_stream(chunks), capture.clone(), 1024, 1024);
+        while stream.next().await.is_some() {}
+        assert!(!capture.take().incomplete_request());
+    }
+
+    #[test]
+    fn completed_upload_moves_its_buffer_and_stops_capturing_late_chunks() {
+        let capture = SharedBodyCapture::default();
+        capture.push_request(b"hello", 32, 8);
+        let pointer = capture.inner.lock().unwrap().bytes.as_ptr();
+        let complete = capture.take();
+        assert_eq!(complete.bytes.as_ptr(), pointer);
+        assert_eq!(complete.bytes, b"hello");
+        assert!(capture.push_request(b"late", 32, 8));
+        let late = capture.take();
+        assert_eq!(late.bytes.capacity(), 0);
+        assert_eq!(late.total_bytes, 9);
+        assert!(late.limit_exceeded);
     }
 
     #[test]
