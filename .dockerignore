@@ -5,6 +5,7 @@
 .cursor/
 target/
 crates/llmtrace/ui/node_modules/
+crates/llmtrace/ui/build/
 
 # Local runtime state and secrets.
 .env

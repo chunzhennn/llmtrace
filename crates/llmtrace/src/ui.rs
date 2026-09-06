@@ -10,6 +10,7 @@ use crate::state::AppState;
 /// into the binary so the single-binary deploy model is preserved.
 #[derive(RustEmbed)]
 #[folder = "ui/build"]
+#[allow_missing = true]
 struct UiAssets;
 
 const INDEX_HTML: &str = "index.html";
@@ -129,11 +130,25 @@ mod tests {
         assert!(response.headers().get(header::LOCATION).is_none());
     }
 
-    #[test]
-    fn index_html_is_embedded() {
-        // The committed placeholder (or a real build) guarantees index.html exists,
-        // so the SPA entry point is always servable.
-        assert!(UiAssets::get(INDEX_HTML).is_some());
+    #[tokio::test]
+    async fn index_page_is_html_with_or_without_a_frontend_build() {
+        let response = serve_index();
+        let status = response.status();
+        assert!(matches!(status, StatusCode::OK | StatusCode::NOT_FOUND));
+        assert!(
+            response.headers()[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with("text/html")
+        );
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let body = std::str::from_utf8(&body).unwrap();
+        assert!(body.to_ascii_lowercase().contains("<!doctype html>"));
+        if status == StatusCode::NOT_FOUND {
+            assert!(body.contains("UI has not been built"));
+        }
     }
 
     #[test]

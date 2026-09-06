@@ -16,7 +16,7 @@ Application code lives in `crates/llmtrace/src`:
 
 Database migrations are in `crates/llmtrace/migrations` and are embedded with `sqlx::migrate!("./migrations")`. Update migrations, storage row mappings, query field allowlists, and tests together when changing persisted schema.
 
-The frontend lives in `crates/llmtrace/ui`. Source is under `ui/src` (`lib/api` for the typed client and endpoint wrappers, `lib/components` for shared UI, `lib/state` for auth/theme/toast rune stores, `lib/utils` for formatting/query helpers, and `routes` for pages). The built output in `ui/build` is git-ignored except for a placeholder `index.html` so the `rust-embed` folder always exists; local and Docker builds overwrite it with real hashed assets. When adding API surface, keep `ui/src/lib/api/types.ts` and the endpoint wrappers in sync with the Rust JSON shapes.
+The frontend lives in `crates/llmtrace/ui`. Source is under `ui/src` (`lib/api` for the typed client and endpoint wrappers, `lib/components` for shared UI, `lib/state` for auth/theme/toast rune stores, `lib/utils` for formatting/query helpers, and `routes` for pages). The entire built output in `ui/build`, including `index.html`, is git-ignored. `rust-embed` allows this directory to be absent so backend-only builds work on a fresh checkout; the UI then returns a 404 page with build instructions. Local and Docker frontend builds generate the assets to embed in a release binary. When adding API surface, keep `ui/src/lib/api/types.ts` and the endpoint wrappers in sync with the Rust JSON shapes.
 
 ## Build, Test, and Development Commands
 

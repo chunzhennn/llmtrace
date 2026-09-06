@@ -6,11 +6,8 @@ node_modules
 .netlify
 .wrangler
 /.svelte-kit
-# Ignore the built SPA, but keep a committed placeholder index.html so the
-# rust-embed folder (crates/llmtrace/ui/build) exists and cargo build/test/clippy
-# succeed without a Node build. Local/CI builds overwrite it with real assets.
-/build/*
-!/build/index.html
+# The entire SPA output is generated, including index.html.
+/build/
 
 # OS
 .DS_Store
