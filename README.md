@@ -237,6 +237,8 @@ curl 'http://127.0.0.1:3000/api/sessions/<session-id>?messages_limit=100&message
 
 `messages_limit` defaults to `100` and is capped at `500`; `messages_offset` defaults to `0` and is capped at `1000000`. The response includes `messages_page.has_more` and `messages_page.next_offset` so clients can request the next page without assuming all messages were returned.
 
+`GET /api/sessions/{id}/export.jsonl` downloads the entire retained session in chronological request order, including original request/response bodies, tool interactions, metadata, and supplementary message previews. It streams from a consistent snapshot without the list/preview page limits, marks truncated or unavailable bodies, and ends with a completion record and counts. The session detail page offers **Export full session**. See [full session export and periodic workflow integration](docs/session-export.md) for the versioned format, download validation, and time-window queries. Scheduling, summarization, evaluation, and skill creation remain in the consuming workflow.
+
 Authenticated read APIs run inside read-only database transactions with a local 5 second statement timeout. This applies to stats, request/session list and detail endpoints, and structured `/api/query` calls, so slow analytics reads fail without blocking write paths indefinitely.
 
 Structured `/api/query` requests are also bounded before SQL construction: at most 64 selected fields, 32 filters, 8 sort keys, 4 KiB per string filter value, and 16 KiB per JSON filter value.
@@ -427,7 +429,11 @@ Configure exact model names under `[pricing."model-name"]` with `input`, `output
 
 For conversation grouping, provide `metadata.session_id`, `metadata.conversation_id`, a Responses `conversation` string/object, or a plugin `session_key`. These hints are scoped by upstream origin and credential hash. With no hint, each request is its own session and is tagged `session_unlinked`; an API key is not a conversation ID. `previous_response_id` chain reconstruction is not implemented. Employee identity must come from trusted enrichment; client-supplied conversation metadata is not proof of identity.
 
-`GET /api/requests/{id}?include_bodies=false` loads metadata without opening archives. The UI uses this path for the overview, then fetches bodies when their tabs are opened. Transcript previews retain initial context and recent messages and link back to the captured request. Exports remain paginated; they do not implicitly export an entire session.
+The internal credential fingerprint used for grouping is independent of `redaction.store_header_hash`. Disabling that setting still omits hashes from stored headers and `api_key_hash`, while keeping different credentials in separate sessions. Existing journal entries can recover the fingerprint from their captured headers during replay. Already persisted session groupings are not rewritten.
+
+`GET /api/requests/{id}?include_bodies=false` loads metadata without opening archives. The UI uses this path for the overview, then fetches bodies when their tabs are opened. Transcript previews retain initial context and recent messages and link back to the captured request. Preview and request-summary exports remain paginated; use `/api/sessions/{id}/export.jsonl` for all retained requests and original conversation payloads.
+
+Request details and full session exports share the same body reader, including support for legacy inline zstd bodies. Details expose `request_body_status` and `response_body_status` as `available`, `missing`, or `unreadable`; both are `null` when `include_bodies=false`. `bodies_included=true` means the bodies were requested, and the status fields distinguish empty captures from unavailable data. A shared archive segment is read and decompressed once for both body directions.
 
 Migration `004_llm_usage.sql` adds usage/tool/cost fields and a session/time index, moves historical first-byte values from `ttft_ms` to `ttfb_ms`, clears historical TTFT aggregates, and recalculates retained error rollups to include 4xx. Historical usage is not backfilled, and historical session groupings are not rewritten. This migration updates existing rows; schedule it according to database size and take a backup before production rollout.
 

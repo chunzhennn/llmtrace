@@ -78,6 +78,7 @@ pub(super) fn event_bytes(event: &TraceEvent) -> usize {
                 &event.error,
                 &event.model,
                 &event.api_key_hash,
+                &event.credential_scope_hash,
                 &event.session_key,
                 &event.content_type,
                 &event.user_id,
@@ -102,7 +103,7 @@ pub(super) fn event_bytes(event: &TraceEvent) -> usize {
         event
             .messages
             .capacity()
-            .saturating_mul(std::mem::size_of::<crate::storage::ParsedMessage>()),
+            .saturating_mul(std::mem::size_of::<crate::types::ParsedMessage>()),
     );
     for message in &event.messages {
         size = size

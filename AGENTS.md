@@ -9,10 +9,10 @@ Application code lives in `crates/llmtrace/src`:
 - `main.rs` loads config, runs migrations, builds the Axum router, starts graceful shutdown, and drains the trace pipeline.
 - `proxy.rs` handles HTTP, SSE-style streaming responses, and WebSocket reverse proxying. It captures request/response bodies up to live audit limits while preserving streaming behavior.
 - `trace.rs` owns the bounded background trace pipeline. It parses captured traffic, runs WASM plugins, appends bodies into compressed archive segments, and persists traces outside the live proxy path.
-- `storage.rs` owns Postgres access, migrations, trace/session writes, rollups, and the structured `/api/query` implementation over allowlisted datasets and fields.
+- `storage.rs` is the storage facade and owns connection/transaction setup. Its submodules separate ingestion (`ingest`), archive encoding/storage (`archive`), paired body reads (`bodies`), typed read models (`models`), paging policies (`paging`), request/session reads, analytics, audit, retention, allowlisted structured queries (`query`), and full session JSONL export (`session_export`). Details and exports share the body reader and metadata projections.
 - `api.rs` exposes authenticated JSON API routes for stats, requests, sessions, structured queries, and plugin statuses.
 - `auth.rs` implements local admin login, optional OAuth/OIDC login, session cookies, and UI audit events.
-- `config.rs`, `types.rs`, `parsers.rs`, `plugins.rs`, `redaction.rs`, and `state.rs` provide configuration, shared enums, LLM trace parsing, the Wasmtime plugin ABI, sensitive-data handling, and shared application state.
+- `config.rs`, `types.rs`, `parsers.rs`, `plugins.rs`, `redaction.rs`, and `state.rs` provide configuration, shared domain types, LLM trace parsing, the Wasmtime plugin ABI, sensitive-data handling, and shared application state. Parsed messages, token usage, and tool calls live in `types.rs` so parsers do not depend on storage.
 
 Database migrations are in `crates/llmtrace/migrations` and are embedded with `sqlx::migrate!("./migrations")`. Update migrations, storage row mappings, query field allowlists, and tests together when changing persisted schema.
 
@@ -59,7 +59,7 @@ Queryable plugin metadata paths are supported only on the `requests` dataset usi
 
 ## Testing Guidelines
 
-Current tests are Rust unit tests colocated with implementation, especially structured query validation in `storage.rs`, archive segment helpers in `storage.rs`, and header/URI redaction behavior in `redaction.rs`. Add tests near changed code and name them after behavior, for example `structured_query_rejects_unknown_field` or `archive_frame_round_trips_body`.
+Current tests are Rust unit tests colocated with implementation, including `storage/query/tests.rs`, `storage/paging/tests.rs`, `storage/tests.rs`, and header/URI redaction behavior in `redaction.rs`. Database behavior tests live in `storage/read_tests.rs`, `storage/integration.rs`, and `storage/session_export/tests.rs`. Shared synthetic API fixtures under `ui/src/lib/api/fixtures` are checked by Rust model tests and frontend contract tests. Add tests near changed code and name them after behavior, for example `structured_query_rejects_unknown_field` or `archive_frame_round_trips_body`.
 
 For parser, query-builder, redaction, and validation changes, prefer focused unit tests that do not need Postgres. For database-sensitive work, run `docker compose up -d postgres` and verify migrations with `cargo run -p llmtrace -- --config llmtrace.toml --migrate-only`. Run `cargo test --workspace` before submitting changes; run `cargo clippy --workspace --all-targets -- -D warnings` for changes touching shared proxy, auth, storage, trace, or API behavior.
 

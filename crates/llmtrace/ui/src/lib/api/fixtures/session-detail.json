@@ -1,0 +1,36 @@
+{
+  "id": "00000000-0000-0000-0000-000000000001",
+  "session_key": "fixture",
+  "first_seen": "2026-09-15T12:00:00Z",
+  "last_seen": "2026-09-15T12:00:00Z",
+  "user_id": null,
+  "user_name": null,
+  "summary": {},
+  "request_stats": {
+    "request_count": 0,
+    "error_count": 0,
+    "input_tokens": null,
+    "output_tokens": null,
+    "estimated_cost_microusd": null,
+    "tool_call_count": 0,
+    "usage_known_count": 0,
+    "priced_request_count": 0,
+    "incomplete_capture_count": 0,
+    "bytes_in": 0,
+    "bytes_out": 0,
+    "captured_bytes": 0,
+    "avg_duration_ms": null,
+    "max_duration_ms": null,
+    "avg_ttft_ms": null,
+    "max_ttft_ms": null,
+    "first_request_at": null,
+    "last_request_at": null
+  },
+  "messages": [],
+  "messages_page": {
+    "limit": 0,
+    "offset": 0,
+    "has_more": false,
+    "next_offset": null
+  }
+}

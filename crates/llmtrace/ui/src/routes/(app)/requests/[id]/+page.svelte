@@ -17,25 +17,20 @@
 	import CopyButton from '$lib/components/CopyButton.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import Skeleton from '$lib/components/Skeleton.svelte';
-	import { Resource } from '$lib/utils/resource.svelte';
+	import { createResource } from '$lib/utils/resource.svelte';
 	import * as requestsApi from '$lib/api/endpoints/requests';
 	import type { RequestDetail } from '$lib/api/types';
 	import { formatDateTime, formatDuration, formatMs, formatBytes, formatCost, formatTokens } from '$lib/utils/format';
 
 	const id = $derived(page.params.id ?? '');
 
-	const detail = new Resource<RequestDetail>((signal) =>
-		requestsApi.getRequest(page.params.id ?? '', signal)
+	const detail = createResource<RequestDetail>((signal) =>
+		requestsApi.getRequest(id, signal), () => id
 	);
 
-	$effect(() => {
-		// Reload when the route id changes.
-		void page.params.id;
-		detail.load();
-	});
 
 	let activeTab = $state('overview');
-    const payload = new Resource<RequestDetail>((signal) => requestsApi.getRequest(page.params.id ?? '', signal, true));
+    const payload = createResource<RequestDetail>((signal) => requestsApi.getRequest(page.params.id ?? '', signal, true));
     const needsPayload = $derived(['request', 'response', 'raw'].includes(activeTab));
     $effect(() => {
         if (needsPayload && payload.data?.id !== id) payload.load();
@@ -58,6 +53,7 @@
 		const entry = Object.entries(headers).find(([k]) => k.toLowerCase() === 'content-type');
 		return typeof entry?.[1] === 'string' ? entry[1] : null;
 	});
+
 </script>
 
 <svelte:head><title>Request · llmtrace</title></svelte:head>
@@ -146,6 +142,7 @@
 				<Card title="Request body" bodyClass="p-4">
 					<BodyViewer
 						body={payload.data?.request_body ?? ''}
+						status={payload.data?.request_body_status}
 						contentType={requestContentType}
 						byteSize={d.request_body_bytes}
 						truncated={d.request_body_truncated}
@@ -159,6 +156,7 @@
 				<Card title="Response body" bodyClass="p-4">
 					<BodyViewer
 						body={payload.data?.response_body ?? ''}
+						status={payload.data?.response_body_status}
 						contentType={d.content_type}
 						byteSize={d.response_body_bytes}
 						truncated={d.response_body_truncated}

@@ -12,72 +12,46 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import CopyButton from '$lib/components/CopyButton.svelte';
 	import SessionRequests from '$lib/components/SessionRequests.svelte';
-	import { ApiError } from '$lib/api/client';
+	import { createResource } from '$lib/utils/resource.svelte';
 	import * as sessionsApi from '$lib/api/endpoints/sessions';
-	import { exportJsonl } from '$lib/api/download';
 	import { toasts } from '$lib/state/toast.svelte';
-	import type { SessionDetail, SessionMessage, Page } from '$lib/api/types';
+	import type { SessionDetail } from '$lib/api/types';
 	import { formatNumber, formatDuration, formatBytes, formatCost, formatTokens } from '$lib/utils/format';
 
 	const MESSAGE_PAGE = 50;
 
 	const id = $derived(page.params.id ?? '');
 
-	let session = $state<SessionDetail | undefined>();
-	let loading = $state(true);
-	let error = $state<string | null>(null);
-	let messages = $state<SessionMessage[]>([]);
-	let messagesPage = $state<Page | undefined>();
-	let loadingMore = $state(false);
+	const detail = createResource<SessionDetail>((signal) =>
+		sessionsApi.getSession(id, { messages_limit: MESSAGE_PAGE, messages_offset: 0 }, signal), () => id
+	);
+	const session = $derived(detail.data?.id === id ? detail.data : undefined);
+	const messages = $derived(session?.messages ?? []);
+	const messagesPage = $derived(session?.messages_page);
+	const loading = $derived(detail.loading);
+	const error = $derived(detail.error);
+	const loadingMore = $derived(detail.loading && session !== undefined);
 
 	async function loadSession() {
-		loading = true;
-		error = null;
-		try {
-			const data = await sessionsApi.getSession(id, {
-				messages_limit: MESSAGE_PAGE,
-				messages_offset: 0
-			});
-			session = data;
-			messages = data.messages;
-			messagesPage = data.messages_page;
-		} catch (err) {
-			error = err instanceof ApiError || err instanceof Error ? err.message : 'Failed to load session';
-		} finally {
-			loading = false;
-		}
+		await detail.load();
 	}
 
 	async function loadMoreMessages() {
-		if (loadingMore) return;
-		loadingMore = true;
-		try {
-			const data = await sessionsApi.getSession(id, {
+		const current = session;
+		if (detail.loading || !current?.messages_page.has_more) return;
+		const result = await detail.load(async (signal) => {
+			const next = await sessionsApi.getSession(current.id, {
 				messages_limit: MESSAGE_PAGE,
-				messages_offset: messages.length
-			});
-			messages = [...messages, ...data.messages];
-			messagesPage = data.messages_page;
-		} catch (err) {
-			toasts.error(err instanceof Error ? err.message : 'Failed to load more messages');
-		} finally {
-			loadingMore = false;
+				messages_offset: current.messages_page.next_offset
+			}, signal);
+			return { ...next, messages: [...current.messages, ...next.messages] };
+		});
+		if (!result && detail.data === current && detail.error) {
+			toasts.error(detail.error);
+			detail.error = null;
 		}
 	}
 
-	$effect(() => {
-		void id;
-		loadSession();
-	});
-
-	async function exportMessages() {
-		try {
-			const rows = await exportJsonl.sessionMessages(id, { messages_limit: MESSAGE_PAGE, messages_offset: 0 });
-			toasts.success(`Exported the first ${rows} message${rows === 1 ? '' : 's'}.`);
-		} catch (err) {
-			toasts.error(err instanceof Error ? err.message : 'Export failed.');
-		}
-	}
 
 	const stats = $derived(session?.request_stats);
 </script>
@@ -89,6 +63,11 @@
 		<a class="btn" href={listReturnHref(page.url.searchParams.get('from'), `${base}/sessions`)}><Icon name="chevron-left" size={16} /> Back</a>
 		<CopyButton text={id} label="Copy ID" />
 		<a class="btn" href="#transcript"><Icon name="messages" size={16} /> View transcript</a>
+		{#if session}
+			<a class="btn" href={sessionsApi.sessionExportUrl(id)} download>
+				<Icon name="download" size={16} /> Export full session
+			</a>
+		{/if}
 	{/snippet}
 </PageHeader>
 
@@ -121,11 +100,6 @@
     </div>
     <div id="transcript" class="mt-4 grid scroll-mt-20 grid-cols-1 gap-4 xl:grid-cols-2">
 		<Card title="Transcript previews" subtitle={`${messages.length} messages loaded · request snapshots may repeat conversation history`}>
-			{#snippet actions()}
-				<button type="button" class="btn !px-2 !py-1 text-xs" onclick={exportMessages}>
-					<Icon name="download" size={14} /> Export first 50
-				</button>
-			{/snippet}
 			{#if messages.length === 0}
 				<EmptyState icon="messages" title="No messages" message="No parsed messages for this session." />
 			{:else}

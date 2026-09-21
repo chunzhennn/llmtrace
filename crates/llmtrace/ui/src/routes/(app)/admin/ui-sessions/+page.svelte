@@ -1,11 +1,10 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import DataTable, { type Column } from '$lib/components/DataTable.svelte';
 	import Pagination from '$lib/components/Pagination.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import Icon from '$lib/components/Icon.svelte';
-	import { Resource } from '$lib/utils/resource.svelte';
+	import { createResource } from '$lib/utils/resource.svelte';
 	import * as admin from '$lib/api/endpoints/admin';
 	import { toasts } from '$lib/state/toast.svelte';
 	import type { UiSessionsResponse, UiSession } from '$lib/api/types';
@@ -16,7 +15,7 @@
 	let offset = $state(0);
 	let revoking = $state<string | null>(null);
 
-	const sessions = new Resource<UiSessionsResponse>((signal) =>
+	const sessions = createResource<UiSessionsResponse>((signal) =>
 		admin.listUiSessions({ include_expired: includeExpired, limit: LIMIT, offset }, signal)
 	);
 
@@ -26,7 +25,6 @@
 		sessions.load();
 	});
 
-	onMount(() => sessions.load());
 
 	async function revoke(item: UiSession) {
 		if (!confirm(`Revoke session for ${item.display_name} (${item.user_id})?`)) return;
@@ -50,6 +48,7 @@
 		{ label: 'Status' },
 		{ label: '', align: 'right' }
 	];
+
 </script>
 
 <svelte:head><title>UI Sessions · llmtrace</title></svelte:head>

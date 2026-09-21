@@ -8,9 +8,9 @@
 	import DataTable, { type Column } from '$lib/components/DataTable.svelte';
 	import StatusPill from '$lib/components/StatusPill.svelte';
 	import Badge from '$lib/components/Badge.svelte';
-	import MiniBar from '$lib/components/MiniBar.svelte';
+	import UsageRanking from '$lib/components/UsageRanking.svelte';
 	import Icon from '$lib/components/Icon.svelte';
-	import { Resource } from '$lib/utils/resource.svelte';
+	import { createResource } from '$lib/utils/resource.svelte';
 	import * as analytics from '$lib/api/endpoints/analytics';
 	import * as requestsApi from '$lib/api/endpoints/requests';
 	import * as admin from '$lib/api/endpoints/admin';
@@ -32,8 +32,7 @@
 		formatDateTime,
 		formatDuration
 	} from '$lib/utils/format';
-	import { baseTimeChartOptions, chartColors, withAlpha } from '$lib/utils/chart';
-	import type { ChartData } from 'chart.js';
+	import { usageChartData, baseTimeChartOptions } from '$lib/utils/chart';
 
 	interface Core {
 		stats: Stats;
@@ -41,7 +40,7 @@
 		timeseries: UsageTimeseries;
 	}
 
-	const core = new Resource<Core>(async (signal) => {
+	const core = createResource<Core>(async (signal) => {
 		const [stats, summary, timeseries] = await Promise.all([
 			analytics.stats(signal),
 			analytics.usageSummary({ since_hours: 24 }, signal),
@@ -50,10 +49,10 @@
 		return { stats, summary, timeseries };
 	});
 
-	const recentErrors = new Resource<RecentErrorsResponse>((signal) =>
+	const recentErrors = createResource<RecentErrorsResponse>((signal) =>
 		requestsApi.recentErrors({ since_hours: 24, limit: 8 }, signal)
 	);
-	const slow = new Resource<SlowRequestsResponse>((signal) =>
+	const slow = createResource<SlowRequestsResponse>((signal) =>
 		requestsApi.slowRequests({ since_hours: 24, limit: 8 }, signal)
 	);
 
@@ -61,7 +60,7 @@
 		posture: SecurityPosture;
 		retention: RetentionStatus;
 	}
-	const ops = new Resource<Ops>(async (signal) => {
+	const ops = createResource<Ops>(async (signal) => {
 		const [posture, retention] = await Promise.all([
 			admin.securityPosture(signal),
 			admin.retentionStatus(signal)
@@ -85,43 +84,10 @@
 		pipeline ? pipeline.dropped_full + pipeline.dropped_closed + pipeline.dropped_memory + (stats?.runtime.trace_journal.dropped_full ?? 0) + (stats?.runtime.trace_journal.write_failed ?? 0) : 0
 	);
 
-	const chartData = $derived.by<ChartData>(() => {
-		const points = core.data?.timeseries.points ?? [];
-		const colors = chartColors();
-		return {
-			labels: points.map((p) =>
-				new Date(p.bucket).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
-			),
-			datasets: [
-				{
-					label: 'Requests',
-					data: points.map((p) => p.request_count),
-					borderColor: colors.brand,
-					backgroundColor: withAlpha(colors.brand, 0.15),
-					fill: true,
-					tension: 0.3,
-					pointRadius: 0,
-					borderWidth: 2
-				},
-				{
-					label: 'Errors',
-					data: points.map((p) => p.error_count),
-					borderColor: colors.danger,
-					backgroundColor: withAlpha(colors.danger, 0.12),
-					fill: true,
-					tension: 0.3,
-					pointRadius: 0,
-					borderWidth: 2
-				}
-			]
-		};
-	});
+	const chartData = $derived(usageChartData(core.data?.timeseries.points ?? []));
 
 	const chartOptions = $derived(baseTimeChartOptions());
 
-	const modelMax = $derived(
-		Math.max(1, ...(core.data?.summary.top_models ?? []).map((m) => m.request_count))
-	);
 	const upstreamMax = $derived(
 		Math.max(1, ...(core.data?.summary.top_upstreams ?? []).map((m) => m.request_count))
 	);
@@ -146,6 +112,7 @@
 	}
 
 	const postureTone = { ready: 'success', attention: 'warning', fail: 'danger' } as const;
+
 </script>
 
 <svelte:head><title>Overview · llmtrace</title></svelte:head>
@@ -238,40 +205,11 @@
 
 	<div class="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
 		<Card title="Top models (24h)">
-			{#if (core.data?.summary.top_models.length ?? 0) === 0}
-				<p class="text-fg-muted text-sm">No traffic in the last 24 hours.</p>
-			{:else}
-				<div class="flex flex-col gap-3">
-					{#each core.data?.summary.top_models ?? [] as model (model.name)}
-						<MiniBar
-							label={model.name}
-							value={model.request_count}
-							max={modelMax}
-							display={`${formatNumber(model.request_count)}${model.error_count > 0 ? ` · ${model.error_count} err` : ''}`}
-							href={`${base}/requests?model=${encodeURIComponent(model.name)}`}
-						/>
-					{/each}
-				</div>
-			{/if}
+			<UsageRanking items={core.data?.summary.top_models ?? []} dimension="model" emptyMessage="No traffic in the last 24 hours." />
 		</Card>
 
 		<Card title="Top upstreams (24h)">
-			{#if (core.data?.summary.top_upstreams.length ?? 0) === 0}
-				<p class="text-fg-muted text-sm">No traffic in the last 24 hours.</p>
-			{:else}
-				<div class="flex flex-col gap-3">
-					{#each core.data?.summary.top_upstreams ?? [] as up (up.name)}
-						<MiniBar
-							label={up.name}
-							value={up.request_count}
-							max={upstreamMax}
-							tone="var(--color-info)"
-							display={`${formatNumber(up.request_count)}${up.error_count > 0 ? ` · ${up.error_count} err` : ''}`}
-							href={`${base}/requests?upstream_host=${encodeURIComponent(up.name)}`}
-						/>
-					{/each}
-				</div>
-			{/if}
+			<UsageRanking items={core.data?.summary.top_upstreams ?? []} dimension="upstream_host" emptyMessage="No traffic in the last 24 hours." />
 		</Card>
 	</div>
 

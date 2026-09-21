@@ -9,7 +9,7 @@
 	import StatusPill from '$lib/components/StatusPill.svelte';
 	import RequestFilters from '$lib/components/RequestFilters.svelte';
 	import Icon from '$lib/components/Icon.svelte';
-	import { Resource } from '$lib/utils/resource.svelte';
+	import { createResource } from '$lib/utils/resource.svelte';
 	import * as requestsApi from '$lib/api/endpoints/requests';
 	import { exportJsonl } from '$lib/api/download';
 	import { toasts } from '$lib/state/toast.svelte';
@@ -47,10 +47,10 @@
 		return params;
 	}
 
-	const list = new Resource<RequestListResponse>((signal) =>
+	const list = createResource<RequestListResponse>((signal) =>
 		requestsApi.listRequests(currentListParams(), signal)
 	);
-	const facets = new Resource<RequestFacets>((signal) =>
+	const facets = createResource<RequestFacets>((signal) =>
 		requestsApi.requestFacets({ since_hours: 168 }, signal)
 	);
 
@@ -105,6 +105,7 @@
 		{ label: 'Duration', align: 'right' },
 		{ label: 'Size', align: 'right' }
 	];
+
 </script>
 
 <svelte:head><title>Requests · llmtrace</title></svelte:head>

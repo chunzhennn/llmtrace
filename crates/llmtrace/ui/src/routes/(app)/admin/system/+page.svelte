@@ -6,7 +6,7 @@
 	import Badge from '$lib/components/Badge.svelte';
 	import DataTable, { type Column } from '$lib/components/DataTable.svelte';
 	import Icon from '$lib/components/Icon.svelte';
-	import { Resource } from '$lib/utils/resource.svelte';
+	import { createResource } from '$lib/utils/resource.svelte';
 	import * as admin from '$lib/api/endpoints/admin';
 	import * as analytics from '$lib/api/endpoints/analytics';
 	import type {
@@ -19,11 +19,11 @@
 	} from '$lib/api/types';
 	import { formatNumber, formatBytes, formatDateTime, formatSecondsDuration } from '$lib/utils/format';
 
-	const config = new Resource<RuntimeConfig>((s) => admin.runtimeConfig(s));
-	const posture = new Resource<SecurityPosture>((s) => admin.securityPosture(s));
-	const retention = new Resource<RetentionStatus>((s) => admin.retentionStatus(s));
-	const storage = new Resource<StorageSummary>((s) => admin.storageSummary(s));
-	const stats = new Resource<Stats>((s) => analytics.stats(s));
+	const config = createResource<RuntimeConfig>((s) => admin.runtimeConfig(s));
+	const posture = createResource<SecurityPosture>((s) => admin.securityPosture(s));
+	const retention = createResource<RetentionStatus>((s) => admin.retentionStatus(s));
+	const storage = createResource<StorageSummary>((s) => admin.storageSummary(s));
+	const stats = createResource<Stats>((s) => analytics.stats(s));
 
 	onMount(() => {
 		config.load();
@@ -47,6 +47,7 @@
 		{ label: 'Table', align: 'right' },
 		{ label: 'Index', align: 'right' }
 	];
+
 </script>
 
 <svelte:head><title>System · llmtrace</title></svelte:head>

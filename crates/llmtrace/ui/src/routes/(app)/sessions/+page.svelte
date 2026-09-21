@@ -6,7 +6,7 @@
 	import DataTable, { type Column } from '$lib/components/DataTable.svelte';
 	import Pagination from '$lib/components/Pagination.svelte';
 	import Icon from '$lib/components/Icon.svelte';
-	import { Resource } from '$lib/utils/resource.svelte';
+	import { createResource } from '$lib/utils/resource.svelte';
 	import * as sessionsApi from '$lib/api/endpoints/sessions';
 	import type { Paginated, SessionSummary } from '$lib/api/types';
 	import { formatNumber, formatDateTime, formatDuration } from '$lib/utils/format';
@@ -24,7 +24,7 @@
 		return params;
 	}
 
-	const list = new Resource<Paginated<SessionSummary>>((signal) =>
+	const list = createResource<Paginated<SessionSummary>>((signal) =>
 		sessionsApi.listSessions(currentParams(), signal)
 	);
 
@@ -59,6 +59,7 @@
 		{ label: 'First seen' },
 		{ label: 'Last seen' }
 	];
+
 </script>
 
 <svelte:head><title>Sessions · llmtrace</title></svelte:head>

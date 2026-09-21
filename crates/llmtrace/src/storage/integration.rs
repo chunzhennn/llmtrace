@@ -157,6 +157,7 @@ async fn enterprise_proxy_stream_and_admin_access(pool: PgPool) -> anyhow::Resul
     config.proxy.default_upstream = format!("http://{address}");
     config.proxy.allow_upstreams = vec![address.to_string()];
     config.archive.storage_backend = ArchiveStorageBackend::Postgres;
+    config.redaction.store_header_hash = false;
     config.pricing.insert(
         "test-model".into(),
         crate::pricing::ModelPrice {
@@ -271,6 +272,102 @@ async fn enterprise_proxy_stream_and_admin_access(pool: PgPool) -> anyhow::Resul
     assert_eq!(value["bodies_included"], false);
     assert!(value["error"].is_null());
     assert!(value["ttft_ms"].as_i64().unwrap() >= value["ttfb_ms"].as_i64().unwrap());
+    let session_id = value["session_id"].as_str().unwrap();
+    let export_path = format!("/api/sessions/{session_id}/export.jsonl");
+    let unauthorized_export = app
+        .clone()
+        .oneshot(Request::builder().uri(&export_path).body(Body::empty())?)
+        .await?;
+    assert_eq!(unauthorized_export.status(), StatusCode::UNAUTHORIZED);
+    for (path, status) in [
+        (
+            "/api/sessions/not-a-uuid/export.jsonl".to_string(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            format!("/api/sessions/{}/export.jsonl", Uuid::new_v4()),
+            StatusCode::NOT_FOUND,
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header("cookie", &cookie)
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(response.status(), status);
+    }
+    let export = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(export_path)
+                .header("cookie", &cookie)
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(export.status(), StatusCode::OK);
+    assert_eq!(
+        export.headers()["content-type"],
+        "application/x-ndjson; charset=utf-8"
+    );
+    assert_eq!(export.headers()["cache-control"], "no-store");
+    assert_eq!(
+        export.headers()["content-disposition"],
+        format!("attachment; filename=\"llmtrace-session-{session_id}.jsonl\"")
+    );
+    let exported = axum::body::to_bytes(export.into_body(), 100_000).await?;
+    let records = std::str::from_utf8(&exported)?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0]["session"]["id"], session_id);
+    assert_eq!(records[1]["request"]["id"], id.to_string());
+    assert_eq!(records[1]["response_body"]["data"], expected);
+    assert_eq!(records[2]["export_complete"], true);
+    assert_eq!(records[2]["captured_bodies_complete"], true);
+
+    // Header hash visibility must not change credential-scoped session grouping.
+    let mut scoped_ids = Vec::new();
+    for credential in ["Bearer scope-alice", "Bearer scope-bob"] {
+        let response = app.clone().oneshot(Request::builder().method("POST")
+            .uri("/v1/chat/completions").header("authorization", credential)
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"model":"test-model","metadata":{"session_id":"same-hint"},"messages":[{"role":"user","content":"hi"}]}"#))?).await?;
+        scoped_ids.push(Uuid::parse_str(
+            response.headers()["x-llmtrace-trace-id"].to_str()?,
+        )?);
+        axum::body::to_bytes(response.into_body(), 100_000).await?;
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM request_traces WHERE id = ANY($1)")
+                    .bind(&scoped_ids)
+                    .fetch_one(&pool)
+                    .await?;
+            if count == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await??;
+    let first = get_request(&pool, scoped_ids[0], &state.config.archive, false)
+        .await?
+        .unwrap();
+    let second = get_request(&pool, scoped_ids[1], &state.config.archive, false)
+        .await?
+        .unwrap();
+    assert_ne!(first["session_id"], second["session_id"]);
+    assert!(first["api_key_hash"].is_null());
+    assert!(second["api_key_hash"].is_null());
+    assert!(first["request_headers"]["authorization"]["sha256"].is_null());
     let cross_origin = app
         .clone()
         .oneshot(

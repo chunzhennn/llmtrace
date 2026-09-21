@@ -563,31 +563,31 @@ impl Config {
             ));
         }
 
-        validate_u64_range(
+        validate_positive_range(
             errors,
             "proxy.timeout_secs",
             self.proxy.timeout_secs,
             MAX_PROXY_TIMEOUT_SECS,
         );
-        validate_usize_range(
+        validate_positive_range(
             errors,
             "proxy.max_request_body_bytes",
             self.proxy.max_request_body_bytes,
             MAX_REQUEST_BODY_BYTES,
         );
-        validate_usize_range(
+        validate_positive_range(
             errors,
             "proxy.max_response_body_bytes",
             self.proxy.max_response_body_bytes,
             MAX_RESPONSE_BODY_BYTES,
         );
-        validate_usize_range(
+        validate_positive_range(
             errors,
             "proxy.max_websocket_message_bytes",
             self.proxy.max_websocket_message_bytes,
             MAX_WEBSOCKET_MESSAGE_BYTES,
         );
-        validate_usize_range(
+        validate_positive_range(
             errors,
             "proxy.max_websocket_session_bytes",
             self.proxy.max_websocket_session_bytes,
@@ -631,7 +631,7 @@ impl Config {
         if self.storage.rotate_size_bytes > i64::MAX as u64 {
             errors.push("storage.rotate_size_bytes must fit in a signed 64-bit integer".into());
         }
-        validate_u64_range(
+        validate_positive_range(
             errors,
             "storage.rotate_check_interval_secs",
             self.storage.rotate_check_interval_secs,
@@ -644,49 +644,49 @@ impl Config {
         ) {
             errors.push(error);
         }
-        validate_u32_range(
+        validate_positive_range(
             errors,
             "storage.max_connections",
             self.storage.max_connections,
             MAX_STORAGE_CONNECTIONS,
         );
-        validate_u64_range(
+        validate_positive_range(
             errors,
             "storage.acquire_timeout_secs",
             self.storage.acquire_timeout_secs,
             MAX_STORAGE_ACQUIRE_TIMEOUT_SECS,
         );
-        validate_usize_range(
+        validate_positive_range(
             errors,
             "storage.trace_queue_capacity",
             self.storage.trace_queue_capacity,
             MAX_TRACE_QUEUE_CAPACITY,
         );
-        validate_usize_range(
+        validate_positive_range(
             errors,
             "storage.trace_queue_max_bytes",
             self.storage.trace_queue_max_bytes,
             64 * 1024 * 1024 * 1024,
         );
-        validate_usize_range(
+        validate_positive_range(
             errors,
             "storage.trace_worker_count",
             self.storage.trace_worker_count,
             MAX_TRACE_WORKER_COUNT,
         );
-        validate_u64_range(
+        validate_positive_range(
             errors,
             "storage.journal.max_bytes",
             self.storage.journal.max_bytes,
             1024 * 1024 * 1024 * 1024,
         );
-        validate_usize_range(
+        validate_positive_range(
             errors,
             "storage.journal.max_records",
             self.storage.journal.max_records,
             1_000_000,
         );
-        validate_u64_range(
+        validate_positive_range(
             errors,
             "storage.journal.retry_interval_secs",
             self.storage.journal.retry_interval_secs,
@@ -713,7 +713,7 @@ impl Config {
             }
             None => {}
         }
-        validate_u64_range(
+        validate_positive_range(
             errors,
             "storage.retention_prune_interval_secs",
             self.storage.retention_prune_interval_secs,
@@ -737,7 +737,7 @@ impl Config {
                     .to_string(),
             );
         }
-        validate_usize_range(
+        validate_positive_range(
             errors,
             "archive.segment_uncompressed_bytes",
             self.archive.segment_uncompressed_bytes,
@@ -909,7 +909,7 @@ impl Config {
 
     fn validate_oauth(&self, errors: &mut Vec<String>) {
         let oauth = &self.auth.oauth;
-        validate_u64_range(
+        validate_positive_range(
             errors,
             "auth.oauth.timeout_secs",
             oauth.timeout_secs,
@@ -1069,82 +1069,80 @@ fn apply_env_overrides(
     config: &mut Config,
     env: impl Fn(&str) -> Option<String>,
 ) -> anyhow::Result<()> {
-    if let Some(value) = env("DATABASE_URL") {
-        config.storage.postgres_url = value;
+    // The mapping stays explicit; each target's type selects its numeric width.
+    macro_rules! set_env {
+        ($parse:ident; $($name:literal => $target:expr),+ $(,)?) => {
+            $(if let Some(value) = env($name) { $target = $parse($name, &value)?; })+
+        };
     }
-    if let Some(value) = env("LLMTRACE_STORAGE_MAX_CONNECTIONS") {
-        config.storage.max_connections = parse_u32_env("LLMTRACE_STORAGE_MAX_CONNECTIONS", &value)?;
-    }
+    set_env!(raw_env;
+        "DATABASE_URL" => config.storage.postgres_url,
+        "LLMTRACE_JOURNAL_DIRECTORY" => config.storage.journal.directory,
+        "LLMTRACE_LISTEN" => config.server.listen,
+        "LLMTRACE_ADMIN_LISTEN" => config.server.admin_listen,
+        "LLMTRACE_PROXY_PUBLIC_URL" => config.server.proxy_public_url,
+        "LLMTRACE_PUBLIC_URL" => config.server.public_url,
+        "LLMTRACE_DEFAULT_UPSTREAM" => config.proxy.default_upstream,
+        "LLMTRACE_UPSTREAM_HEADER" => config.proxy.upstream_header,
+        "LLMTRACE_ARCHIVE_FILESYSTEM_ROOT" => config.archive.filesystem_root,
+        "LLMTRACE_ADMIN_USERNAME" => config.auth.local_admin.username,
+        "LLMTRACE_ADMIN_PASSWORD" => config.auth.local_admin.password,
+        "LLMTRACE_ADMIN_PASSWORD_HASH" => config.auth.local_admin.password_hash,
+        "LLMTRACE_OAUTH_ISSUER_URL" => config.auth.oauth.issuer_url,
+        "LLMTRACE_OAUTH_CLIENT_ID" => config.auth.oauth.client_id,
+        "LLMTRACE_OAUTH_CLIENT_SECRET" => config.auth.oauth.client_secret,
+        "LLMTRACE_OAUTH_REDIRECT_URL" => config.auth.oauth.redirect_url,
+        "LLMTRACE_METRICS_BEARER_TOKEN" => config.observability.metrics_bearer_token,
+    );
+    set_env!(parse_unsigned_env;
+        "LLMTRACE_STORAGE_MAX_CONNECTIONS" => config.storage.max_connections,
+        "LLMTRACE_RETENTION_PRUNE_INTERVAL_SECS" => config.storage.retention_prune_interval_secs,
+        "LLMTRACE_ROTATE_SIZE_BYTES" => config.storage.rotate_size_bytes,
+        "LLMTRACE_ROTATE_CHECK_INTERVAL_SECS" => config.storage.rotate_check_interval_secs,
+        "LLMTRACE_DB_ACQUIRE_TIMEOUT_SECS" => config.storage.acquire_timeout_secs,
+        "LLMTRACE_TRACE_QUEUE_CAPACITY" => config.storage.trace_queue_capacity,
+        "LLMTRACE_TRACE_QUEUE_MAX_BYTES" => config.storage.trace_queue_max_bytes,
+        "LLMTRACE_JOURNAL_MAX_BYTES" => config.storage.journal.max_bytes,
+        "LLMTRACE_JOURNAL_MAX_RECORDS" => config.storage.journal.max_records,
+        "LLMTRACE_JOURNAL_RETRY_INTERVAL_SECS" => config.storage.journal.retry_interval_secs,
+        "LLMTRACE_TRACE_WORKER_COUNT" => config.storage.trace_worker_count,
+        "LLMTRACE_PROXY_TIMEOUT_SECS" => config.proxy.timeout_secs,
+        "LLMTRACE_MAX_REQUEST_BODY_BYTES" => config.proxy.max_request_body_bytes,
+        "LLMTRACE_MAX_RESPONSE_BODY_BYTES" => config.proxy.max_response_body_bytes,
+        "LLMTRACE_MAX_WEBSOCKET_MESSAGE_BYTES" => config.proxy.max_websocket_message_bytes,
+        "LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES" => config.proxy.max_websocket_session_bytes,
+        "LLMTRACE_ARCHIVE_SEGMENT_UNCOMPRESSED_BYTES" => config.archive.segment_uncompressed_bytes,
+        "LLMTRACE_LOGIN_RATE_LIMIT_MAX_FAILURES" => config.auth.login_rate_limit.max_failures,
+        "LLMTRACE_LOGIN_RATE_LIMIT_WINDOW_SECS" => config.auth.login_rate_limit.window_secs,
+        "LLMTRACE_LOGIN_RATE_LIMIT_LOCKOUT_SECS" => config.auth.login_rate_limit.lockout_secs,
+        "LLMTRACE_LOGIN_RATE_LIMIT_MAX_TRACKED_ENTRIES" => config.auth.login_rate_limit.max_tracked_entries,
+        "LLMTRACE_OAUTH_TIMEOUT_SECS" => config.auth.oauth.timeout_secs,
+    );
+    set_env!(parse_integer_env;
+        "LLMTRACE_RETENTION_PRUNE_BATCH_SIZE" => config.storage.retention_prune_batch_size,
+        "LLMTRACE_ARCHIVE_COMPRESSION_LEVEL" => config.archive.compression_level,
+        "LLMTRACE_SESSION_TTL_HOURS" => config.auth.session_ttl_hours,
+    );
+    set_env!(parse_bool_env;
+        "LLMTRACE_JOURNAL_ENABLED" => config.storage.journal.enabled,
+        "LLMTRACE_UI_ENABLED" => config.server.ui_enabled,
+        "LLMTRACE_AUTH_COOKIE_SECURE" => config.auth.cookie_secure,
+        "LLMTRACE_LOGIN_RATE_LIMIT_ENABLED" => config.auth.login_rate_limit.enabled,
+        "LLMTRACE_OAUTH_ENABLED" => config.auth.oauth.enabled,
+        "LLMTRACE_OAUTH_REQUIRE_EMAIL_VERIFIED" => config.auth.oauth.require_email_verified,
+        "LLMTRACE_STORE_HEADER_HASH" => config.redaction.store_header_hash,
+    );
+    set_env!(parse_csv_env;
+        "LLMTRACE_ALLOW_UPSTREAMS" => config.proxy.allow_upstreams,
+        "LLMTRACE_OAUTH_ALLOWED_EMAILS" => config.auth.oauth.allowed_emails,
+        "LLMTRACE_OAUTH_ALLOWED_DOMAINS" => config.auth.oauth.allowed_domains,
+        "LLMTRACE_SENSITIVE_HEADERS" => config.redaction.sensitive_headers,
+    );
     if let Some(value) = env("LLMTRACE_RETENTION_DAYS") {
-        config.storage.retention_days = Some(parse_i64_env("LLMTRACE_RETENTION_DAYS", &value)?);
-    }
-    if let Some(value) = env("LLMTRACE_RETENTION_PRUNE_INTERVAL_SECS") {
-        config.storage.retention_prune_interval_secs =
-            parse_u64_env("LLMTRACE_RETENTION_PRUNE_INTERVAL_SECS", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_RETENTION_PRUNE_BATCH_SIZE") {
-        config.storage.retention_prune_batch_size =
-            parse_i64_env("LLMTRACE_RETENTION_PRUNE_BATCH_SIZE", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_ROTATE_SIZE_BYTES") {
-        config.storage.rotate_size_bytes = parse_u64_env("LLMTRACE_ROTATE_SIZE_BYTES", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_ROTATE_CHECK_INTERVAL_SECS") {
-        config.storage.rotate_check_interval_secs =
-            parse_u64_env("LLMTRACE_ROTATE_CHECK_INTERVAL_SECS", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_DB_ACQUIRE_TIMEOUT_SECS") {
-        config.storage.acquire_timeout_secs =
-            parse_u64_env("LLMTRACE_DB_ACQUIRE_TIMEOUT_SECS", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_TRACE_QUEUE_CAPACITY") {
-        config.storage.trace_queue_capacity =
-            parse_usize_env("LLMTRACE_TRACE_QUEUE_CAPACITY", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_TRACE_QUEUE_MAX_BYTES") {
-        config.storage.trace_queue_max_bytes =
-            parse_usize_env("LLMTRACE_TRACE_QUEUE_MAX_BYTES", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_JOURNAL_ENABLED") {
-        config.storage.journal.enabled = parse_bool_env("LLMTRACE_JOURNAL_ENABLED", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_JOURNAL_DIRECTORY") {
-        config.storage.journal.directory = PathBuf::from(value);
-    }
-    if let Some(value) = env("LLMTRACE_JOURNAL_MAX_BYTES") {
-        config.storage.journal.max_bytes = parse_u64_env("LLMTRACE_JOURNAL_MAX_BYTES", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_JOURNAL_MAX_RECORDS") {
-        config.storage.journal.max_records =
-            parse_usize_env("LLMTRACE_JOURNAL_MAX_RECORDS", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_JOURNAL_RETRY_INTERVAL_SECS") {
-        config.storage.journal.retry_interval_secs =
-            parse_u64_env("LLMTRACE_JOURNAL_RETRY_INTERVAL_SECS", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_TRACE_WORKER_COUNT") {
-        config.storage.trace_worker_count = parse_usize_env("LLMTRACE_TRACE_WORKER_COUNT", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_LISTEN") {
-        config.server.listen = value;
-    }
-    if let Some(value) = env("LLMTRACE_ADMIN_LISTEN") {
-        config.server.admin_listen = Some(value);
-    }
-    if let Some(value) = env("LLMTRACE_PROXY_PUBLIC_URL") {
-        config.server.proxy_public_url = Some(value);
-    }
-    if let Some(value) = env("LLMTRACE_PUBLIC_URL") {
-        config.server.public_url = value;
+        config.storage.retention_days = Some(parse_integer_env("LLMTRACE_RETENTION_DAYS", &value)?);
     }
     if let Some(value) = env("LLMTRACE_DEPLOYMENT") {
         config.server.deployment = value.parse()?;
-    }
-    if let Some(value) = env("LLMTRACE_UI_ENABLED") {
-        config.server.ui_enabled = parse_bool_env("LLMTRACE_UI_ENABLED", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_DEFAULT_UPSTREAM") {
-        config.proxy.default_upstream = value;
     }
     if let Some(value) = env("LLMTRACE_PROXY_PRESET") {
         config.proxy.preset = match value.trim() {
@@ -1152,9 +1150,6 @@ fn apply_env_overrides(
             "litellm" => ProxyPreset::Litellm,
             _ => anyhow::bail!("LLMTRACE_PROXY_PRESET must be custom or litellm"),
         };
-    }
-    if let Some(value) = env("LLMTRACE_ALLOW_UPSTREAMS") {
-        config.proxy.allow_upstreams = parse_csv_env("LLMTRACE_ALLOW_UPSTREAMS", &value)?;
     }
     if let Some(value) = env("LLMTRACE_PROXY_PATH_PREFIXES") {
         config.proxy.path_prefixes = Some(parse_csv_env("LLMTRACE_PROXY_PATH_PREFIXES", &value)?);
@@ -1167,114 +1162,8 @@ fn apply_env_overrides(
             parse_csv_env("LLMTRACE_CAPTURE_PATH_PREFIXES", &value)?
         });
     }
-    if let Some(value) = env("LLMTRACE_UPSTREAM_HEADER") {
-        config.proxy.upstream_header = value;
-    }
-    if let Some(value) = env("LLMTRACE_PROXY_TIMEOUT_SECS") {
-        config.proxy.timeout_secs = parse_u64_env("LLMTRACE_PROXY_TIMEOUT_SECS", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_MAX_REQUEST_BODY_BYTES") {
-        config.proxy.max_request_body_bytes =
-            parse_usize_env("LLMTRACE_MAX_REQUEST_BODY_BYTES", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_MAX_RESPONSE_BODY_BYTES") {
-        config.proxy.max_response_body_bytes =
-            parse_usize_env("LLMTRACE_MAX_RESPONSE_BODY_BYTES", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_MAX_WEBSOCKET_MESSAGE_BYTES") {
-        config.proxy.max_websocket_message_bytes =
-            parse_usize_env("LLMTRACE_MAX_WEBSOCKET_MESSAGE_BYTES", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES") {
-        config.proxy.max_websocket_session_bytes =
-            parse_usize_env("LLMTRACE_MAX_WEBSOCKET_SESSION_BYTES", &value)?;
-    }
     if let Some(value) = env("LLMTRACE_ARCHIVE_STORAGE_BACKEND") {
         config.archive.storage_backend = value.parse()?;
-    }
-    if let Some(value) = env("LLMTRACE_ARCHIVE_FILESYSTEM_ROOT") {
-        config.archive.filesystem_root = PathBuf::from(value);
-    }
-    if let Some(value) = env("LLMTRACE_ARCHIVE_SEGMENT_UNCOMPRESSED_BYTES") {
-        config.archive.segment_uncompressed_bytes =
-            parse_usize_env("LLMTRACE_ARCHIVE_SEGMENT_UNCOMPRESSED_BYTES", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_ARCHIVE_COMPRESSION_LEVEL") {
-        config.archive.compression_level =
-            parse_i32_env("LLMTRACE_ARCHIVE_COMPRESSION_LEVEL", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_AUTH_COOKIE_SECURE") {
-        config.auth.cookie_secure = parse_bool_env("LLMTRACE_AUTH_COOKIE_SECURE", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_SESSION_TTL_HOURS") {
-        config.auth.session_ttl_hours = parse_i64_env("LLMTRACE_SESSION_TTL_HOURS", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_LOGIN_RATE_LIMIT_ENABLED") {
-        config.auth.login_rate_limit.enabled =
-            parse_bool_env("LLMTRACE_LOGIN_RATE_LIMIT_ENABLED", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_LOGIN_RATE_LIMIT_MAX_FAILURES") {
-        config.auth.login_rate_limit.max_failures =
-            parse_u32_env("LLMTRACE_LOGIN_RATE_LIMIT_MAX_FAILURES", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_LOGIN_RATE_LIMIT_WINDOW_SECS") {
-        config.auth.login_rate_limit.window_secs =
-            parse_u64_env("LLMTRACE_LOGIN_RATE_LIMIT_WINDOW_SECS", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_LOGIN_RATE_LIMIT_LOCKOUT_SECS") {
-        config.auth.login_rate_limit.lockout_secs =
-            parse_u64_env("LLMTRACE_LOGIN_RATE_LIMIT_LOCKOUT_SECS", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_LOGIN_RATE_LIMIT_MAX_TRACKED_ENTRIES") {
-        config.auth.login_rate_limit.max_tracked_entries =
-            parse_usize_env("LLMTRACE_LOGIN_RATE_LIMIT_MAX_TRACKED_ENTRIES", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_ADMIN_USERNAME") {
-        config.auth.local_admin.username = value;
-    }
-    if let Some(value) = env("LLMTRACE_ADMIN_PASSWORD") {
-        config.auth.local_admin.password = Some(value);
-    }
-    if let Some(value) = env("LLMTRACE_ADMIN_PASSWORD_HASH") {
-        config.auth.local_admin.password_hash = Some(value);
-    }
-    if let Some(value) = env("LLMTRACE_OAUTH_ENABLED") {
-        config.auth.oauth.enabled = parse_bool_env("LLMTRACE_OAUTH_ENABLED", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_OAUTH_ISSUER_URL") {
-        config.auth.oauth.issuer_url = value;
-    }
-    if let Some(value) = env("LLMTRACE_OAUTH_CLIENT_ID") {
-        config.auth.oauth.client_id = value;
-    }
-    if let Some(value) = env("LLMTRACE_OAUTH_CLIENT_SECRET") {
-        config.auth.oauth.client_secret = value;
-    }
-    if let Some(value) = env("LLMTRACE_OAUTH_REDIRECT_URL") {
-        config.auth.oauth.redirect_url = value;
-    }
-    if let Some(value) = env("LLMTRACE_OAUTH_TIMEOUT_SECS") {
-        config.auth.oauth.timeout_secs = parse_u64_env("LLMTRACE_OAUTH_TIMEOUT_SECS", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_OAUTH_REQUIRE_EMAIL_VERIFIED") {
-        config.auth.oauth.require_email_verified =
-            parse_bool_env("LLMTRACE_OAUTH_REQUIRE_EMAIL_VERIFIED", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_OAUTH_ALLOWED_EMAILS") {
-        config.auth.oauth.allowed_emails = parse_csv_env("LLMTRACE_OAUTH_ALLOWED_EMAILS", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_OAUTH_ALLOWED_DOMAINS") {
-        config.auth.oauth.allowed_domains =
-            parse_csv_env("LLMTRACE_OAUTH_ALLOWED_DOMAINS", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_METRICS_BEARER_TOKEN") {
-        config.observability.metrics_bearer_token = Some(value);
-    }
-    if let Some(value) = env("LLMTRACE_SENSITIVE_HEADERS") {
-        config.redaction.sensitive_headers = parse_csv_env("LLMTRACE_SENSITIVE_HEADERS", &value)?;
-    }
-    if let Some(value) = env("LLMTRACE_STORE_HEADER_HASH") {
-        config.redaction.store_header_hash = parse_bool_env("LLMTRACE_STORE_HEADER_HASH", &value)?;
     }
     if let Some(value) = env("LLMTRACE_PRICING_JSON") {
         config.pricing = serde_json::from_str(&value).map_err(|_| {
@@ -1289,24 +1178,13 @@ fn apply_env_overrides(
     Ok(())
 }
 
-fn validate_u32_range(errors: &mut Vec<String>, field: &str, value: u32, max: u32) {
-    if value == 0 {
-        errors.push(format!("{field} must be greater than 0"));
-    } else if value > max {
-        errors.push(format!("{field} must be at most {max}"));
-    }
-}
-
-fn validate_u64_range(errors: &mut Vec<String>, field: &str, value: u64, max: u64) {
-    if value == 0 {
-        errors.push(format!("{field} must be greater than 0"));
-    } else if value > max {
-        errors.push(format!("{field} must be at most {max}"));
-    }
-}
-
-fn validate_usize_range(errors: &mut Vec<String>, field: &str, value: usize, max: usize) {
-    if value == 0 {
+fn validate_positive_range<T: Copy + Ord + From<u8> + fmt::Display>(
+    errors: &mut Vec<String>,
+    field: &str,
+    value: T,
+    max: T,
+) {
+    if value == T::from(0) {
         errors.push(format!("{field} must be greater than 0"));
     } else if value > max {
         errors.push(format!("{field} must be at most {max}"));
@@ -1530,34 +1408,26 @@ fn parse_bool_env(name: &str, value: &str) -> anyhow::Result<bool> {
     }
 }
 
-fn parse_u32_env(name: &str, value: &str) -> anyhow::Result<u32> {
+fn raw_env<T: From<String>>(_name: &str, value: &str) -> anyhow::Result<T> {
+    Ok(value.to_owned().into())
+}
+
+fn parse_unsigned_env<T: FromStr>(name: &str, value: &str) -> anyhow::Result<T>
+where
+    T::Err: std::error::Error + Send + Sync + 'static,
+{
     value
         .parse()
         .with_context(|| format!("{name} must be an unsigned integer"))
 }
 
-fn parse_i64_env(name: &str, value: &str) -> anyhow::Result<i64> {
+fn parse_integer_env<T: FromStr>(name: &str, value: &str) -> anyhow::Result<T>
+where
+    T::Err: std::error::Error + Send + Sync + 'static,
+{
     value
         .parse()
         .with_context(|| format!("{name} must be an integer"))
-}
-
-fn parse_i32_env(name: &str, value: &str) -> anyhow::Result<i32> {
-    value
-        .parse()
-        .with_context(|| format!("{name} must be an integer"))
-}
-
-fn parse_u64_env(name: &str, value: &str) -> anyhow::Result<u64> {
-    value
-        .parse()
-        .with_context(|| format!("{name} must be an unsigned integer"))
-}
-
-fn parse_usize_env(name: &str, value: &str) -> anyhow::Result<usize> {
-    value
-        .parse()
-        .with_context(|| format!("{name} must be an unsigned integer"))
 }
 
 fn parse_csv_env(name: &str, value: &str) -> anyhow::Result<Vec<String>> {

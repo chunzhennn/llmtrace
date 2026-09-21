@@ -8,7 +8,7 @@
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import ErrorState from '$lib/components/ErrorState.svelte';
 	import Badge from '$lib/components/Badge.svelte';
-	import { Resource } from '$lib/utils/resource.svelte';
+	import { createResource } from '$lib/utils/resource.svelte';
 	import { ApiError } from '$lib/api/client';
 	import * as queryApi from '$lib/api/endpoints/query';
 	import { exportJsonl } from '$lib/api/download';
@@ -40,7 +40,7 @@
 	let rowSeq = 0;
 	const nextId = () => ++rowSeq;
 
-	const schema = new Resource<QuerySchema>((signal) => queryApi.querySchema(signal));
+	const schema = createResource<QuerySchema>((signal) => queryApi.querySchema(signal));
 
 	let dataset = $state('');
 	let selectedFields = $state<string[]>([]);
@@ -218,6 +218,7 @@
 			toasts.error(err instanceof Error ? err.message : 'Export failed.');
 		}
 	}
+
 </script>
 
 <svelte:head><title>Query · llmtrace</title></svelte:head>

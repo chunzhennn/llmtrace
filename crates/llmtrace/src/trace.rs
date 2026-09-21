@@ -14,7 +14,8 @@ use crate::metrics::{RuntimeMetrics, TraceQueueMetrics};
 use crate::parsers;
 use crate::plugins::{HookInput, PluginEffects, PluginManager};
 use crate::redaction;
-use crate::storage::{self, ParsedMessage, TraceRecord};
+use crate::storage::{self, TraceRecord};
+use crate::types::ParsedMessage;
 use crate::types::{PluginHook, RequestKind};
 
 mod durable;
@@ -46,6 +47,8 @@ pub struct TraceEvent {
     pub request_kind: Option<RequestKind>,
     pub model: Option<String>,
     pub api_key_hash: Option<String>,
+    #[serde(default)]
+    pub credential_scope_hash: Option<String>,
     pub session_key: Option<String>,
     pub ttft_ms: Option<i64>,
     pub ttfb_ms: Option<i64>,
@@ -88,6 +91,7 @@ impl TraceEvent {
             request_kind: None,
             model: None,
             api_key_hash: None,
+            credential_scope_hash: None,
             session_key: None,
             ttft_ms: None,
             ttfb_ms: None,
@@ -439,7 +443,13 @@ pub(crate) fn build_trace(
     // hints by upstream and credential to avoid merging unrelated employees.
     let session_key = Some(scoped_session_key(
         &event.upstream_url,
-        event.api_key_hash.as_deref(),
+        event
+            .credential_scope_hash
+            .as_ref()
+            .or(event.api_key_hash.as_ref())
+            .cloned()
+            .or_else(|| redaction::credential_scope_from_headers(&event.plugin_request_headers))
+            .as_deref(),
         explicit_session_key.as_deref(),
         event.id,
     ));
@@ -706,6 +716,54 @@ fn object_or_empty(value: Value) -> Map<String, Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_scope_is_independent_of_header_hash_storage() {
+        use axum::http::{HeaderMap, HeaderValue};
+        let plugins = PluginManager::load(&[]).unwrap();
+        let capture = |credential: &'static str, store_hash: bool, legacy: bool| {
+            let mut headers = HeaderMap::new();
+            headers.insert("authorization", HeaderValue::from_static(credential));
+            let redacted = redaction::redact_headers(
+                &headers,
+                &crate::config::RedactionConfig {
+                    store_header_hash: store_hash,
+                    ..Default::default()
+                },
+                "x-llmtrace-upstream",
+            );
+            let mut event = TraceEvent::base(Uuid::new_v4(), Utc::now());
+            event.upstream_url = "https://llm.example/v1/responses".into();
+            event.request_body =
+                br#"{"metadata":{"session_id":"same-hint"},"input":"hello"}"#.to_vec();
+            event.request_headers = redacted.json;
+            event.api_key_hash = redacted.first_secret_hash;
+            event.credential_scope_hash = redacted.credential_scope_hash;
+            event.plugin_request_headers = redaction::headers_to_json(&headers);
+            if legacy {
+                let body = std::mem::take(&mut event.request_body);
+                let mut persisted = serde_json::to_value(event).unwrap();
+                persisted
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("credential_scope_hash");
+                event = serde_json::from_value(persisted).unwrap();
+                event.request_body = body;
+            }
+            build_trace(event, &plugins).unwrap().0
+        };
+        let stored = capture("Bearer alice", true, false);
+        let hidden = capture("Bearer alice", false, false);
+        let other = capture("Bearer bob", false, false);
+        assert_eq!(stored.session_key, hidden.session_key);
+        assert_ne!(hidden.session_key, other.session_key);
+        assert!(hidden.api_key_hash.is_none());
+        assert!(hidden.request_headers["authorization"]["sha256"].is_null());
+        assert_eq!(
+            hidden.session_key,
+            capture("Bearer alice", false, true).session_key
+        );
+    }
 
     #[test]
     fn sessions_need_explicit_hints_and_are_scoped_to_upstream_and_credential() {

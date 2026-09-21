@@ -182,6 +182,74 @@ try {
   await click('tbody a'); await waitFor("document.querySelector('h1')?.textContent === 'Request detail'"); await settle();
   await clickText('main a','Back'); await waitFor("document.querySelector('h1')?.textContent === 'Requests'"); await settle();
   report.checks.requestBackPreservesFilters = await evaluate("location.search.includes('q=claude') && location.search.includes('offset=25')");
+
+  await navigate(`/ui/sessions/${fixture.session_id}`,'Session detail');
+  const exportCount = await evaluate(`fetch('/api/sessions/${fixture.session_id}').then(r=>r.json()).then(s=>s.request_stats.request_count)`);
+  await clickText('main a','Export full session');
+  const fullFilename = `llmtrace-session-${fixture.session_id}.jsonl`;
+  let fullContents;
+  for(let i=0;i<200;i++) {
+    try {fullContents=await readFile(join(downloadDir,fullFilename),'utf8');break;}
+    catch {await pause(50);}
+  }
+  assert(fullContents,'full session download did not complete');
+  const fullRecords=fullContents.trimEnd().split('\n').map(line=>JSON.parse(line));
+  const fullRequests=fullRecords.filter(r=>r.type === 'request');
+  const end=fullRecords.at(-1);
+  report.checks.fullSessionDownload = fullRecords[0].schema_version === 1
+    && fullRecords[0].session.id === fixture.session_id
+    && fullRecords[0].request_count === exportCount && fullRequests.length === exportCount
+    && end.type === 'end' && end.export_complete && end.request_count === exportCount
+    && end.captured_bodies_complete && fullRequests.every(r=>r.request.session_id === fixture.session_id
+      && r.request_body.status === 'available' && r.response_body.status === 'available'
+      && JSON.parse(r.request_body.data).messages.length === 2);
+  report.checks.downloadKeepsSessionPage = await evaluate("document.querySelector('h1')?.textContent === 'Session detail'");
+
+  // A delayed response from another session must not change the visible session
+  // or leave its transcript beside the current session's export link.
+  const [oldSession,currentSession]=await evaluate("fetch('/api/sessions').then(r=>r.json()).then(r=>r.items)");
+  const cursorPage=await evaluate(`fetch('/api/query',{
+    method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({dataset:'sessions',fields:['id'],filters:[{field:'id',op:'gt',value:'${oldSession.id}'}],order_by:[{field:'id',direction:'asc'}],limit:500})
+  }).then(async r=>({status:r.status,body:await r.json()}))`);
+  report.checks.uuidCursorPagination = cursorPage.status === 200
+    && cursorPage.body.rows.every(row=>row.id > oldSession.id);
+  await navigate(`/ui/sessions/${currentSession.id}`,'Session detail');
+  await evaluate(`(() => {
+    const original=window.fetch;
+    window.reviewRestoreFetch=()=>{window.fetch=original;};
+    window.reviewSlowStarted=false;window.reviewSlowFinished=false;
+    window.reviewDelayedPath='/api/sessions/${oldSession.id}?';
+    window.fetch=async (...args)=>{
+      const response=await original(...args);
+      if(String(args[0]).startsWith(window.reviewDelayedPath)) {
+        window.reviewSlowStarted=true;
+        await new Promise(resolve=>setTimeout(resolve,2500));
+        window.reviewSlowFinished=true;
+      }
+      return response;
+    };
+  })()`);
+  async function clientNavigate(path) {
+    await evaluate(`(() => {const a=document.createElement('a');a.href='${path}';document.body.appendChild(a);a.click();a.remove();})()`);
+    await waitFor(`location.pathname === '${path}'`);
+  }
+  await clientNavigate(`/ui/sessions/${oldSession.id}`);await waitFor('window.reviewSlowStarted');
+  await clientNavigate(`/ui/sessions/${currentSession.id}`);await waitFor('window.reviewSlowFinished');await settle();
+  report.checks.sessionResponseOwnership = await evaluate(`document.querySelector('main').textContent.includes(${JSON.stringify(currentSession.session_key)})
+    && !document.querySelector('main').textContent.includes(${JSON.stringify(oldSession.session_key)})
+    && Array.from(document.querySelectorAll('main a')).find(a=>a.textContent.includes('Export full session'))?.getAttribute('href') === '/api/sessions/${currentSession.id}/export.jsonl'`);
+  const requestRows=await evaluate("fetch('/api/requests').then(r=>r.json()).then(r=>r.items)");
+  const firstRequest=requestRows[0], nextRequest=requestRows.find(r=>r.model !== firstRequest.model);
+  assert(nextRequest);
+  await clientNavigate(`/ui/requests/${firstRequest.id}`);await settle();
+  await evaluate(`window.reviewDelayedPath='/api/requests/${nextRequest.id}?include_bodies=false';window.reviewSlowStarted=false;window.reviewSlowFinished=false;`);
+  await clientNavigate(`/ui/requests/${nextRequest.id}`);await waitFor('window.reviewSlowStarted');
+  report.checks.requestNavigationClearsPreviousMetadata=await evaluate(`!document.querySelector('main').textContent.includes(${JSON.stringify(firstRequest.model)})`);
+  await waitFor('window.reviewSlowFinished');await settle();
+  report.checks.requestNavigationShowsCurrentMetadata=await evaluate(`document.querySelector('main').textContent.includes(${JSON.stringify(nextRequest.model)})`);
+  await evaluate('window.reviewRestoreFetch()');
+
   await navigate('/ui/sessions?q=does-not-exist','Sessions');
   report.checks.emptySearchState = await evaluate("document.body.textContent.includes('No sessions matched your search.')");
   await shot('desktop-empty-search');

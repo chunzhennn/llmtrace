@@ -1,10 +1,12 @@
 import { defineConfig } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 // Standalone Vitest config (kept separate from vite.config.ts so unit tests do
-// not pull in the SvelteKit plugin). Only the $lib alias is needed for the
-// framework-free util/client tests.
+// not pull in the SvelteKit plugin). Compile Svelte runes for resource tests and
+// resolve the same $lib imports as the application.
 export default defineConfig({
+	plugins: [svelte({ configFile: false })],
 	resolve: {
 		alias: {
 			$lib: fileURLToPath(new URL('./src/lib', import.meta.url))

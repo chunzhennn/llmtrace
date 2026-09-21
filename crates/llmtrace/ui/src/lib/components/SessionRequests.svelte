@@ -4,7 +4,7 @@
 	import Pagination from './Pagination.svelte';
 	import StatusPill from './StatusPill.svelte';
 	import Icon from './Icon.svelte';
-	import { Resource } from '$lib/utils/resource.svelte';
+	import { createResource } from '$lib/utils/resource.svelte';
 	import * as sessionsApi from '$lib/api/endpoints/sessions';
 	import { exportJsonl } from '$lib/api/download';
 	import { toasts } from '$lib/state/toast.svelte';
@@ -20,7 +20,7 @@
 	let { id }: Props = $props();
 
 	let offset = $state(0);
-	const requests = new Resource<SessionRequestsResponse>((signal) =>
+	const requests = createResource<SessionRequestsResponse>((signal) =>
 		sessionsApi.listSessionRequests(id, { limit: REQUEST_PAGE, offset }, signal)
 	);
 
@@ -44,6 +44,7 @@
 		{ label: 'Model' },
 		{ label: 'Duration', align: 'right' }
 	];
+
 </script>
 
 <div class="mb-2 flex items-center justify-between">

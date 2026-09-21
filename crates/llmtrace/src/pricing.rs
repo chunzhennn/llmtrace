@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::parsers::TokenUsage;
+use crate::types::TokenUsage;
 
 pub type PriceTable = BTreeMap<String, ModelPrice>;
 

@@ -1,4 +1,4 @@
-import { api, type QueryParams } from '../client';
+import { API_BASE, api, type QueryParams } from '../client';
 import type {
 	Paginated,
 	SessionDetail,
@@ -11,6 +11,11 @@ export function listSessions(
 	signal?: AbortSignal
 ): Promise<Paginated<SessionSummary>> {
 	return api.get<Paginated<SessionSummary>>('/sessions', params, signal);
+}
+
+// Let the browser stream the attachment to disk without buffering a session Blob.
+export function sessionExportUrl(id: string): string {
+	return `${API_BASE}/sessions/${encodeURIComponent(id)}/export.jsonl`;
 }
 
 export function getSession(

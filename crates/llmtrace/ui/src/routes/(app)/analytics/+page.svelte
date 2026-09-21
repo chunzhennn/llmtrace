@@ -10,9 +10,9 @@
 	import Tabs, { type Tab } from '$lib/components/Tabs.svelte';
 	import TimeWindowSelect from '$lib/components/TimeWindowSelect.svelte';
 	import DataTable, { type Column } from '$lib/components/DataTable.svelte';
-	import MiniBar from '$lib/components/MiniBar.svelte';
+	import UsageRanking from '$lib/components/UsageRanking.svelte';
 	import Badge from '$lib/components/Badge.svelte';
-	import { Resource } from '$lib/utils/resource.svelte';
+	import { createResource } from '$lib/utils/resource.svelte';
 	import * as analytics from '$lib/api/endpoints/analytics';
 	import type {
 		UsageSummary,
@@ -30,8 +30,7 @@
 		ErrorSummary
 	} from '$lib/api/types';
 	import { formatNumber, formatBytes, formatMs, formatPercent, truncateMiddle, formatTokens, formatCost } from '$lib/utils/format';
-	import { baseTimeChartOptions, chartColors, withAlpha } from '$lib/utils/chart';
-	import type { ChartData } from 'chart.js';
+	import { usageChartData, baseTimeChartOptions } from '$lib/utils/chart';
 
 	const TABLE_LIMIT = 100;
 	const DEFAULT_HOURS = 24;
@@ -53,54 +52,31 @@
 		{ id: 'errors', label: 'Errors' }
 	];
 
-	const summary = new Resource<UsageSummary>((signal) => analytics.usageSummary({ since_hours: hours }, signal));
-	const timeseries = new Resource<UsageTimeseries>((signal) =>
+	const summary = createResource<UsageSummary>((signal) => analytics.usageSummary({ since_hours: hours }, signal));
+	const timeseries = createResource<UsageTimeseries>((signal) =>
 		analytics.usageTimeseries({ since_hours: hours, bucket }, signal)
 	);
-	const latency = new Resource<LatencySummary>((signal) => analytics.latencySummary({ since_hours: hours }, signal));
-	const apiKeys = new Resource<ApiKeyUsage>((signal) =>
+	const latency = createResource<LatencySummary>((signal) => analytics.latencySummary({ since_hours: hours }, signal));
+	const apiKeys = createResource<ApiKeyUsage>((signal) =>
 		analytics.apiKeyUsage({ since_hours: hours, limit: TABLE_LIMIT }, signal)
 	);
-	const users = new Resource<UserUsage>((signal) =>
+	const users = createResource<UserUsage>((signal) =>
 		analytics.userUsage({ since_hours: hours, limit: TABLE_LIMIT }, signal)
 	);
-	const models = new Resource<ModelUsage>((signal) =>
+	const models = createResource<ModelUsage>((signal) =>
 		analytics.modelUsage({ since_hours: hours, limit: TABLE_LIMIT }, signal)
 	);
-	const upstreams = new Resource<UpstreamHealth>((signal) =>
+	const upstreams = createResource<UpstreamHealth>((signal) =>
 		analytics.upstreamHealth({ since_hours: hours, limit: TABLE_LIMIT }, signal)
 	);
-	const errors = new Resource<ErrorSummary>((signal) => analytics.errorSummary({ since_hours: hours }, signal));
+	const errors = createResource<ErrorSummary>((signal) => analytics.errorSummary({ since_hours: hours }, signal));
 
+	const resources = { summary, timeseries, latency, 'api-keys': apiKeys, users, models, upstreams, errors };
 	$effect(() => {
 		void hours;
 		void bucket;
-		switch (tab) {
-			case 'summary':
-				summary.load();
-				break;
-			case 'timeseries':
-				timeseries.load();
-				break;
-			case 'latency':
-				latency.load();
-				break;
-			case 'api-keys':
-				apiKeys.load();
-				break;
-			case 'users':
-				users.load();
-				break;
-			case 'models':
-				models.load();
-				break;
-			case 'upstreams':
-				upstreams.load();
-				break;
-			case 'errors':
-				errors.load();
-				break;
-		}
+		const resource = resources[tab as keyof typeof resources];
+		void resource?.load();
 	});
 
 	function setParam(key: string, value: string, fallback: string) {
@@ -117,76 +93,13 @@
 		{ id: 'day', label: 'Day' }
 	];
 
-	function bucketLabel(value: string): { hour: '2-digit'; minute: '2-digit' } | { month: 'short'; day: '2-digit' } {
-		return value === 'day' ? { month: 'short', day: '2-digit' } : { hour: '2-digit', minute: '2-digit' };
-	}
 
-	const chartData = $derived.by<ChartData>(() => {
-		const points = timeseries.data?.points ?? [];
-		const colors = chartColors();
-		const fmt = bucketLabel(bucket);
-		return {
-			labels: points.map((p) => new Date(p.bucket).toLocaleString(undefined, fmt)),
-			datasets: [
-				{
-					label: 'Requests',
-					data: points.map((p) => p.request_count),
-					borderColor: colors.brand,
-					backgroundColor: withAlpha(colors.brand, 0.15),
-					fill: true,
-					tension: 0.3,
-					pointRadius: 0,
-					borderWidth: 2
-				},
-				{
-					label: 'Errors',
-					data: points.map((p) => p.error_count),
-					borderColor: colors.danger,
-					backgroundColor: withAlpha(colors.danger, 0.12),
-					fill: true,
-					tension: 0.3,
-					pointRadius: 0,
-					borderWidth: 2
-				}
-			]
-		};
-	});
-
-	const latencyChartData = $derived.by<ChartData>(() => {
-		const points = timeseries.data?.points ?? [];
-		const colors = chartColors();
-		const fmt = bucketLabel(bucket);
-		return {
-			labels: points.map((p) => new Date(p.bucket).toLocaleString(undefined, fmt)),
-			datasets: [
-				{
-					label: 'Avg duration (ms)',
-					data: points.map((p) => p.avg_duration_ms),
-					borderColor: colors.info,
-					backgroundColor: withAlpha(colors.info, 0.12),
-					fill: true,
-					tension: 0.3,
-					pointRadius: 0,
-					borderWidth: 2
-				},
-				{
-					label: 'Avg TTFT (ms)',
-					data: points.map((p) => p.avg_ttft_ms),
-					borderColor: colors.warning,
-					backgroundColor: withAlpha(colors.warning, 0.1),
-					fill: true,
-					tension: 0.3,
-					pointRadius: 0,
-					borderWidth: 2
-				}
-			]
-		};
-	});
+	const chartData = $derived(usageChartData(timeseries.data?.points ?? [], bucket));
+	const latencyChartData = $derived(usageChartData(timeseries.data?.points ?? [], bucket, 'latency'));
 
 	const chartOptions = $derived(baseTimeChartOptions());
 
 	const summaryTotals = $derived(summary.data?.totals);
-	const modelMax = $derived(Math.max(1, ...(summary.data?.top_models ?? []).map((m) => m.request_count)));
 	const upstreamMax = $derived(Math.max(1, ...(summary.data?.top_upstreams ?? []).map((m) => m.request_count)));
 
 	const latencyColumns: Column[] = [
@@ -239,6 +152,7 @@
 		if (rate >= 0.05) return 'warning';
 		return 'neutral';
 	}
+
 </script>
 
 <svelte:head><title>Analytics · llmtrace</title></svelte:head>
@@ -271,39 +185,10 @@
 
 	<div class="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
 		<Card title="Top models">
-			{#if (summary.data?.top_models.length ?? 0) === 0}
-				<p class="text-fg-muted text-sm">No traffic in this window.</p>
-			{:else}
-				<div class="flex flex-col gap-3">
-					{#each summary.data?.top_models ?? [] as model (model.name)}
-						<MiniBar
-							label={model.name}
-							value={model.request_count}
-							max={modelMax}
-							display={`${formatNumber(model.request_count)}${model.error_count > 0 ? ` · ${model.error_count} err` : ''}`}
-							href={`${base}/requests?model=${encodeURIComponent(model.name)}`}
-						/>
-					{/each}
-				</div>
-			{/if}
+			<UsageRanking items={summary.data?.top_models ?? []} dimension="model" />
 		</Card>
 		<Card title="Top upstreams">
-			{#if (summary.data?.top_upstreams.length ?? 0) === 0}
-				<p class="text-fg-muted text-sm">No traffic in this window.</p>
-			{:else}
-				<div class="flex flex-col gap-3">
-					{#each summary.data?.top_upstreams ?? [] as up (up.name)}
-						<MiniBar
-							label={up.name}
-							value={up.request_count}
-							max={upstreamMax}
-							tone="var(--color-info)"
-							display={`${formatNumber(up.request_count)}${up.error_count > 0 ? ` · ${up.error_count} err` : ''}`}
-							href={`${base}/requests?upstream_host=${encodeURIComponent(up.name)}`}
-						/>
-					{/each}
-				</div>
-			{/if}
+			<UsageRanking items={summary.data?.top_upstreams ?? []} dimension="upstream_host" />
 		</Card>
 	</div>
 

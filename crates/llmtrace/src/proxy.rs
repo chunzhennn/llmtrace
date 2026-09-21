@@ -224,6 +224,7 @@ async fn proxy_http(
     );
     let plugin_request_headers = headers_to_json(&parts.headers);
     let request_secret_hash = redacted_request_headers.first_secret_hash.clone();
+    let credential_scope_hash = redacted_request_headers.credential_scope_hash.clone();
 
     if content_length_exceeds(&parts.headers, max_request_body_bytes) {
         let message = request_body_limit_message(max_request_body_bytes);
@@ -236,6 +237,7 @@ async fn proxy_http(
             status: Some(StatusCode::PAYLOAD_TOO_LARGE.as_u16() as i32),
             error: Some(message),
             api_key_hash: request_secret_hash,
+            credential_scope_hash,
             duration_ms: Some(started.elapsed().as_millis() as i64),
             request_headers: redacted_request_headers.json,
             plugin_request_headers,
@@ -287,6 +289,7 @@ async fn proxy_http(
                     .then_some(StatusCode::PAYLOAD_TOO_LARGE.as_u16() as i32),
                 error: Some(error_message),
                 api_key_hash: request_secret_hash,
+                credential_scope_hash,
                 duration_ms: Some(started.elapsed().as_millis() as i64),
                 request_body_bytes: request.total_bytes,
                 request_headers: redacted_request_headers.json,
@@ -324,6 +327,7 @@ async fn proxy_http(
         upstream_host,
         status: Some(status.as_u16() as i32),
         api_key_hash: request_secret_hash,
+        credential_scope_hash,
         request_headers: redacted_request_headers.json,
         response_headers: redacted_response_headers.json,
         plugin_request_headers,
@@ -617,6 +621,7 @@ async fn proxy_websocket(
             upstream_host,
             redacted_headers.json,
             redacted_headers.first_secret_hash,
+            redacted_headers.credential_scope_hash,
             parts.headers,
             capture,
         )
@@ -639,6 +644,7 @@ async fn handle_websocket(
     upstream_host: Option<String>,
     request_headers: Value,
     api_key_hash: Option<String>,
+    credential_scope_hash: Option<String>,
     original_headers: HeaderMap,
     capture: bool,
 ) {
@@ -658,6 +664,7 @@ async fn handle_websocket(
                 upstream_host,
                 request_headers,
                 api_key_hash,
+                credential_scope_hash,
                 error.to_string(),
                 started.elapsed().as_millis() as i64,
             )
@@ -711,6 +718,7 @@ async fn handle_websocket(
                 upstream_host,
                 request_headers,
                 api_key_hash,
+                credential_scope_hash,
                 error,
                 started.elapsed().as_millis() as i64,
             )
@@ -806,6 +814,7 @@ async fn handle_websocket(
         error,
         request_kind: Some(RequestKind::WebSocket),
         api_key_hash,
+        credential_scope_hash,
         duration_ms: Some(duration_ms),
         request_body_bytes: stats.bytes_in,
         response_body_bytes: stats.bytes_out,
@@ -836,6 +845,7 @@ async fn persist_ws_error(
     upstream_host: Option<String>,
     request_headers: Value,
     api_key_hash: Option<String>,
+    credential_scope_hash: Option<String>,
     error: String,
     duration_ms: i64,
 ) {
@@ -848,6 +858,7 @@ async fn persist_ws_error(
         error: Some(error),
         request_kind: Some(RequestKind::WebSocket),
         api_key_hash,
+        credential_scope_hash,
         duration_ms: Some(duration_ms),
         request_headers,
         content_type: Some("websocket".to_string()),

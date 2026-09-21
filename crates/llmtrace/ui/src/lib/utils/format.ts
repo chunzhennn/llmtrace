@@ -62,46 +62,6 @@ export function formatDateTime(value: string | null | undefined): string {
 	});
 }
 
-export function formatDate(value: string | null | undefined): string {
-	if (!value) return '-';
-	const date = new Date(value);
-	if (Number.isNaN(date.getTime())) return value;
-	return date.toLocaleDateString(undefined, {
-		year: 'numeric',
-		month: 'short',
-		day: '2-digit'
-	});
-}
-
-export function formatRelativeTime(value: string | null | undefined): string {
-	if (!value) return '-';
-	const date = new Date(value);
-	if (Number.isNaN(date.getTime())) return value;
-	const diffMs = date.getTime() - Date.now();
-	const abs = Math.abs(diffMs);
-	if (abs < 1000) return 'just now';
-
-	const divisions: [number, Intl.RelativeTimeFormatUnit][] = [
-		[1000, 'second'],
-		[60 * 1000, 'minute'],
-		[60 * 60 * 1000, 'hour'],
-		[24 * 60 * 60 * 1000, 'day'],
-		[7 * 24 * 60 * 60 * 1000, 'week'],
-		[30 * 24 * 60 * 60 * 1000, 'month'],
-		[365 * 24 * 60 * 60 * 1000, 'year']
-	];
-	let unitMs = 1000;
-	let unit: Intl.RelativeTimeFormatUnit = 'second';
-	for (const [threshold, candidate] of divisions) {
-		if (abs >= threshold) {
-			unitMs = threshold;
-			unit = candidate;
-		}
-	}
-	const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
-	return rtf.format(Math.round(diffMs / unitMs), unit);
-}
-
 export function formatSecondsDuration(seconds: number | null | undefined): string {
 	if (seconds === null || seconds === undefined || Number.isNaN(seconds)) return '-';
 	if (seconds < 0) return 'expired';

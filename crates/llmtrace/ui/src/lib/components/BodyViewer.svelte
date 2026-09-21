@@ -5,6 +5,7 @@
 	import JsonViewer from './JsonViewer.svelte';
 	import EmptyState from './EmptyState.svelte';
 	import { formatBytes, safeJsonParse } from '$lib/utils/format';
+	import type { BodyStatus } from '$lib/api/types';
 
 	interface Props {
 		body: string;
@@ -12,6 +13,7 @@
 		byteSize?: number | null;
 		truncated?: boolean;
 		filename?: string;
+		status?: BodyStatus | null;
 	}
 
 	let {
@@ -19,6 +21,7 @@
 		contentType,
 		byteSize,
 		truncated = false,
+		status,
 		filename = 'body.txt'
 	}: Props = $props();
 
@@ -85,7 +88,11 @@
 	</div>
 
 	{#if large}<p class="text-xs opacity-70">Showing the first 128 KiB of text. Download the captured body to inspect the rest.</p>{/if}
-	{#if body.length === 0}
+	{#if status === 'missing' || status === 'unreadable'}
+		<EmptyState icon="alert" title="Body unavailable" message={status === 'missing' ? 'Traffic was recorded, but its stored body is missing.' : 'The stored body could not be read or failed its integrity check.'} />
+	{:else if body.length === 0 && status === 'available'}
+		<EmptyState icon="inbox" title="Empty body" message="The captured payload contains no bytes." />
+	{:else if body.length === 0}
 		<EmptyState icon="inbox" title="No body captured" message="This payload was empty or not stored." />
 	{:else if showJson}
 		<JsonViewer value={parsed.value} />

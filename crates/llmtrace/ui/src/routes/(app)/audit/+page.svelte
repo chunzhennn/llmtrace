@@ -11,7 +11,7 @@
 	import Field from '$lib/components/Field.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import Badge from '$lib/components/Badge.svelte';
-	import { Resource } from '$lib/utils/resource.svelte';
+	import { createResource } from '$lib/utils/resource.svelte';
 	import * as auditApi from '$lib/api/endpoints/audit';
 	import { exportJsonl } from '$lib/api/download';
 	import { toasts } from '$lib/state/toast.svelte';
@@ -31,8 +31,8 @@
 		return params;
 	}
 
-	const events = new Resource<AuditEventsResponse>((signal) => auditApi.listAuditEvents(currentParams(), signal));
-	const summary = new Resource<AuditSummary>((signal) => auditApi.auditSummary({ since_hours: 168 }, signal));
+	const events = createResource<AuditEventsResponse>((signal) => auditApi.listAuditEvents(currentParams(), signal));
+	const summary = createResource<AuditSummary>((signal) => auditApi.auditSummary({ since_hours: 168 }, signal));
 
 	$effect(() => {
 		void page.url.search;
@@ -80,6 +80,7 @@
 	];
 
 	const totals = $derived(summary.data?.totals);
+
 </script>
 
 <svelte:head><title>Audit Log · llmtrace</title></svelte:head>

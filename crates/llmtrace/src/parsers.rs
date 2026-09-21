@@ -1,7 +1,6 @@
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::storage::ParsedMessage;
+use crate::types::ParsedMessage;
 use crate::types::RequestKind;
 
 #[derive(Debug, Clone, Default)]
@@ -14,16 +13,7 @@ pub struct ParsedTrace {
 }
 
 mod response;
-pub use response::{ResponseDetails, ToolCall};
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TokenUsage {
-    /// Total input, including cache reads and cache writes for all providers.
-    pub input_tokens: Option<i64>,
-    pub output_tokens: Option<i64>,
-    pub cached_input_tokens: Option<i64>,
-    pub cache_creation_input_tokens: Option<i64>,
-}
+pub use response::ResponseDetails;
 
 pub fn parse_trace(uri: &str, request_body: &[u8], response_body: &[u8]) -> ParsedTrace {
     let request_json = serde_json::from_slice::<Value>(request_body).ok();

@@ -1,20 +1,12 @@
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::TokenUsage;
 use crate::types::RequestKind;
+use crate::types::{TokenUsage, ToolCall};
 
 const MAX_TOOLS: usize = 128;
 const MAX_TOOL_TEXT_BYTES: usize = 16 * 1024;
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ToolCall {
-    pub id: String,
-    pub name: String,
-    pub arguments: String,
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct ResponseDetails {

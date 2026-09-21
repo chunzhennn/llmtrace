@@ -1,4 +1,5 @@
-import type { ChartOptions } from 'chart.js';
+import type { ChartData, ChartOptions } from 'chart.js';
+import type { TimeseriesPoint } from '$lib/api/types';
 import { theme } from '$lib/state/theme.svelte';
 
 function cssVar(name: string, fallback: string): string {
@@ -61,5 +62,25 @@ export function baseTimeChartOptions(): ChartOptions {
 				ticks: { color: colors.fg, precision: 0 }
 			}
 		}
+	};
+}
+
+export function usageChartData(
+	points: TimeseriesPoint[],
+	bucket = 'hour',
+	kind: 'requests' | 'latency' = 'requests'
+): ChartData<'line'> {
+	const colors = chartColors();
+	const series = kind === 'requests'
+		? [['Requests', 'request_count', colors.brand, 0.15], ['Errors', 'error_count', colors.danger, 0.12]] as const
+		: [['Avg duration (ms)', 'avg_duration_ms', colors.info, 0.12], ['Avg TTFT (ms)', 'avg_ttft_ms', colors.warning, 0.1]] as const;
+	const format: Intl.DateTimeFormatOptions = bucket === 'day'
+		? { month: 'short', day: '2-digit' } : { hour: '2-digit', minute: '2-digit' };
+	return {
+		labels: points.map((point) => new Date(point.bucket).toLocaleString(undefined, format)),
+		datasets: series.map(([label, field, color, alpha]) => ({
+			label, data: points.map((point) => point[field]), borderColor: color,
+			backgroundColor: withAlpha(color, alpha), fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2
+		}))
 	};
 }

@@ -99,3 +99,25 @@ impl fmt::Display for LoginMethod {
         formatter.write_str(self.as_str())
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParsedMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TokenUsage {
+    /// Total input, including cache reads and cache writes for all providers.
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cached_input_tokens: Option<i64>,
+    pub cache_creation_input_tokens: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}

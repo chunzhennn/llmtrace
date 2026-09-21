@@ -8,13 +8,14 @@
 	import ErrorState from '$lib/components/ErrorState.svelte';
 	import Spinner from '$lib/components/Spinner.svelte';
 	import Icon from '$lib/components/Icon.svelte';
-	import { Resource } from '$lib/utils/resource.svelte';
+	import { createResource } from '$lib/utils/resource.svelte';
 	import * as admin from '$lib/api/endpoints/admin';
 	import type { PluginsResponse } from '$lib/api/types';
 	import { formatNumber } from '$lib/utils/format';
 
-	const plugins = new Resource<PluginsResponse>((signal) => admin.plugins(signal));
+	const plugins = createResource<PluginsResponse>((signal) => admin.plugins(signal));
 	onMount(() => plugins.load());
+
 </script>
 
 <svelte:head><title>Plugins · llmtrace</title></svelte:head>

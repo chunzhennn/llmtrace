@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
+use std::time::Duration;
 
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -30,6 +32,8 @@ const MAX_REDACTION_PREVIEW_BODY_BYTES: usize = 64 * 1024;
 const UI_SESSION_HASH_BYTES: usize = 64;
 const JSONL_CONTENT_TYPE: &str = "application/x-ndjson; charset=utf-8";
 const EXPORT_ROWS_HEADER: HeaderName = HeaderName::from_static("x-llmtrace-export-rows");
+const SESSION_EXPORT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+static SESSION_EXPORT_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 const REQUEST_KIND_FILTERS: &[&str] = &[
     "openai_chat_completions",
     "openai_responses",
@@ -61,13 +65,7 @@ struct RequestListQuery {
 }
 
 #[derive(Debug, Deserialize)]
-struct RequestFacetQuery {
-    since_hours: Option<i64>,
-    limit: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RecentErrorRequestsQuery {
+struct WindowQuery {
     since_hours: Option<i64>,
     limit: Option<i64>,
 }
@@ -120,66 +118,13 @@ struct AuditEventListQuery {
 }
 
 #[derive(Debug, Deserialize)]
-struct AuditSummaryQuery {
-    since_hours: Option<i64>,
-    limit: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct UsageSummaryQuery {
-    since_hours: Option<i64>,
-    limit: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ApiKeyUsageQuery {
-    since_hours: Option<i64>,
-    limit: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ModelUsageQuery {
-    since_hours: Option<i64>,
-    limit: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct UserUsageQuery {
-    since_hours: Option<i64>,
-    limit: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct UpstreamHealthQuery {
-    since_hours: Option<i64>,
-    limit: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ErrorSummaryQuery {
-    since_hours: Option<i64>,
-    limit: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct LatencySummaryQuery {
-    since_hours: Option<i64>,
-    limit: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
 struct UsageTimeseriesQuery {
     since_hours: Option<i64>,
     bucket: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct DataOverviewQuery {
-    since_hours: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct DataIntegrityQuery {
+struct LookbackQuery {
     since_hours: Option<i64>,
 }
 
@@ -227,6 +172,7 @@ pub fn router() -> Router<AppState> {
         .route("/requests/export.jsonl", get(export_requests_jsonl))
         .route("/requests/{id}", get(get_request))
         .route("/sessions", get(list_sessions))
+        .route("/sessions/{id}/export.jsonl", get(export_session_jsonl))
         .route(
             "/sessions/{id}/requests/export.jsonl",
             get(export_session_requests_jsonl),
@@ -272,17 +218,11 @@ async fn security_posture_report(State(state): State<AppState>) -> Response {
 }
 
 async fn retention_status(State(state): State<AppState>) -> Response {
-    match storage::retention_status(&state.pool, &state.config.storage).await {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
+    json_response(storage::retention_status(&state.pool, &state.config.storage).await)
 }
 
 async fn storage_summary(State(state): State<AppState>) -> Response {
-    match storage::storage_summary(&state.pool).await {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
+    json_response(storage::storage_summary(&state.pool).await)
 }
 
 async fn redaction_preview(
@@ -297,72 +237,45 @@ async fn redaction_preview(
 
 async fn usage_summary(
     State(state): State<AppState>,
-    Query(query): Query<UsageSummaryQuery>,
+    Query(query): Query<WindowQuery>,
 ) -> Response {
-    match storage::usage_summary(&state.pool, query.since_hours, query.limit).await {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
+    json_response(storage::usage_summary(&state.pool, query.since_hours, query.limit).await)
 }
 
 async fn api_key_usage(
     State(state): State<AppState>,
-    Query(query): Query<ApiKeyUsageQuery>,
+    Query(query): Query<WindowQuery>,
 ) -> Response {
-    match storage::api_key_usage(&state.pool, query.since_hours, query.limit).await {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
+    json_response(storage::api_key_usage(&state.pool, query.since_hours, query.limit).await)
 }
 
-async fn model_usage(
-    State(state): State<AppState>,
-    Query(query): Query<ModelUsageQuery>,
-) -> Response {
-    match storage::model_usage(&state.pool, query.since_hours, query.limit).await {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
+async fn model_usage(State(state): State<AppState>, Query(query): Query<WindowQuery>) -> Response {
+    json_response(storage::model_usage(&state.pool, query.since_hours, query.limit).await)
 }
 
-async fn user_usage(
-    State(state): State<AppState>,
-    Query(query): Query<UserUsageQuery>,
-) -> Response {
-    match storage::user_usage(&state.pool, query.since_hours, query.limit).await {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
+async fn user_usage(State(state): State<AppState>, Query(query): Query<WindowQuery>) -> Response {
+    json_response(storage::user_usage(&state.pool, query.since_hours, query.limit).await)
 }
 
 async fn upstream_health(
     State(state): State<AppState>,
-    Query(query): Query<UpstreamHealthQuery>,
+    Query(query): Query<WindowQuery>,
 ) -> Response {
-    match storage::upstream_health(&state.pool, query.since_hours, query.limit).await {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
+    json_response(storage::upstream_health(&state.pool, query.since_hours, query.limit).await)
 }
 
 async fn error_summary(
     State(state): State<AppState>,
-    Query(query): Query<ErrorSummaryQuery>,
+    Query(query): Query<WindowQuery>,
 ) -> Response {
-    match storage::error_summary(&state.pool, query.since_hours, query.limit).await {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
+    json_response(storage::error_summary(&state.pool, query.since_hours, query.limit).await)
 }
 
 async fn latency_summary(
     State(state): State<AppState>,
-    Query(query): Query<LatencySummaryQuery>,
+    Query(query): Query<WindowQuery>,
 ) -> Response {
-    match storage::latency_summary(&state.pool, query.since_hours, query.limit).await {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
+    json_response(storage::latency_summary(&state.pool, query.since_hours, query.limit).await)
 }
 
 async fn usage_timeseries(
@@ -374,30 +287,23 @@ async fn usage_timeseries(
         Err(message) => return bad_request(message),
     };
 
-    match storage::usage_timeseries(&state.pool, query.since_hours, bucket.as_deref()).await {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
+    json_response(
+        storage::usage_timeseries(&state.pool, query.since_hours, bucket.as_deref()).await,
+    )
 }
 
 async fn data_overview(
     State(state): State<AppState>,
-    Query(query): Query<DataOverviewQuery>,
+    Query(query): Query<LookbackQuery>,
 ) -> Response {
-    match storage::data_overview(&state.pool, query.since_hours).await {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
+    json_response(storage::data_overview(&state.pool, query.since_hours).await)
 }
 
 async fn data_integrity(
     State(state): State<AppState>,
-    Query(query): Query<DataIntegrityQuery>,
+    Query(query): Query<LookbackQuery>,
 ) -> Response {
-    match storage::data_integrity(&state.pool, query.since_hours).await {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
+    json_response(storage::data_integrity(&state.pool, query.since_hours).await)
 }
 
 async fn list_requests(
@@ -409,10 +315,7 @@ async fn list_requests(
         Err(message) => return bad_request(message),
     };
 
-    match storage::list_requests(&state.pool, filters).await {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
+    json_response(storage::list_requests(&state.pool, filters).await)
 }
 
 async fn export_requests_jsonl(
@@ -432,22 +335,16 @@ async fn export_requests_jsonl(
 
 async fn request_facets(
     State(state): State<AppState>,
-    Query(query): Query<RequestFacetQuery>,
+    Query(query): Query<WindowQuery>,
 ) -> Response {
-    match storage::request_facets(&state.pool, query.since_hours, query.limit).await {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
+    json_response(storage::request_facets(&state.pool, query.since_hours, query.limit).await)
 }
 
 async fn recent_error_requests(
     State(state): State<AppState>,
-    Query(query): Query<RecentErrorRequestsQuery>,
+    Query(query): Query<WindowQuery>,
 ) -> Response {
-    match storage::recent_error_requests(&state.pool, query.since_hours, query.limit).await {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
+    json_response(storage::recent_error_requests(&state.pool, query.since_hours, query.limit).await)
 }
 
 async fn slow_requests(
@@ -460,18 +357,16 @@ async fn slow_requests(
             Err(message) => return bad_request(message),
         };
 
-    match storage::slow_requests(
-        &state.pool,
-        query.since_hours,
-        min_duration_ms,
-        query.limit,
-        query.offset,
+    json_response(
+        storage::slow_requests(
+            &state.pool,
+            query.since_hours,
+            min_duration_ms,
+            query.limit,
+            query.offset,
+        )
+        .await,
     )
-    .await
-    {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
 }
 
 async fn get_request(
@@ -506,10 +401,71 @@ async fn list_sessions(
         Err(message) => return bad_request(message),
     };
 
-    match storage::list_sessions(&state.pool, q, query.limit, query.offset).await {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
+    json_response(storage::list_sessions(&state.pool, q, query.limit, query.offset).await)
+}
+
+async fn export_session_jsonl(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
+    let Ok(permit) = SESSION_EXPORT_SLOTS.try_acquire() else {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, "5")],
+            Json(json!({"error": "session export capacity reached; retry later"})),
+        )
+            .into_response();
+    };
+    let export = match storage::session_export::SessionExport::prepare(
+        &state.pool,
+        &state.config.archive,
+        id,
+    )
+    .await
+    {
+        Ok(Some(export)) => export,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "session not found"})),
+            )
+                .into_response();
+        }
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    tokio::spawn(async move {
+        let _permit = permit;
+        // Cancellation releases the snapshot even if the browser stops reading.
+        let result = tokio::select! {
+            _ = sender.closed() => return,
+            result = tokio::time::timeout(SESSION_EXPORT_TIMEOUT, export.write(&sender)) => result,
+        };
+        let error = match result {
+            Ok(Ok(())) => return,
+            Ok(Err(error)) => error,
+            Err(_) => anyhow::anyhow!("session export exceeded its time limit"),
+        };
+        tracing::warn!(%id, %error, "session export failed");
+        // If backpressure prevents the error frame, closing without an end record
+        // still lets consumers detect an incomplete export.
+        let _ = sender.try_send(Err(std::io::Error::other("session export incomplete")));
+    });
+    let stream = futures_util::stream::unfold(receiver, |mut receiver| async {
+        receiver.recv().await.map(|item| (item, receiver))
+    });
+    let mut response = Body::from_stream(stream).into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(JSONL_CONTENT_TYPE),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!(
+            "attachment; filename=\"llmtrace-session-{id}.jsonl\""
+        ))
+        .expect("UUID attachment filename is a valid header"),
+    );
+    response
 }
 
 async fn export_session_requests_jsonl(
@@ -580,17 +536,15 @@ async fn list_ui_sessions(
     State(state): State<AppState>,
     Query(query): Query<UiSessionListQuery>,
 ) -> Response {
-    match storage::list_ui_sessions(
-        &state.pool,
-        query.include_expired.unwrap_or(false),
-        query.limit,
-        query.offset,
+    json_response(
+        storage::list_ui_sessions(
+            &state.pool,
+            query.include_expired.unwrap_or(false),
+            query.limit,
+            query.offset,
+        )
+        .await,
     )
-    .await
-    {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
 }
 
 async fn revoke_ui_session(
@@ -640,12 +594,10 @@ async fn list_audit_events(
         Err(message) => return bad_request(message),
     };
 
-    match storage::list_audit_events(&state.pool, event_type, user_id, query.limit, query.offset)
-        .await
-    {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
+    json_response(
+        storage::list_audit_events(&state.pool, event_type, user_id, query.limit, query.offset)
+            .await,
+    )
 }
 
 async fn export_audit_events_jsonl(
@@ -667,12 +619,9 @@ async fn export_audit_events_jsonl(
 
 async fn audit_summary(
     State(state): State<AppState>,
-    Query(query): Query<AuditSummaryQuery>,
+    Query(query): Query<WindowQuery>,
 ) -> Response {
-    match storage::audit_summary(&state.pool, query.since_hours, query.limit).await {
-        Ok(value) => Json(value).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
-    }
+    json_response(storage::audit_summary(&state.pool, query.since_hours, query.limit).await)
 }
 
 async fn run_query(
@@ -840,6 +789,13 @@ fn bad_request(message: impl Into<String>) -> Response {
         .into_response()
 }
 
+fn json_response<T: serde::Serialize>(result: anyhow::Result<T>) -> Response {
+    match result {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
 fn api_error(status: StatusCode, error: anyhow::Error) -> Response {
     if status.is_server_error() {
         tracing::error!(%error, %status, "api request failed");
@@ -858,63 +814,53 @@ fn structured_query_error(error: storage::StructuredQueryError) -> Response {
 }
 
 fn structured_query_jsonl_response(value: Value) -> Response {
-    let Some(rows) = value.get("rows").and_then(Value::as_array) else {
-        return api_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            anyhow::anyhow!("structured query result did not contain a row array"),
-        );
-    };
     let dataset = value
         .get("dataset")
         .and_then(Value::as_str)
         .unwrap_or("query");
-
-    jsonl_response(
-        rows,
+    export_rows(
+        &value,
+        "rows",
         &format!("llmtrace-{dataset}.jsonl"),
         "llmtrace-query.jsonl",
     )
 }
 
 fn request_list_jsonl_response(value: Value) -> Response {
-    let Some(rows) = value.get("items").and_then(Value::as_array) else {
-        return api_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            anyhow::anyhow!("request list result did not contain an item array"),
-        );
-    };
-
-    jsonl_response(rows, "llmtrace-requests.jsonl", "llmtrace-requests.jsonl")
+    export_rows(
+        &value,
+        "items",
+        "llmtrace-requests.jsonl",
+        "llmtrace-requests.jsonl",
+    )
 }
 
 fn session_messages_jsonl_response(value: Value) -> Response {
-    let Some(rows) = value.get("messages").and_then(Value::as_array) else {
-        return api_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            anyhow::anyhow!("session result did not contain a message array"),
-        );
-    };
-
-    jsonl_response(
-        rows,
+    export_rows(
+        &value,
+        "messages",
         "llmtrace-session-messages.jsonl",
         "llmtrace-session-messages.jsonl",
     )
 }
 
 fn audit_event_jsonl_response(value: Value) -> Response {
-    let Some(rows) = value.get("items").and_then(Value::as_array) else {
-        return api_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            anyhow::anyhow!("audit event list result did not contain an item array"),
-        );
-    };
-
-    jsonl_response(
-        rows,
+    export_rows(
+        &value,
+        "items",
         "llmtrace-audit-events.jsonl",
         "llmtrace-audit-events.jsonl",
     )
+}
+
+fn export_rows(value: &Value, key: &str, filename: &str, fallback: &'static str) -> Response {
+    match value.get(key).and_then(Value::as_array) {
+        Some(rows) => jsonl_response(rows, filename, fallback),
+        None => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            anyhow::anyhow!("export result is missing {key}"),
+        ),
+    }
 }
 
 fn jsonl_response(rows: &[Value], filename: &str, fallback_filename: &'static str) -> Response {
@@ -992,36 +938,28 @@ fn audit_event_filters(
     ))
 }
 
-fn normalize_request_search(q: Option<String>) -> Result<Option<String>, String> {
-    let Some(q) = q else {
-        return Ok(None);
-    };
-    let q = q.trim();
-    if q.is_empty() {
-        return Ok(None);
-    }
-    if q.len() > MAX_REQUEST_SEARCH_BYTES {
-        return Err(format!(
-            "q must be at most {MAX_REQUEST_SEARCH_BYTES} bytes"
-        ));
-    }
-    Ok(Some(q.to_string()))
-}
-
-fn normalize_request_filter(field: &str, value: Option<String>) -> Result<Option<String>, String> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
+fn normalize_text(
+    field: &str,
+    value: Option<String>,
+    max_bytes: usize,
+) -> Result<Option<String>, String> {
+    let Some(value) = value else { return Ok(None) };
     let value = value.trim();
     if value.is_empty() {
         return Ok(None);
     }
-    if value.len() > MAX_REQUEST_FILTER_BYTES {
-        return Err(format!(
-            "{field} must be at most {MAX_REQUEST_FILTER_BYTES} bytes"
-        ));
+    if value.len() > max_bytes {
+        return Err(format!("{field} must be at most {max_bytes} bytes"));
     }
-    Ok(Some(value.to_string()))
+    Ok(Some(value.to_owned()))
+}
+
+fn normalize_request_search(q: Option<String>) -> Result<Option<String>, String> {
+    normalize_text("q", q, MAX_REQUEST_SEARCH_BYTES)
+}
+
+fn normalize_request_filter(field: &str, value: Option<String>) -> Result<Option<String>, String> {
+    normalize_text(field, value, MAX_REQUEST_FILTER_BYTES)
 }
 
 fn normalize_request_kind_filter(value: Option<String>) -> Result<Option<String>, String> {
@@ -1143,19 +1081,7 @@ fn normalize_optional_timestamp_filter(
 }
 
 fn normalize_optional_filter(field: &str, value: Option<String>) -> Result<Option<String>, String> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    let value = value.trim();
-    if value.is_empty() {
-        return Ok(None);
-    }
-    if value.len() > MAX_AUDIT_FILTER_BYTES {
-        return Err(format!(
-            "{field} must be at most {MAX_AUDIT_FILTER_BYTES} bytes"
-        ));
-    }
-    Ok(Some(value.to_string()))
+    normalize_text(field, value, MAX_AUDIT_FILTER_BYTES)
 }
 
 fn normalize_usage_timeseries_bucket(value: Option<String>) -> Result<Option<String>, String> {

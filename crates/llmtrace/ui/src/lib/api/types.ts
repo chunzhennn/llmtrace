@@ -162,6 +162,8 @@ export interface RedactedHeader {
 
 export type HeaderValue = string | RedactedHeader;
 
+export type BodyStatus = 'available' | 'missing' | 'unreadable';
+
 export interface RequestDetail extends RequestSummary {
 	tool_calls: ToolCall[];
 	bodies_included: boolean;
@@ -170,6 +172,8 @@ export interface RequestDetail extends RequestSummary {
 	response_headers: Record<string, HeaderValue>;
 	request_body: string;
 	response_body: string;
+	request_body_status: BodyStatus | null;
+	response_body_status: BodyStatus | null;
 	request_body_bytes: number;
 	response_body_bytes: number;
 	content_type: string | null;
@@ -264,6 +268,41 @@ export interface SessionDetail {
 export interface SessionRequestsResponse extends Paginated<RequestSummary> {
 	session_id: Uuid;
 }
+
+export interface SessionExportBody {
+	status: BodyStatus;
+	encoding: 'utf8' | 'base64' | null;
+	data: string | null;
+	captured_bytes: number | null;
+	truncated: boolean;
+}
+
+/** Version 1 of GET /sessions/{id}/export.jsonl; an end record is required. */
+export type SessionExportRecord =
+	| {
+			type: 'session';
+			schema_version: 1;
+			exported_at: Rfc3339;
+			session: Omit<SessionDetail, 'request_stats' | 'messages' | 'messages_page'>;
+			request_count: number;
+	  }
+	| {
+			type: 'request';
+			request: Omit<RequestDetail, 'request_body' | 'response_body' | 'bodies_included' | 'request_body_status' | 'response_body_status'>;
+			request_body: SessionExportBody;
+			response_body: SessionExportBody;
+			message_previews: SessionMessage[];
+	  }
+	| {
+			type: 'end';
+			session_id: Uuid;
+			export_complete: true;
+			request_count: number;
+			message_preview_count: number;
+			truncated_body_count: number;
+			unavailable_body_count: number;
+			captured_bodies_complete: boolean;
+	  };
 
 // ---------------------------------------------------------------------------
 // Analytics

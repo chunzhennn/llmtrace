@@ -11,6 +11,8 @@ const REDACTED_QUERY_VALUE: &str = "REDACTED";
 pub struct RedactedHeaders {
     pub json: Value,
     pub first_secret_hash: Option<String>,
+    /// Internal grouping identity; independent of persisted header fingerprints.
+    pub credential_scope_hash: Option<String>,
 }
 
 pub fn redact_headers(
@@ -21,21 +23,13 @@ pub fn redact_headers(
     let mut map = Map::new();
     // Account attribution must not depend on HeaderMap iteration order or on
     // unrelated cookies, CSRF tokens, or passwords.
+    let credential_scope_hash = CREDENTIAL_HEADERS
+        .iter()
+        .find_map(|name| headers.get(*name))
+        .map(|value| sha256_hex(value.as_bytes()));
     let first_secret_hash = config
         .store_header_hash
-        .then(|| {
-            [
-                "authorization",
-                "x-api-key",
-                "api-key",
-                "openai-api-key",
-                "anthropic-api-key",
-                "x-goog-api-key",
-            ]
-            .iter()
-            .find_map(|name| headers.get(*name))
-            .map(|value| sha256_hex(value.as_bytes()))
-        })
+        .then(|| credential_scope_hash.clone())
         .flatten();
     let upstream_header = upstream_header.trim().to_ascii_lowercase();
 
@@ -61,7 +55,26 @@ pub fn redact_headers(
     RedactedHeaders {
         json: Value::Object(map),
         first_secret_hash,
+        credential_scope_hash,
     }
+}
+
+const CREDENTIAL_HEADERS: &[&str] = &[
+    "authorization",
+    "x-api-key",
+    "api-key",
+    "openai-api-key",
+    "anthropic-api-key",
+    "x-goog-api-key",
+];
+
+/// Older journal records have original plugin headers but no explicit scope field.
+pub fn credential_scope_from_headers(headers: &Value) -> Option<String> {
+    CREDENTIAL_HEADERS
+        .iter()
+        .find_map(|name| headers.get(*name).and_then(Value::as_str))
+        .filter(|value| *value != "<non-utf8>")
+        .map(|value| sha256_hex(value.as_bytes()))
 }
 
 pub fn headers_to_json(headers: &HeaderMap) -> Value {
