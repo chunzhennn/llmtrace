@@ -228,6 +228,7 @@ export interface SessionSummary {
 export interface SessionMessage {
 	id: number;
 	request_id: Uuid;
+	content_truncated: boolean | null;
 	role: string;
 	content: string;
 	created_at: Rfc3339;

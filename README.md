@@ -245,6 +245,8 @@ Structured `/api/query` requests are also bounded before SQL construction: at mo
 
 `GET /api/query/schema` returns the structured query catalog for clients and UI builders: datasets, default fields, default sort order, field filter kinds, supported operators, sort directions, query limits, and plugin metadata path constraints. Treat this response as the source of truth for generated query builders instead of hard-coding field lists from the README.
 
+The admin **Query** page offers synchronized **Builder / Code** modes. Code mode supports SQL-style `SELECT ... FROM ... WHERE ... ORDER BY ... LIMIT ...` statements, schema-aware autocomplete, syntax highlighting, formatting, inline errors, and Enter execution (Shift+Enter for a new line). Invalid code can be left as a draft while switching back to Builder. Statements are translated into the existing structured API. See the [query editor guide](docs/query-editor.md) for supported syntax and examples.
+
 Use `POST /api/query/export.jsonl` with the same structured query payload to download the selected rows as newline-delimited JSON. The export reuses the same dataset, field, filter, sort, limit, read-only transaction, and statement-timeout rules as `/api/query`; responses use `application/x-ndjson`, include `Content-Disposition: attachment`, and expose the row count in `x-llmtrace-export-rows`.
 
 ```bash

@@ -28,6 +28,17 @@ export function valueInputKind(filterKind: string | null, op: QueryOp): ValueInp
 
 export type CoerceResult = { ok: true; value: unknown } | { ok: false; error: string };
 
+const RFC3339 = /^(\d{4})-(\d\d)-(\d\d)T\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/i;
+
+export function isRfc3339Timestamp(value: string): boolean {
+	const match = RFC3339.exec(value);
+	if (!match || Number.isNaN(Date.parse(value)) || Number(value.slice(11, 13)) > 23) return false;
+	const [, year, month, day] = match.map(Number);
+	const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+	const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+	return month >= 1 && month <= 12 && day >= 1 && day <= days[month - 1];
+}
+
 /** Coerce a raw string input into the JSON value the API expects for filterKind. */
 export function coerceFilterValue(filterKind: string | null, raw: string): CoerceResult {
 	switch (filterKind) {
@@ -43,6 +54,11 @@ export function coerceFilterValue(filterKind: string | null, raw: string): Coerc
 			if (raw.trim() === '') return { ok: false, error: 'Enter a date/time' };
 			const date = new Date(raw);
 			if (Number.isNaN(date.getTime())) return { ok: false, error: 'Enter a valid date/time' };
+			// Preserve explicit offsets and sub-millisecond precision when switching editor modes.
+			if (RFC3339.test(raw)) {
+				if (!isRfc3339Timestamp(raw)) return { ok: false, error: 'Enter a valid date/time' };
+				return { ok: true, value: raw };
+			}
 			return { ok: true, value: date.toISOString() };
 		}
 		case 'json':
@@ -50,6 +66,9 @@ export function coerceFilterValue(filterKind: string | null, raw: string): Coerc
 			// Accept a JSON literal (number/bool/object/array/string); fall back to the
 			// raw text so a bare word is sent as a JSON string.
 			const parsed = safeJsonParse(raw);
+			if (parsed.ok && parsed.value === null) {
+				return { ok: false, error: 'Standalone JSON null is not supported. Use IS NULL or IS NOT NULL.' };
+			}
 			return { ok: true, value: parsed.ok ? parsed.value : raw };
 		}
 		default:

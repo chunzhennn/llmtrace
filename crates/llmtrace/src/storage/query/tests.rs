@@ -323,3 +323,25 @@ fn structured_query_allows_plugin_metadata_path_filter() {
 
     append_filter(&mut builder, dataset, &filter).unwrap();
 }
+
+#[test]
+fn message_truncation_filter_accepts_boolean_values_only() {
+    let dataset = dataset_spec("messages").unwrap();
+    for (value, accepted) in [
+        (json!(true), true),
+        (json!(false), true),
+        (json!("true"), false),
+    ] {
+        let mut builder = QueryBuilder::<Postgres>::new("");
+        let result = append_filter(
+            &mut builder,
+            dataset,
+            &QueryFilter {
+                field: "content_truncated".into(),
+                op: QueryOp::Eq,
+                value: Some(value),
+            },
+        );
+        assert_eq!(result.is_ok(), accepted);
+    }
+}

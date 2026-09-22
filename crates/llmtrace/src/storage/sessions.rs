@@ -102,7 +102,7 @@ pub async fn get_session(
         .await?;
     let messages = sqlx::query_as::<_, SessionMessage>(
         r#"
-        SELECT id, request_id, role, content, created_at
+        SELECT id, request_id, role, content, created_at, content_truncated
         FROM session_messages
         WHERE session_id = $1
         ORDER BY created_at ASC, id ASC

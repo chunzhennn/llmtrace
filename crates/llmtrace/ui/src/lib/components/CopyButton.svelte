@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from './Icon.svelte';
+	import { copyText } from '$lib/utils/clipboard';
 
 	interface Props {
 		text: string | (() => string);
@@ -14,7 +15,7 @@
 
 	async function copy() {
 		try {
-			await navigator.clipboard.writeText(typeof text === 'function' ? text() : text);
+			await copyText(typeof text === 'function' ? text() : text);
 			copied = true;
 			clearTimeout(timer);
 			timer = setTimeout(() => (copied = false), 1500);

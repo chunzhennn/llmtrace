@@ -8,6 +8,8 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 export default defineConfig({
 	plugins: [svelte({ configFile: false })],
 	resolve: {
+		// Component tests mount the SPA in jsdom using Svelte's browser runtime.
+		conditions: ['browser'],
 		alias: {
 			$lib: fileURLToPath(new URL('./src/lib', import.meta.url))
 		}

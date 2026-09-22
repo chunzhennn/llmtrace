@@ -3,7 +3,7 @@
 
 	interface Props {
 		title: string;
-		description?: string;
+		description?: string | Snippet;
 		actions?: Snippet;
 	}
 
@@ -14,7 +14,9 @@
 	<div class="min-w-0">
 		<h1 class="text-xl font-semibold">{title}</h1>
 		{#if description}
-			<p class="text-fg-muted mt-1 text-sm [overflow-wrap:anywhere]">{description}</p>
+			<p class="text-fg-muted mt-1 text-sm [overflow-wrap:anywhere]">
+				{#if typeof description === 'string'}{description}{:else}{@render description()}{/if}
+			</p>
 		{/if}
 	</div>
 	{#if actions}

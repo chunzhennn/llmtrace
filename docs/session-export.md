@@ -4,6 +4,14 @@ llmtrace records and exports captured traffic. Run scheduling, conversation revi
 summarization, and skill creation in your own workflow. The application does not
 call a model or run an analysis job when you export.
 
+For reading in the UI, **View transcript** opens `/ui/sessions/{session-id}/transcript`
+as a dedicated full-width page. It streams the retained original bodies through
+this export and reconstructs full messages without the preview limits. Exact
+repeated context prefixes are folded and can be expanded; new outputs and branch
+differences remain visible. See [Transcript behavior and limits](transcript.md).
+The original retained captures, rather than the deduplicated UI, remain the source
+for downstream analysis.
+
 Use **Export full session** on the session detail page, or call:
 
 ```text
@@ -70,7 +78,8 @@ image/file URLs are fetched. Provider-side conversation history that never passe
 through the proxy is not available.
 
 `message_previews` contains all persisted previews for the request, with the same
-shape as session detail messages. Previews can be shortened by ingestion limits
+shape as session detail messages. The nullable `content_truncated` flag records whether that specific
+preview text was shortened (`null` means unknown for a historical row). Previews can be shortened by ingestion limits
 and can omit non-text content; consult request tags such as
 `session_messages_truncated`. Raw body export is independent of those preview
 limits. Requests often resend earlier conversation history: the export preserves

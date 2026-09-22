@@ -106,6 +106,13 @@ async fn session_export_preserves_archives_and_snapshot(pool: PgPool) -> anyhow:
                     .contains(&json!("session_messages_truncated"))
             );
             assert!(!record["message_previews"].as_array().unwrap().is_empty());
+            assert!(
+                record["message_previews"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|message| message["content_truncated"] == true)
+            );
         }
         assert_eq!(records[3]["export_complete"], true);
         assert_eq!(records[3]["truncated_body_count"], 1);
@@ -192,6 +199,10 @@ async fn session_export_exceeds_page_limits_and_handles_legacy_bodies(
         let id = record["request"]["id"].as_str().unwrap();
         assert!(id > previous.as_str());
         previous = id.to_string();
+        assert_eq!(
+            record["message_previews"][0].get("content_truncated"),
+            Some(&Value::Null)
+        );
         assert_eq!(record["response_body"]["data"], "");
         if record["request_body"]["status"] == "available" {
             assert_eq!(

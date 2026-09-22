@@ -102,6 +102,8 @@ impl fmt::Display for LoginMethod {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedMessage {
+    #[serde(default)]
+    pub content_truncated: bool,
     pub role: String,
     pub content: String,
 }

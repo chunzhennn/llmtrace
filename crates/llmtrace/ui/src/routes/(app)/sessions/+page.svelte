@@ -98,9 +98,11 @@
 	{#snippet row(item: SessionSummary)}
 		<td class="px-3 py-2">
 			<a class="font-medium hover:underline" style="color: var(--color-brand);" href={`${base}/sessions/${item.id}?from=${encodeURIComponent(page.url.pathname + page.url.search)}`}>
-				{item.user_name ?? item.user_id ?? 'Unattributed employee'}
+				{item.user_name || item.user_id || `Session ${item.id.slice(0, 8)}`}
 			</a>
-			<div class="text-fg-muted mt-1 font-mono text-xs" title={item.session_key}>Session {item.id.slice(0, 8)}</div>
+			{#if item.user_name || item.user_id}
+				<div class="text-fg-muted mt-1 font-mono text-xs" title={item.session_key}>Session {item.id.slice(0, 8)}</div>
+			{/if}
 		</td>
 		<td class="px-3 py-2 text-right tabular-nums">{formatNumber(item.request_count)}</td>
 		<td class="px-3 py-2 text-right tabular-nums">{formatDuration(item.max_duration_ms)}</td>

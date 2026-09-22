@@ -110,6 +110,19 @@ async fn enterprise_storage_round_trip(pool: PgPool) -> anyhow::Result<()> {
         "filters":[{"field":"input_tokens","op":"gte","value":100000}]
     }))?;
     run_structured_query(&pool, query).await?;
+    let previews: StructuredQuery = serde_json::from_value(json!({
+        "dataset": "messages", "fields": ["content", "content_truncated"],
+        "filters": [{"field": "content_truncated", "op": "eq", "value": true}]
+    }))?;
+    let previews = run_structured_query(&pool, previews).await?;
+    assert!(!previews["rows"].as_array().unwrap().is_empty());
+    assert!(
+        previews["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["content_truncated"] == true)
+    );
     std::fs::remove_dir_all(root)?;
     Ok(())
 }

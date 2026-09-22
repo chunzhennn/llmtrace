@@ -205,6 +205,10 @@ pub(super) async fn insert_trace_internal(
     if let Some(session_id) = trace.session_id
         && !messages.is_empty()
     {
+        let truncated: Vec<bool> = messages
+            .iter()
+            .map(|message| message.content_truncated)
+            .collect();
         let (roles, contents): (Vec<String>, Vec<String>) = messages
             .into_iter()
             .map(|message| (message.role, message.content))
@@ -212,9 +216,9 @@ pub(super) async fn insert_trace_internal(
 
         sqlx::query(
             r#"
-            INSERT INTO session_messages (request_id, session_id, role, content, created_at)
-            SELECT $1, $2, message.role, message.content, $5
-            FROM UNNEST($3::text[], $4::text[]) AS message(role, content)
+            INSERT INTO session_messages (request_id, session_id, role, content, created_at, content_truncated)
+            SELECT $1, $2, message.role, message.content, $5, message.content_truncated
+            FROM UNNEST($3::text[], $4::text[], $6::boolean[]) AS message(role, content, content_truncated)
             "#,
         )
         .bind(trace.id)
@@ -222,6 +226,7 @@ pub(super) async fn insert_trace_internal(
         .bind(&roles)
         .bind(&contents)
         .bind(trace.started_at)
+        .bind(&truncated)
         .execute(&mut *tx)
         .await?;
     }

@@ -44,12 +44,14 @@ pub fn parse_trace(uri: &str, request_body: &[u8], response_body: &[u8]) -> Pars
         collect_response_messages(&mut messages, value);
     } else if !response.text.is_empty() {
         messages.push(ParsedMessage {
+            content_truncated: false,
             role: "assistant".to_string(),
             content: response.text.clone(),
         });
     }
     for tool in &response.tool_calls {
         messages.push(ParsedMessage {
+            content_truncated: false,
             role: "tool_call".to_string(),
             content: serde_json::to_string(tool).unwrap_or_default(),
         });
@@ -98,6 +100,7 @@ fn collect_request_messages(messages: &mut Vec<ParsedMessage>, kind: RequestKind
         stringify_content(value.get("system").or_else(|| value.get("instructions")))
     {
         messages.push(ParsedMessage {
+            content_truncated: false,
             role: "system".to_string(),
             content,
         });
@@ -110,11 +113,16 @@ fn collect_request_messages(messages: &mut Vec<ParsedMessage>, kind: RequestKind
                 .unwrap_or("user")
                 .to_string();
             if let Some(content) = stringify_content(item.get("content")) {
-                messages.push(ParsedMessage { role, content });
+                messages.push(ParsedMessage {
+                    content_truncated: false,
+                    role,
+                    content,
+                });
             }
             if let Some(tools) = item.get("tool_calls").and_then(Value::as_array) {
                 for tool in tools {
                     messages.push(ParsedMessage {
+                        content_truncated: false,
                         role: "tool_call".to_string(),
                         content: tool.to_string(),
                     });
@@ -139,6 +147,7 @@ fn collect_response_messages(messages: &mut Vec<ParsedMessage>, value: &Value) {
         .and_then(|value| stringify_content(Some(value)))
     {
         messages.push(ParsedMessage {
+            content_truncated: false,
             role: "assistant".to_string(),
             content,
         });
@@ -147,6 +156,7 @@ fn collect_response_messages(messages: &mut Vec<ParsedMessage>, value: &Value) {
 
     if let Some(content) = value.get("output_text").and_then(Value::as_str) {
         messages.push(ParsedMessage {
+            content_truncated: false,
             role: "assistant".to_string(),
             content: content.to_string(),
         });
@@ -171,6 +181,7 @@ fn collect_response_messages(messages: &mut Vec<ParsedMessage>, value: &Value) {
             .join("");
         if !content.is_empty() {
             messages.push(ParsedMessage {
+                content_truncated: false,
                 role: "assistant".to_string(),
                 content,
             });
@@ -188,6 +199,7 @@ fn collect_response_messages(messages: &mut Vec<ParsedMessage>, value: &Value) {
             .join("");
         if !content.is_empty() {
             messages.push(ParsedMessage {
+                content_truncated: false,
                 role: "assistant".to_string(),
                 content,
             });
@@ -210,6 +222,7 @@ fn responses_input_messages(input: &Value) -> Vec<ParsedMessage> {
     for item in items {
         match item {
             Value::String(text) => messages.push(ParsedMessage {
+                content_truncated: false,
                 role: "user".to_string(),
                 content: text.clone(),
             }),
@@ -219,6 +232,7 @@ fn responses_input_messages(input: &Value) -> Vec<ParsedMessage> {
                     Some("function_call" | "function_call_output")
                 ) {
                     messages.push(ParsedMessage {
+                        content_truncated: false,
                         role: if item["type"] == "function_call" {
                             "tool_call"
                         } else {
@@ -236,12 +250,17 @@ fn responses_input_messages(input: &Value) -> Vec<ParsedMessage> {
                     .to_string();
                 if let Some(content) = stringify_content(item.get("content")) {
                     if !content.is_empty() {
-                        messages.push(ParsedMessage { role, content });
+                        messages.push(ParsedMessage {
+                            content_truncated: false,
+                            role,
+                            content,
+                        });
                     }
                 } else if let Some(text) = item.get("text").and_then(Value::as_str) {
                     // Structured input items such as {"type":"input_text","text":...}.
                     if !text.is_empty() {
                         messages.push(ParsedMessage {
+                            content_truncated: false,
                             role,
                             content: text.to_string(),
                         });

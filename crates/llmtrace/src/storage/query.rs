@@ -312,6 +312,7 @@ static MESSAGE_FIELDS: &[FieldSpec] = &[
     field("session_id", Some(FilterKind::Uuid)),
     field("role", Some(FilterKind::Text)),
     field("content", Some(FilterKind::Text)),
+    field("content_truncated", Some(FilterKind::Bool)),
     field("created_at", Some(FilterKind::Timestamp)),
 ];
 

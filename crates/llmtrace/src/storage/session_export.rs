@@ -89,7 +89,7 @@ impl SessionExport {
                 unavailable_bodies += i64::from(body.status != BodyStatus::Available);
             }
             let previews = sqlx::query_as::<_, SessionMessage>(
-                "SELECT id, request_id, role, content, created_at FROM session_messages
+                "SELECT id, request_id, role, content, created_at, content_truncated FROM session_messages
                  WHERE request_id = $1 AND session_id = $2 ORDER BY created_at ASC, id ASC",
             )
             .bind(id)

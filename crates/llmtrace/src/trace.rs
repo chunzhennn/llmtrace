@@ -643,8 +643,12 @@ fn bound_session_messages(mut messages: Vec<ParsedMessage>) -> (Vec<ParsedMessag
             truncate_utf8_owned(message.role, MAX_SESSION_MESSAGE_ROLE_BYTES);
         let (content, content_truncated) =
             truncate_utf8_owned(message.content, MAX_SESSION_MESSAGE_CONTENT_BYTES);
-        truncated |= role_truncated || content_truncated;
-        bounded.push(ParsedMessage { role, content });
+        truncated |= role_truncated || content_truncated || message.content_truncated;
+        bounded.push(ParsedMessage {
+            content_truncated: message.content_truncated || content_truncated,
+            role,
+            content,
+        });
     }
 
     (bounded, truncated)
@@ -828,11 +832,13 @@ mod tests {
     fn long_transcript_preview_keeps_the_latest_response() {
         let mut messages = (0..200)
             .map(|i| ParsedMessage {
+                content_truncated: false,
                 role: "user".into(),
                 content: i.to_string(),
             })
             .collect::<Vec<_>>();
         messages.push(ParsedMessage {
+            content_truncated: false,
             role: "assistant".into(),
             content: "latest reply".into(),
         });
@@ -1002,6 +1008,7 @@ mod tests {
     #[test]
     fn bound_session_messages_allows_small_messages() {
         let messages = vec![ParsedMessage {
+            content_truncated: false,
             role: "user".to_string(),
             content: "hello".to_string(),
         }];
@@ -1012,6 +1019,7 @@ mod tests {
         assert_eq!(bounded.len(), 1);
         assert_eq!(bounded[0].role, "user");
         assert_eq!(bounded[0].content, "hello");
+        assert!(!bounded[0].content_truncated);
     }
 
     #[test]
@@ -1042,6 +1050,7 @@ mod tests {
         let content = "c".repeat(MAX_SESSION_MESSAGE_CONTENT_BYTES + 1);
         let messages = (0..=MAX_SESSION_MESSAGES_PER_TRACE)
             .map(|_| ParsedMessage {
+                content_truncated: false,
                 role: role.clone(),
                 content: content.clone(),
             })
@@ -1053,18 +1062,58 @@ mod tests {
         assert_eq!(bounded.len(), MAX_SESSION_MESSAGES_PER_TRACE);
         assert_eq!(bounded[0].role.len(), MAX_SESSION_MESSAGE_ROLE_BYTES);
         assert_eq!(bounded[0].content.len(), MAX_SESSION_MESSAGE_CONTENT_BYTES);
+        assert!(bounded[0].content_truncated);
+    }
+
+    #[test]
+    fn preview_truncation_marks_only_shortened_content() {
+        let (messages, incomplete) = bound_session_messages(vec![
+            ParsedMessage {
+                role: "user".into(),
+                content: "x".repeat(MAX_SESSION_MESSAGE_CONTENT_BYTES),
+                content_truncated: false,
+            },
+            ParsedMessage {
+                role: "user".into(),
+                content: "x".repeat(MAX_SESSION_MESSAGE_CONTENT_BYTES + 1),
+                content_truncated: false,
+            },
+            ParsedMessage {
+                role: "r".repeat(MAX_SESSION_MESSAGE_ROLE_BYTES + 1),
+                content: "complete reply".into(),
+                content_truncated: false,
+            },
+            ParsedMessage {
+                role: "user".into(),
+                content: "already shortened".into(),
+                content_truncated: true,
+            },
+        ]);
+        assert!(incomplete);
+        assert_eq!(
+            messages
+                .iter()
+                .map(|m| m.content_truncated)
+                .collect::<Vec<_>>(),
+            vec![false, true, false, true]
+        );
     }
 
     #[test]
     fn bound_session_messages_truncates_on_utf8_boundaries() {
         let role = format!("{}é", "r".repeat(MAX_SESSION_MESSAGE_ROLE_BYTES - 1));
         let content = format!("{}é", "c".repeat(MAX_SESSION_MESSAGE_CONTENT_BYTES - 1));
-        let messages = vec![ParsedMessage { role, content }];
+        let messages = vec![ParsedMessage {
+            content_truncated: false,
+            role,
+            content,
+        }];
 
         let (bounded, truncated) = bound_session_messages(messages);
 
         assert!(truncated);
         assert_eq!(bounded[0].role.len(), MAX_SESSION_MESSAGE_ROLE_BYTES - 1);
+        assert!(bounded[0].content_truncated);
         assert!(bounded[0].role.is_char_boundary(bounded[0].role.len()));
         assert_eq!(
             bounded[0].content.len(),

@@ -124,6 +124,8 @@ pub struct SessionRequestStats {
 pub struct SessionMessage {
     pub id: i64,
     pub request_id: Uuid,
+    /// None for legacy previews whose individual truncation status was not recorded.
+    pub content_truncated: Option<bool>,
     pub role: String,
     pub content: String,
     pub created_at: DateTime<Utc>,
@@ -392,6 +394,16 @@ mod tests {
         ))
         .unwrap();
         let response: SessionDetail = serde_json::from_value(expected.clone()).unwrap();
+        assert_eq!(serde_json::to_value(response).unwrap(), expected);
+    }
+
+    #[test]
+    fn session_message_contract_matches_frontend_fixture() {
+        let expected: Value = serde_json::from_str(include_str!(
+            "../../ui/src/lib/api/fixtures/session-message.json"
+        ))
+        .unwrap();
+        let response: SessionMessage = serde_json::from_value(expected.clone()).unwrap();
         assert_eq!(serde_json::to_value(response).unwrap(), expected);
     }
 }

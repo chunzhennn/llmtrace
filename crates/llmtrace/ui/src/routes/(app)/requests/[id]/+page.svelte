@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { requestKindLabel } from '$lib/utils/format';
 	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
 	import { listReturnHref } from '$lib/utils/navigation';
 	import { base } from '$app/paths';
 	import PageHeader from '$lib/components/PageHeader.svelte';
@@ -12,6 +13,10 @@
 	import HeadersTable from '$lib/components/HeadersTable.svelte';
 	import BodyViewer from '$lib/components/BodyViewer.svelte';
 	import JsonViewer from '$lib/components/JsonViewer.svelte';
+	import ProvidedTools from '$lib/components/ProvidedTools.svelte';
+	import RequestToolCalls from '$lib/components/RequestToolCalls.svelte';
+	import { requestToolHistory } from '$lib/transcript/request-tools';
+	import { describeTools, toolDeclarations } from '$lib/transcript/tools';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import ErrorState from '$lib/components/ErrorState.svelte';
 	import CopyButton from '$lib/components/CopyButton.svelte';
@@ -29,21 +34,45 @@
 	);
 
 
-	let activeTab = $state('overview');
-    const payload = createResource<RequestDetail>((signal) => requestsApi.getRequest(page.params.id ?? '', signal, true));
-    const needsPayload = $derived(['request', 'response', 'raw'].includes(activeTab));
-    $effect(() => {
-        if (needsPayload && payload.data?.id !== id) payload.load();
-    });
-
+	const tabIds = ['overview', 'request', 'declared-tools', 'response', 'tools', 'plugins', 'raw'];
+	const activeTab = $derived(tabIds.includes(page.url.searchParams.get('tab') ?? '') ? page.url.searchParams.get('tab')! : 'overview');
+	function tabHref(tab: string) {
+		const url = new URL(page.url);
+		url.searchParams.set('tab', tab);
+		return url.pathname + url.search;
+	}
+	function selectTab(tab: string) {
+		void goto(tabHref(tab), { replaceState: true, noScroll: true, keepFocus: true });
+	}
+	const payload = createResource<RequestDetail>((signal) => requestsApi.getRequest(page.params.id ?? '', signal, true));
+	const needsPayload = $derived(['request', 'declared-tools', 'response', 'raw', 'tools'].includes(activeTab));
+	$effect(() => {
+		if (needsPayload && payload.data?.id !== id) payload.load();
+	});
+	const requestData = $derived.by(() => {
+		const captured = payload.data;
+		if (!captured || captured.id !== id) return { value: undefined, notice: null };
+		if (captured.request_body_status !== 'available') return { value: undefined, notice: 'The captured request body is unavailable; request tool information cannot be read.' };
+		try {
+			return {
+				value: JSON.parse(captured.request_body) as unknown,
+				notice: captured.request_body_truncated ? 'The request body was captured incompletely; some tool information may be unavailable.' : null
+			};
+		} catch {
+			return { value: undefined, notice: 'The captured request body is not valid JSON; request tool information cannot be read.' };
+		}
+	});
+	const providedTools = $derived(describeTools(toolDeclarations(requestData.value)));
+	const inputToolHistory = $derived(requestToolHistory(requestData.value));
 
 	const pluginNames = $derived(Object.keys(detail.data?.plugin_metadata ?? {}));
 
 	const tabs = $derived<Tab[]>([
 		{ id: 'overview', label: 'Overview' },
 		{ id: 'request', label: 'Request' },
+		{ id: 'declared-tools', label: 'Declared tools' },
 		{ id: 'response', label: 'Response' },
-		{ id: 'tools', label: `Tool calls (${detail.data?.tool_call_count ?? 0})` },
+		{ id: 'tools', label: 'Tool calls' },
 		{ id: 'plugins', label: `Plugins${pluginNames.length ? ` (${pluginNames.length})` : ''}` },
 		{ id: 'raw', label: 'Raw' }
 	]);
@@ -84,7 +113,7 @@
 		{#each d.tags as tag (tag)}<Badge tone="neutral">{tag}</Badge>{/each}
 	</div>
 
-	<Tabs {tabs} active={activeTab} onChange={(t) => (activeTab = t)} />
+	<Tabs {tabs} active={activeTab} onChange={selectTab} />
 
 	<div class="mt-4">
 		{#if needsPayload && payload.error}
@@ -139,6 +168,9 @@
 		{:else if activeTab === 'request'}
 			<div class="flex flex-col gap-4">
 				<Card title="Request headers"><HeadersTable headers={d.request_headers} /></Card>
+				{#if inputToolHistory.calls.length || inputToolHistory.unmatchedResults.length}
+					<RequestToolCalls history={inputToolHistory} notice={requestData.notice} />
+				{/if}
 				<Card title="Request body" bodyClass="p-4">
 					<BodyViewer
 						body={payload.data?.request_body ?? ''}
@@ -149,6 +181,14 @@
 						filename={`request-${d.id}.txt`}
 					/>
 				</Card>
+			</div>
+		{:else if activeTab === 'declared-tools'}
+			<div class="flex flex-col gap-4">
+				{#if requestData.notice}<p class="text-fg-muted text-sm" role="status">{requestData.notice}</p>{/if}
+				{#if providedTools.length || !requestData.notice}<ProvidedTools tools={providedTools} />{/if}
+				{#if d.session_id}
+					<a class="text-fg-muted w-fit text-sm underline underline-offset-2" href={`${base}/sessions/${d.session_id}/transcript`}>View tool declarations across this session</a>
+				{/if}
 			</div>
 		{:else if activeTab === 'response'}
 			<div class="flex flex-col gap-4">
@@ -165,18 +205,22 @@
 				</Card>
 			</div>
 		{:else if activeTab === 'tools'}
-            <Card title="Generated tool calls" subtitle="Arguments are captured previews. Tool execution happens in the client or upstream.">
-                {#if d.tool_calls.length === 0}
-                    <EmptyState icon="box" title="No tool calls captured" message="This response has no parsed function or tool-use calls." />
-                {:else}
-                    {#each d.tool_calls as tool, index (index)}
-                        <div class="mb-4">
-                            <p class="mb-2 font-medium">{tool.name || 'Unnamed tool'} <span class="text-xs opacity-60">{tool.id}</span></p>
-                            <BodyViewer body={tool.arguments} filename={`tool-${index}.json`} />
-                        </div>
-                    {/each}
-                {/if}
-            </Card>
+			<div class="flex flex-col gap-4">
+				<a class="text-fg-muted w-fit text-sm underline underline-offset-2" href={tabHref('declared-tools')}>View declared tools</a>
+				<RequestToolCalls history={inputToolHistory} notice={requestData.notice} />
+				<Card title="New tool calls in response" subtitle={`${d.tool_calls.length} new calls · arguments are captured previews`}>
+					{#if d.tool_calls.length === 0}
+						<EmptyState icon="box" title="No new tool calls in this response" message="Calls carried in the request history are shown above." />
+					{:else}
+						{#each d.tool_calls as tool, index (index)}
+							<div class="mb-4">
+								<p class="mb-2 font-medium">{tool.name || 'Unnamed tool'} <span class="text-xs opacity-60">{tool.id}</span></p>
+								<BodyViewer body={tool.arguments} filename={`tool-${index}.json`} />
+							</div>
+						{/each}
+					{/if}
+				</Card>
+			</div>
         {:else if activeTab === 'plugins'}
 			{#if pluginNames.length === 0}
 				<Card><EmptyState icon="box" title="No plugin metadata" message="No plugins enriched this request." /></Card>

@@ -10,7 +10,7 @@
 	import ErrorState from '$lib/components/ErrorState.svelte';
 	import Skeleton from '$lib/components/Skeleton.svelte';
 	import Icon from '$lib/components/Icon.svelte';
-	import CopyButton from '$lib/components/CopyButton.svelte';
+	import { copyText } from '$lib/utils/clipboard';
 	import SessionRequests from '$lib/components/SessionRequests.svelte';
 	import { createResource } from '$lib/utils/resource.svelte';
 	import * as sessionsApi from '$lib/api/endpoints/sessions';
@@ -26,6 +26,7 @@
 		sessionsApi.getSession(id, { messages_limit: MESSAGE_PAGE, messages_offset: 0 }, signal), () => id
 	);
 	const session = $derived(detail.data?.id === id ? detail.data : undefined);
+	const employee = $derived(session?.user_name || session?.user_id);
 	const messages = $derived(session?.messages ?? []);
 	const messagesPage = $derived(session?.messages_page);
 	const loading = $derived(detail.loading);
@@ -34,6 +35,15 @@
 
 	async function loadSession() {
 		await detail.load();
+	}
+
+	async function copySessionId() {
+		try {
+			await copyText(id);
+			toasts.success('Session ID copied');
+		} catch {
+			toasts.error('Could not copy session ID');
+		}
 	}
 
 	async function loadMoreMessages() {
@@ -54,15 +64,26 @@
 
 
 	const stats = $derived(session?.request_stats);
+	const usageCoverage = $derived(`Usage reported for ${stats?.usage_known_count ?? 0} of ${stats?.request_count ?? 0} requests. Totals include available values only.`);
+	const costCoverage = $derived(`Cost estimated for ${stats?.priced_request_count ?? 0} of ${stats?.request_count ?? 0} requests. Total includes available estimates only.`);
 </script>
 
 <svelte:head><title>Session · llmtrace</title></svelte:head>
 
-<PageHeader title="Session detail" description={`${session?.user_name ?? session?.user_id ?? 'Unattributed employee'} · Session ${id.slice(0, 8)}`}>
+<PageHeader title="Session detail">
+	{#snippet description()}
+		{#if employee}{employee} · {/if}Session
+		<button
+			type="button"
+			class="hover:text-fg cursor-pointer font-mono underline underline-offset-2"
+			onclick={copySessionId}
+			aria-label="Copy full session ID"
+			title={`Copy full session ID: ${id}`}
+		>{id.slice(0, 8)}</button>
+	{/snippet}
 	{#snippet actions()}
 		<a class="btn" href={listReturnHref(page.url.searchParams.get('from'), `${base}/sessions`)}><Icon name="chevron-left" size={16} /> Back</a>
-		<CopyButton text={id} label="Copy ID" />
-		<a class="btn" href="#transcript"><Icon name="messages" size={16} /> View transcript</a>
+		<a class="btn" href={`${base}/sessions/${id}/transcript${page.url.search}`}><Icon name="messages" size={16} /> View transcript</a>
 		{#if session}
 			<a class="btn" href={sessionsApi.sessionExportUrl(id)} download>
 				<Icon name="download" size={16} /> Export full session
@@ -86,29 +107,25 @@
 	</div>
 
 	<div class="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
-        <StatCard label="Input tokens" value={formatTokens(stats?.input_tokens)} icon="activity" />
-        <StatCard label="Output tokens" value={formatTokens(stats?.output_tokens)} icon="activity" />
-        <StatCard label="Tool calls captured" value={formatNumber(stats?.tool_call_count ?? 0)} icon="box" />
-        <StatCard label="Estimated token cost" value={formatCost(stats?.estimated_cost_microusd)} icon="database" />
-    </div>
-    <div class="mt-4 rounded-lg border p-4 text-sm" style="border-color: var(--color-border);">
-        <p>Employee: <strong>{session.user_name ?? session.user_id ?? 'Unattributed'}</strong></p>
-        <p class="mt-1 opacity-70">Usage reported for {stats?.usage_known_count ?? 0} of {stats?.request_count ?? 0} requests. Cost estimated for {stats?.priced_request_count ?? 0}. Totals include available values only.</p>
-        {#if stats?.incomplete_capture_count}
-            <p class="mt-2" role="status">{stats.incomplete_capture_count} request(s) have a shortened transcript or payload. Open the corresponding request to inspect its captured bodies.</p>
-        {/if}
-    </div>
-    <div id="transcript" class="mt-4 grid scroll-mt-20 grid-cols-1 gap-4 xl:grid-cols-2">
+		<StatCard label="Input tokens" value={formatTokens(stats?.input_tokens)} icon="activity" tooltip={usageCoverage} />
+		<StatCard label="Output tokens" value={formatTokens(stats?.output_tokens)} icon="activity" tooltip={usageCoverage} />
+		<StatCard label="Tool calls captured" value={formatNumber(stats?.tool_call_count ?? 0)} icon="box" />
+		<StatCard label="Estimated token cost" value={formatCost(stats?.estimated_cost_microusd)} icon="database" tooltip={costCoverage} />
+	</div>
+	<div id="transcript" class="mt-4 grid scroll-mt-20 grid-cols-1 gap-4 xl:grid-cols-2">
 		<Card title="Transcript previews" subtitle={`${messages.length} messages loaded · request snapshots may repeat conversation history`}>
 			{#if messages.length === 0}
 				<EmptyState icon="messages" title="No messages" message="No parsed messages for this session." />
 			{:else}
 				<div class="flex max-h-[36rem] flex-col gap-4 overflow-y-auto pr-1">
 					{#each messages as message (message.id)}
-						<div>
-                            <a class="mb-1 block text-xs opacity-60 hover:underline" href={`${base}/requests/${message.request_id}`}>Open request {message.request_id.slice(0, 8)}</a>
-                            <MessageBubble role={message.role} content={message.content} createdAt={message.created_at} />
-                        </div>
+						<MessageBubble
+							role={message.role}
+							content={message.content}
+							createdAt={message.created_at}
+							requestId={message.request_id}
+							contentTruncated={message.content_truncated === true}
+						/>
 					{/each}
 				</div>
 				{#if messagesPage?.has_more}

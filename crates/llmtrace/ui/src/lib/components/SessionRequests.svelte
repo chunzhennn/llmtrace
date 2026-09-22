@@ -4,6 +4,7 @@
 	import Pagination from './Pagination.svelte';
 	import StatusPill from './StatusPill.svelte';
 	import Icon from './Icon.svelte';
+	import Badge from './Badge.svelte';
 	import { createResource } from '$lib/utils/resource.svelte';
 	import * as sessionsApi from '$lib/api/endpoints/sessions';
 	import { exportJsonl } from '$lib/api/download';
@@ -66,6 +67,11 @@
 			<a class="hover:underline" style="color: var(--color-brand);" href={`${base}/requests/${item.id}`}>
 				{formatDateTime(item.started_at)}
 			</a>
+			{#if item.request_body_truncated || item.response_body_truncated || item.tags.includes('session_messages_truncated')}
+				<a class="mt-1 block w-fit" href={`${base}/requests/${item.id}`} title="This request has shortened messages or captured bodies. Open its details to inspect the retained content.">
+					<Badge tone="warning">Content shortened</Badge>
+				</a>
+			{/if}
 		</td>
 		<td class="px-3 py-2"><StatusPill status={item.status} error={item.error} /></td>
 		<td class="px-3 py-2">{item.model ?? '—'}</td>

@@ -58,6 +58,13 @@ describe('coerceFilterValue', () => {
 		expect(coerceFilterValue('json_path', '123')).toEqual({ ok: true, value: 123 });
 		expect(coerceFilterValue('json_path', 'bareword')).toEqual({ ok: true, value: 'bareword' });
 	});
+	it('rejects standalone null while retaining JSON strings and nested nulls', () => {
+		for (const kind of ['json', 'json_path']) {
+			expect(coerceFilterValue(kind, 'null')).toEqual({ ok: false, error: 'Standalone JSON null is not supported. Use IS NULL or IS NOT NULL.' });
+			expect(coerceFilterValue(kind, '"null"')).toEqual({ ok: true, value: 'null' });
+			expect(coerceFilterValue(kind, '{"value":null}')).toEqual({ ok: true, value: { value: null } });
+		}
+	});
 
 	it('passes through text and uuid as strings', () => {
 		expect(coerceFilterValue('text', 'hello')).toEqual({ ok: true, value: 'hello' });
