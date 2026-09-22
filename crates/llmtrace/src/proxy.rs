@@ -1144,7 +1144,7 @@ fn add_ws_bytes(
 fn resolve_upstream(state: &AppState, uri: &Uri, headers: &HeaderMap) -> anyhow::Result<Url> {
     if let Some(value) = upstream_override_header(headers, &state.config.proxy.upstream_header)? {
         if state.config.proxy.preset == crate::config::ProxyPreset::Litellm {
-            // Preserve the routed path. Otherwise an employee could target an
+            // Preserve the routed path. Otherwise a user could target an
             // inference URL through /models and bypass the capture policy.
             return resolve_default_upstream(value, uri);
         }

@@ -1,11 +1,11 @@
-# Employee identity lookup from a WASM plugin
+# User identity lookup from a WASM plugin
 
-Plugins execute after traffic completes, in the background trace workers. The host now provides an optional HTTP GET import; WASI and unrestricted sockets are not enabled. The actual employee lookup URL and JSON schema depend on your enterprise gateway. `/v1/whoami` below is an example, not a standard LLM API endpoint.
+Plugins execute after traffic completes, in the background trace workers. The host now provides an optional HTTP GET import; WASI and unrestricted sockets are not enabled. The actual user lookup URL and JSON schema depend on your enterprise gateway. `/v1/whoami` below is an example, not a standard LLM API endpoint.
 
 ```toml
 [[plugins]]
-name = "employee-identity"
-wasm_path = "plugins/employee-identity.wasm"
+name = "user-identity"
+wasm_path = "plugins/user-identity.wasm"
 hooks = ["on_request_start"]
 timeout_ms = 1000
 http_get_urls = ["https://llm.example.com/v1/whoami"]
@@ -26,7 +26,7 @@ Both buffers belong to the plugin's exported linear memory. The request is UTF-8
 ```json
 {
   "url": "https://llm.example.com/v1/whoami",
-  "headers": { "authorization": "Bearer employee-api-key" }
+  "headers": { "authorization": "Bearer user-api-key" }
 }
 ```
 
@@ -37,7 +37,7 @@ The result is a positive byte count written into the output buffer, containing:
 ```json
 {
   "status": 200,
-  "body": "{\"id\":\"employee-123\",\"name\":\"Ada\"}"
+  "body": "{\"id\":\"user-123\",\"name\":\"Ada\"}"
 }
 ```
 
@@ -45,13 +45,13 @@ The result is a positive byte count written into the output buffer, containing:
 
 ```json
 {
-  "user_id": "employee-123",
+  "user_id": "user-123",
   "user_name": "Ada",
   "custom_fields": { "identity_source": "gateway" }
 }
 ```
 
-Only return `session_key` when you have an actual conversation identifier. A username or API key groups an employee's unrelated conversations together and must not be used as a substitute. Existing hook exports, allocation, and packed output-pointer conventions remain unchanged. Legacy `metadata` is accepted as an alias of `custom_fields`.
+Only return `session_key` when you have an actual conversation identifier. A username or API key groups a user's unrelated conversations together and must not be used as a substitute. Existing hook exports, allocation, and packed output-pointer conventions remain unchanged. Legacy `metadata` is accepted as an alias of `custom_fields`.
 
 The HTTP import returns `-1` for a denied URL, invalid buffer/request, timeout, transport failure, non-UTF-8 body, oversized response, or insufficient output capacity. Return a warning and leave identity unset on failure; do not fabricate a username. HTTP error responses themselves return the JSON envelope so the plugin can handle their status.
 

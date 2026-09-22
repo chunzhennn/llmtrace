@@ -32,7 +32,7 @@
 	let complete = $state(false);
 	let error = $state<string | null>(null);
 	let controller: AbortController | undefined;
-	const employee = $derived(header?.session.user_name || header?.session.user_id);
+	const user = $derived(header?.session.user_name || header?.session.user_id);
 
 	async function load(sessionId = id) {
 		controller?.abort();
@@ -75,7 +75,7 @@
 
 <PageHeader title="Transcript">
 	{#snippet description()}
-		{#if employee}{employee} · {/if}Session
+		{#if user}{user} · {/if}Session
 		<button type="button" class="hover:text-fg cursor-pointer font-mono underline underline-offset-2" onclick={copySessionId}
 			aria-label="Copy full session ID" title={`Copy full session ID: ${id}`}>{id.slice(0, 8)}</button>
 	{/snippet}

@@ -53,7 +53,7 @@
 	}
 
 	const columns: Column[] = [
-		{ label: 'Employee / session' },
+		{ label: 'User / session' },
 		{ label: 'Requests', align: 'right' },
 		{ label: 'Max duration', align: 'right' },
 		{ label: 'First seen' },
@@ -71,7 +71,7 @@
 		class="input flex-1"
 		type="text"
 		name="q"
-		aria-label="Search sessions by employee or session key"
+		aria-label="Search sessions by user or session key"
 		placeholder="Search by session key or user…"
 		value={page.url.searchParams.get('q') ?? ''}
 	/>

@@ -41,13 +41,13 @@ async fn browser_ui_review(pool: PgPool) -> anyhow::Result<()> {
         event.original_uri = "/v1/chat/completions".into();
         event.upstream_url = "https://gateway.example.com/v1/chat/completions".into();
         event.upstream_host = Some("gateway.example.com".into());
-        event.api_key_hash = Some(format!("synthetic-employee-{person}"));
+        event.api_key_hash = Some(format!("synthetic-user-{person}"));
         event.status = Some(if failed { 429 } else { 200 });
         event.error = failed.then(|| "Upstream rate limit exceeded".into());
         event.duration_ms = Some(duration);
         event.ttft_ms = (!failed).then_some(110 + index as i64 * 2);
         event.ttfb_ms = Some(85 + index as i64);
-        event.user_id = Some(format!("employee-{person}"));
+        event.user_id = Some(format!("user-{person}"));
         event.user_name = Some(people[person].into());
         event.content_type = Some("application/json".into());
         event.request_body = serde_json::to_vec(&json!({
@@ -59,7 +59,7 @@ async fn browser_ui_review(pool: PgPool) -> anyhow::Result<()> {
         event.response_body = serde_json::to_vec(&if failed {
             json!({"error":{"message":"Synthetic rate limit: retry after 30 seconds", "type":"rate_limit_error"}})
         } else {
-            json!({"choices":[{"message":{"role":"assistant","content":"Start with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no employee conversations are included.",
+            json!({"choices":[{"message":{"role":"assistant","content":"Start with a bounded retry budget and exponential backoff with jitter.\n\n1. Reuse the same idempotency key for every retry.\n2. Retry transient failures only, and honor Retry-After.\n3. Record the final outcome and alert on sustained failures.\n\nThis is synthetic review data; no user conversations are included.",
                 "tool_calls": if person == 3 {json!([{"id":"demo-search","type":"function","function":{"name":"search_internal_docs","arguments":"{\"query\":\"deployment rollback checklist\"}"}}])} else {json!([])}}, "finish_reason":"stop"}],
                 "usage":{"prompt_tokens":1800+index*42,"completion_tokens":320+index*3}})
         })?;

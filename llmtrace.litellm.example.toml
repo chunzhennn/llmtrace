@@ -1,4 +1,4 @@
-# Local development: employees use 127.0.0.1:3000, admins use localhost:3001/ui.
+# Local development: users use 127.0.0.1:3000, admins use localhost:3001/ui.
 # Point default_upstream/allow_upstreams at your existing LiteLLM deployment.
 # Production settings, TLS ingress, and environment overrides: docs/litellm.md.
 [server]

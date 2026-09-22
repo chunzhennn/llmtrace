@@ -440,7 +440,7 @@ pub(crate) fn build_trace(
         tags.push("session_unlinked".to_string());
     }
     // A credential identifies an account, never a conversation. Scope client
-    // hints by upstream and credential to avoid merging unrelated employees.
+    // hints by upstream and credential to avoid merging unrelated users.
     let session_key = Some(scoped_session_key(
         &event.upstream_url,
         event

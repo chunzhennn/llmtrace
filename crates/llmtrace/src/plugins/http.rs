@@ -207,8 +207,8 @@ mod tests {
             .route(
                 "/whoami",
                 get(|headers: HeaderMap| async move {
-                    assert_eq!(headers["authorization"], "Bearer test-employee-key");
-                    axum::Json(json!({"user_id":"employee-1","user_name":"Alice"}))
+                    assert_eq!(headers["authorization"], "Bearer test-user-key");
+                    axum::Json(json!({"user_id":"user-1","user_name":"Alice"}))
                 }),
             )
             .route(
@@ -236,7 +236,7 @@ mod tests {
         for path in ["whoami", "redirect", "slow"] {
             let url = url::Url::parse(&format!("http://{address}/{path}"))?;
             let timeout_ms = if path == "slow" { 50 } else { 2000 };
-            let result = tokio::task::spawn_blocking(move || lookup(json!({"url": url.as_str(), "headers":{"authorization":"Bearer test-employee-key"}}), vec![url], timeout_ms)).await??;
+            let result = tokio::task::spawn_blocking(move || lookup(json!({"url": url.as_str(), "headers":{"authorization":"Bearer test-user-key"}}), vec![url], timeout_ms)).await??;
             match path {
                 "whoami" => {
                     let result = result.unwrap();

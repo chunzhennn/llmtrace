@@ -26,7 +26,7 @@ services:
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/llmtrace
       LLMTRACE_LISTEN: 0.0.0.0:3000
       # For split domains, also set LLMTRACE_ADMIN_LISTEN=0.0.0.0:3001,
-      # LLMTRACE_PUBLIC_URL (admin), LLMTRACE_PROXY_PUBLIC_URL (employee API),
+      # LLMTRACE_PUBLIC_URL (admin), LLMTRACE_PROXY_PUBLIC_URL (user API),
       # publish port 3001 below and change this service's healthcheck to 3001.
     ports:
       # The mounted example config uses development credentials; expose it

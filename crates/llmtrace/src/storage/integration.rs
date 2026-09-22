@@ -48,8 +48,8 @@ async fn enterprise_storage_round_trip(pool: PgPool) -> anyhow::Result<()> {
             event.request_body_bytes = request_body.len() as i64;
             event.response_body_bytes = response_body.len() as i64;
             event.response_body_truncated = turn == 0;
-            event.user_id = Some(format!("employee-{index}"));
-            event.user_name = Some(format!("Employee {index}"));
+            event.user_id = Some(format!("user-{index}"));
+            event.user_name = Some(format!("User {index}"));
             let (mut trace, messages, user_id, user_name) = build_trace(event, &plugins)?;
             if trace.usage_complete {
                 trace.estimated_cost_microusd = Some(2_000_080);
@@ -82,7 +82,7 @@ async fn enterprise_storage_round_trip(pool: PgPool) -> anyhow::Result<()> {
         assert_eq!(session["request_stats"]["usage_known_count"], 1);
         assert_eq!(session["request_stats"]["priced_request_count"], 1);
         assert_eq!(session["request_stats"]["estimated_cost_microusd"], 2000080);
-        assert_eq!(session["user_name"], format!("Employee {index}"));
+        assert_eq!(session["user_name"], format!("User {index}"));
         let incomplete: bool = sqlx::query_scalar("SELECT NOT complete FROM payload_archive_records WHERE trace_id = $1 AND direction = 'response_body'")
             .bind(ids[0]).fetch_one(&pool).await?;
         assert!(incomplete);
@@ -224,7 +224,7 @@ async fn enterprise_proxy_stream_and_admin_access(pool: PgPool) -> anyhow::Resul
         .await?;
     assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
     let response = app.clone().oneshot(Request::builder().method("POST").uri("/v1/chat/completions")
-        .header("content-type", "application/json").header("authorization", "Bearer employee-key")
+        .header("content-type", "application/json").header("authorization", "Bearer user-key")
         .body(Body::from(r#"{"model":"test-model","stream":true,"messages":[{"role":"user","content":"hi"}]}"#))?).await?;
     assert_eq!(response.status(), StatusCode::OK);
     let id = Uuid::parse_str(response.headers()["x-llmtrace-trace-id"].to_str()?)?;

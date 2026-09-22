@@ -1,6 +1,6 @@
 # Browser UI and UX review
 
-Reviewed the embedded production SPA in local Chrome with 96 synthetic requests, eight conversations, four employees, three models, tool calls and rate-limit failures. No employee data or paid provider requests were used.
+Reviewed the embedded production SPA in local Chrome with 96 synthetic requests, eight conversations, four users, three models, tool calls and rate-limit failures. No user data or paid provider requests were used.
 
 The desktop layout has a consistent visual language: a stable sidebar, restrained colors, readable cards, and distinct investigation and administration areas. Session transcripts, usage coverage and request details support the main auditing workflow. The original mobile layout and keyboard behavior needed corrections.
 
@@ -12,7 +12,7 @@ The desktop layout has a consistent visual language: a stable sidebar, restraine
 | Query sort controls collapsed the selected field to an unreadable sliver. | Give the direction selector only its required width and label the query controls. |
 | Populated Query results expanded the desktop page to 2,309 pixels. | Constrain the results grid column and keep horizontal scrolling inside its panel. |
 | Mobile request filters occupied nearly the entire first viewport. | Use a two-column filter layout with full-width search and larger touch controls. |
-| Session links emphasized opaque hashes. | Lead with employee names and a short session ID; identify the employee in the detail header and add a transcript shortcut. |
+| Session links emphasized opaque hashes. | Lead with user names and a short session ID; identify the user in the detail header and add a transcript shortcut. |
 | Keyboard arrows did not switch tabs; Escape did not close the mobile menu. | Add tab keyboard navigation, focus containment and restoration, inert hidden navigation, an explicit close button and a skip link. |
 | Request-filter and session-search labels were not associated with their controls. | Associate shared field labels and give session search an accessible name. |
 | Returning from a detail page lost list filters and pagination. | Preserve the list URL in detail links and validate the return destination. |
@@ -27,7 +27,7 @@ The desktop layout has a consistent visual language: a stable sidebar, restraine
 
 Chrome 151.0.7922.71 passed all 28 browser assertions using the embedded release build. The run covers 1,440 × 1,000 desktop, 390 × 844 mobile and 320 × 740 narrow viewports, with 34 updated screenshots. No console/runtime errors or page-level horizontal overflow were recorded. See the [machine-readable report](ui-review/after/report.json). Timing entries record deliberate screenshot settling waits.
 
-Checks include sign-in/logout, configured login methods, employee search, request filters, pagination, returning to filtered lists, JSONL IDs matching the current page, lazy/shared payload loading, tool inspection, employee cost analytics, structured queries, empty results, theme switching, keyboard tabs, mobile-menu focus behavior and the transcript shortcut.
+Checks include sign-in/logout, configured login methods, user search, request filters, pagination, returning to filtered lists, JSONL IDs matching the current page, lazy/shared payload loading, tool inspection, user cost analytics, structured queries, empty results, theme switching, keyboard tabs, mobile-menu focus behavior and the transcript shortcut.
 
 Also passed: 43 frontend tests, Svelte diagnostics (zero errors/warnings), the production frontend build, 351 Rust unit tests, the PostgreSQL-backed auth/proxy integration test, Clippy with warnings denied, the Rust release build, and `git diff --check`. The browser fixture has been stopped and its isolated database cleaned up.
 
@@ -35,7 +35,7 @@ Also passed: 43 frontend tests, Svelte diagnostics (zero errors/warnings), the p
 
 Compare [original mobile session](ui-review/before/mobile-session.png) with [updated mobile session](ui-review/after/mobile-session.png), and [original mobile filters](ui-review/before/mobile-requests.png) with [updated mobile filters](ui-review/after/mobile-requests.png).
 
-Other views: [desktop overview](ui-review/after/desktop-overview.png), [session investigation](ui-review/after/desktop-session.png), [employee analytics](ui-review/after/desktop-employee-analytics.png), [mobile transcript](ui-review/after/mobile-transcript.png), [light theme](ui-review/after/desktop-overview-light.png).
+Other views: [desktop overview](ui-review/after/desktop-overview.png), [session investigation](ui-review/after/desktop-session.png), [user analytics](ui-review/after/desktop-employee-analytics.png), [mobile transcript](ui-review/after/mobile-transcript.png), [light theme](ui-review/after/desktop-overview-light.png).
 
 ## Reproducing the review
 
@@ -56,6 +56,6 @@ The fixture exits immediately without `LLMTRACE_UI_REVIEW_DIR`. An enabled fixtu
 
 ## Remaining product work
 
-The overview still emphasizes traffic and operational health. An enterprise landing page would benefit from employee spend, attribution coverage and links to sessions needing review. Dense analytics tables intentionally scroll horizontally on small screens. Request summaries could expose employee identity and cost directly, and saved investigations would reduce repeated filtering.
+The overview still emphasizes traffic and operational health. An enterprise landing page would benefit from user spend, attribution coverage and links to sessions needing review. Dense analytics tables intentionally scroll horizontally on small screens. Request summaries could expose user identity and cost directly, and saved investigations would reduce repeated filtering.
 
 This is a Chrome review with responsive viewport emulation, not a Safari/Firefox, physical-device or screen-reader certification. Real OIDC sign-in requires a configured identity provider and was not exercised here.

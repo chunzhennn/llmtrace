@@ -23,7 +23,7 @@ Tool versions and the measured binary SHA-256 hashes are in [performance/environ
 
 The application runs as a separate release process. The mock upstream and generator run outside that process; reported RSS therefore excludes them and PostgreSQL. Linux `/proc` RSS is sampled every 10 ms during load. Both mock and proxy accepted sockets use `TCP_NODELAY` after the fix. Tests run sequentially, without a simultaneous build or second benchmark.
 
-The main harness uses four trace workers, a 1,024-event queue, a 256 MiB event memory budget, a ten-connection database pool, and 16 MiB HTTP capture limits. Payloads contain deterministic pseudo-random alphanumeric text, avoiding misleading compression ratios from repeated characters. “8 MiB” describes text content; the JSON envelope adds 58 bytes. The smaller request is 1,082 bytes including its envelope. No model tokenizer, real employee data, identity service, or paid provider was involved.
+The main harness uses four trace workers, a 1,024-event queue, a 256 MiB event memory budget, a ten-connection database pool, and 16 MiB HTTP capture limits. Payloads contain deterministic pseudo-random alphanumeric text, avoiding misleading compression ratios from repeated characters. “8 MiB” describes text content; the JSON envelope adds 58 bytes. The smaller request is 1,082 bytes including its envelope. No model tokenizer, real user data, identity service, or paid provider was involved.
 
 ## Coverage and assertions
 

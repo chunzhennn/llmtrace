@@ -1,7 +1,7 @@
 [server]
 listen = "127.0.0.1:3000"
 public_url = "http://127.0.0.1:3000"
-# Optional separate admin listener and employee API origin (set both).
+# Optional separate admin listener and user API origin (set both).
 # public_url always refers to the ADMIN origin; it must use a different hostname.
 # admin_listen = "127.0.0.1:3001"
 # public_url = "http://localhost:3001" # replace public_url above
@@ -164,8 +164,8 @@ store_header_hash = true
 # Identity lookup plugins can import llmtrace.http_get (see docs/plugin-http.md).
 # This is an example configuration; provide your own WASM module and real lookup URL.
 # [[plugins]]
-# name = "employee-identity"
-# wasm_path = "plugins/employee-identity.wasm"
+# name = "user-identity"
+# wasm_path = "plugins/user-identity.wasm"
 # hooks = ["on_request_start"]
 # timeout_ms = 1000
 # http_get_urls = ["https://llm.example.com/v1/whoami"]

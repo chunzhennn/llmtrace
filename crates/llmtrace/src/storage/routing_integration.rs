@@ -63,7 +63,7 @@ async fn litellm_split_listeners_stream_and_isolate_admin(pool: PgPool) -> anyho
             });
             (
                 if parts.uri.path() == "/files/error" { StatusCode::TOO_MANY_REQUESTS } else { StatusCode::OK },
-                [("x-upstream", "litellm-fixture"), ("retry-after", "2"), ("access-control-allow-origin", "https://employee.example")],
+                [("x-upstream", "litellm-fixture"), ("retry-after", "2"), ("access-control-allow-origin", "https://user.example")],
                 axum::Json(value),
             ).into_response()
         });
@@ -125,7 +125,7 @@ async fn litellm_split_listeners_stream_and_isolate_admin(pool: PgPool) -> anyho
     })
     .await?;
 
-    // Preset forwarding preserves query strings, employee keys, error codes and CORS.
+    // Preset forwarding preserves query strings, user keys, error codes and CORS.
     for path in [
         "/models?team=engineering",
         "/v1/models",
@@ -135,7 +135,7 @@ async fn litellm_split_listeners_stream_and_isolate_admin(pool: PgPool) -> anyho
     ] {
         let response = http
             .get(format!("{proxy_url}{path}"))
-            .bearer_auth("employee-key")
+            .bearer_auth("user-key")
             .send()
             .await?;
         assert_eq!(
@@ -150,7 +150,7 @@ async fn litellm_split_listeners_stream_and_isolate_admin(pool: PgPool) -> anyho
         assert_eq!(response.headers()["retry-after"], "2");
         assert!(!response.headers().contains_key("x-llmtrace-trace-id"));
         let value: Value = response.json().await?;
-        assert_eq!(value["authorization"], "Bearer employee-key");
+        assert_eq!(value["authorization"], "Bearer user-key");
         assert_eq!(value["uri"], path);
     }
     let options = http
@@ -162,7 +162,7 @@ async fn litellm_split_listeners_stream_and_isolate_admin(pool: PgPool) -> anyho
         .await?;
     assert_eq!(
         options.headers()["access-control-allow-origin"],
-        "https://employee.example"
+        "https://user.example"
     );
     assert!(!options.headers().contains_key("x-llmtrace-trace-id"));
     assert_eq!(
@@ -356,7 +356,7 @@ async fn litellm_split_listeners_stream_and_isolate_admin(pool: PgPool) -> anyho
     }
 
     for path in ["/chat/completions", "/v1/chat/completions"] {
-        let response = http.post(format!("{proxy_url}{path}")).bearer_auth("employee-key").json(&json!({"model":"fixture", "stream":true, "messages":[{"role":"user","content":"hello"}]})).send().await?;
+        let response = http.post(format!("{proxy_url}{path}")).bearer_auth("user-key").json(&json!({"model":"fixture", "stream":true, "messages":[{"role":"user","content":"hello"}]})).send().await?;
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.headers().contains_key("x-llmtrace-trace-id"));
         assert!(response.text().await?.ends_with("data: [DONE]\n\n"));

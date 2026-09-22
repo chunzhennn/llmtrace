@@ -159,7 +159,7 @@ try {
   await click('input[name=q]'); await command('Input.insertText',{text:'Maya'});
   await click('button[type=submit]');
   await waitFor("location.search.includes('q=Maya')"); await settle();
-  report.checks.employeeSearch = await evaluate("document.querySelectorAll('tbody tr').length === 2 && Array.from(document.querySelectorAll('tbody tr')).every(e=>e.textContent.includes('Maya Chen'))");
+  report.checks.userSearch = await evaluate("document.querySelectorAll('tbody tr').length === 2 && Array.from(document.querySelectorAll('tbody tr')).every(e=>e.textContent.includes('Maya Chen'))");
   await click('tbody a'); await waitFor("document.querySelector('h1')?.textContent === 'Session detail'"); await settle();
   await clickText('main a','Back'); await waitFor("document.querySelector('h1')?.textContent === 'Sessions'");
   report.checks.sessionBackPreservesSearch = await evaluate("location.search === '?q=Maya'");
@@ -262,8 +262,8 @@ try {
   report.checks.toolCallVisible = await evaluate("document.body.textContent.includes('search_internal_docs')");
   await shot('desktop-tool-call');
   await navigate('/ui/analytics','Analytics'); await clickText('[role=tab]','Users');await settle();
-  report.checks.employeeCostsVisible = await evaluate("document.body.textContent.includes('Maya Chen') && document.body.textContent.toLowerCase().includes('cost')");
-  await shot('desktop-employee-analytics');
+  report.checks.userCostsVisible = await evaluate("document.body.textContent.includes('Maya Chen') && document.body.textContent.toLowerCase().includes('cost')");
+  await shot('desktop-user-analytics');
   await navigate('/ui/query','Query');
   report.checks.querySortReadable = await evaluate("document.querySelector('[aria-label=\"Sort field\"]').getBoundingClientRect().width > 120");
   await clickText('main button','Run query');await settle();

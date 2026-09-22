@@ -1,6 +1,6 @@
 # LiteLLM gateway and separate admin domain
 
-Run one llmtrace process with two listeners. Employees reach LiteLLM through the
+Run one llmtrace process with two listeners. Users reach LiteLLM through the
 proxy listener; administrators reach the llmtrace SPA and authenticated analytics
 on the admin listener. Existing configurations without `admin_listen` retain the
 combined listener.
@@ -39,7 +39,7 @@ routing separately. Listener identity determines routing, not `Host` or
 `X-Forwarded-Host`. The proxy listener never serves llmtrace admin routes, even
 with a forged admin hostname. The admin listener never forwards traffic to LiteLLM.
 
-LiteLLM remains responsible for employee authentication, quotas and endpoint
+LiteLLM remains responsible for user authentication, quotas and endpoint
 authorization. Clients send their existing LiteLLM keys unchanged and can use
 `https://api.example.com/v1` as their SDK base URL. The preset does not inject
 provider credentials or automatically install an identity lookup plugin.
@@ -51,7 +51,7 @@ URL allowlist entries match schemes exactly: include `ws://` alongside `http://`
 LiteLLM supports [unversioned API routes and several SDK formats](https://docs.litellm.ai/docs/proxy/user_keys),
 [health endpoints](https://docs.litellm.ai/docs/proxy/health), and
 [custom pass-through routes](https://docs.litellm.ai/docs/proxy/pass_through).
-The built-in preset covers common employee APIs:
+The built-in preset covers common user APIs:
 
 | Traffic | Forwarding | Archive/session capture |
 | --- | --- | --- |
@@ -68,7 +68,7 @@ Supporting traffic skips body copies, plugins, journal writes and conversation
 records, so model discovery and health checks do not inflate inference statistics.
 It has no persisted per-request analytics or llmtrace trace ID. HTTP upload limits,
 upstream allowlists, timeouts and streaming still apply. OPTIONS requests pass
-upstream so LiteLLM remains responsible for employee-facing CORS.
+upstream so LiteLLM remains responsible for user-facing CORS.
 
 `proxy.path_prefixes` replaces the preset's forwarding list; it never changes the
 destination allowlist. `proxy.capture_path_prefixes` independently replaces its
@@ -85,7 +85,7 @@ path_prefixes = ["/"]
 
 This exposes LiteLLM's own UI/management routes, protected by LiteLLM's permissions;
 they receive no conversation capture by default. In split mode `/ui`, `/api`,
-`/healthz` and `/metrics` on the employee listener belong to the upstream. The
+`/healthz` and `/metrics` on the user listener belong to the upstream. The
 llmtrace probes and metrics are on the **admin listener**. Restrict that listener
 through your internal ingress/network policy. A root prefix in legacy combined
 mode still leaves llmtrace's reserved paths local.
@@ -140,7 +140,7 @@ cargo build --release --locked -p llmtrace
 
 The frontend passed 43 tests and Svelte diagnostics reported no errors or warnings.
 The routing integration test uses synthetic HTTP/SSE/WebSocket traffic and verifies
-employee-key forwarding, CORS, upstream errors, upload limits, progressive downloads,
+user-key forwarding, CORS, upstream errors, upload limits, progressive downloads,
 capture selection, origin checks and admin isolation with both preset and root
 forwarding prefixes. It requires no running LiteLLM instance or provider credentials.
 

@@ -11,10 +11,10 @@ The [durable capture guide](docs/durable-capture.md) describes the default disk 
 The [OpenRouter live test report](docs/openrouter-live-testing.md) covers cheap-model HTTP/SSE, tool calls, account identity lookup, and an upstream deployment-prefix routing fix.
 
 For an existing LiteLLM gateway, use the [LiteLLM preset and separate-domain guide](docs/litellm.md)
-and [example config](llmtrace.litellm.example.toml). `server.listen` serves employee
+and [example config](llmtrace.litellm.example.toml). `server.listen` serves user
 traffic and optional `server.admin_listen` serves the dashboard, analytics, auth and
 probes. `server.public_url` is the admin origin; `server.proxy_public_url` is the
-employee API origin. The LiteLLM preset captures inference while forwarding common
+user API origin. The LiteLLM preset captures inference while forwarding common
 supporting APIs without creating conversation records.
 
 ## Quick start
@@ -429,7 +429,7 @@ Configure exact model names under `[pricing."model-name"]` with `input`, `output
 
 `ttfb_ms` measures the first nonempty HTTP response chunk. `ttft_ms` measures receipt of the first complete SSE event with generated text or tool arguments (also Anthropic thinking deltas). Role-only events and heartbeats do not count. Parsing remains in the background; the proxy records at most 8192 chunk timestamps. Nonstreaming responses and output beyond that timing limit have unknown TTFT. Durations include upload, upstream processing, streaming, and downstream backpressure. Failures include HTTP 4xx/5xx, transport errors, provider error events, and recognized SSE streams ending without a terminal event (when the capture is complete).
 
-For conversation grouping, provide `metadata.session_id`, `metadata.conversation_id`, a Responses `conversation` string/object, or a plugin `session_key`. These hints are scoped by upstream origin and credential hash. With no hint, each request is its own session and is tagged `session_unlinked`; an API key is not a conversation ID. `previous_response_id` chain reconstruction is not implemented. Employee identity must come from trusted enrichment; client-supplied conversation metadata is not proof of identity.
+For conversation grouping, provide `metadata.session_id`, `metadata.conversation_id`, a Responses `conversation` string/object, or a plugin `session_key`. These hints are scoped by upstream origin and credential hash. With no hint, each request is its own session and is tagged `session_unlinked`; an API key is not a conversation ID. `previous_response_id` chain reconstruction is not implemented. User identity must come from trusted enrichment; client-supplied conversation metadata is not proof of identity.
 
 The internal credential fingerprint used for grouping is independent of `redaction.store_header_hash`. Disabling that setting still omits hashes from stored headers and `api_key_hash`, while keeping different credentials in separate sessions. Existing journal entries can recover the fingerprint from their captured headers during replay. Already persisted session groupings are not rewritten.
 

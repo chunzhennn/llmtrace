@@ -26,7 +26,7 @@
 		sessionsApi.getSession(id, { messages_limit: MESSAGE_PAGE, messages_offset: 0 }, signal), () => id
 	);
 	const session = $derived(detail.data?.id === id ? detail.data : undefined);
-	const employee = $derived(session?.user_name || session?.user_id);
+	const user = $derived(session?.user_name || session?.user_id);
 	const messages = $derived(session?.messages ?? []);
 	const messagesPage = $derived(session?.messages_page);
 	const loading = $derived(detail.loading);
@@ -72,7 +72,7 @@
 
 <PageHeader title="Session detail">
 	{#snippet description()}
-		{#if employee}{employee} · {/if}Session
+		{#if user}{user} · {/if}Session
 		<button
 			type="button"
 			class="hover:text-fg cursor-pointer font-mono underline underline-offset-2"
