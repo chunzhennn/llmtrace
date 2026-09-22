@@ -1,0 +1,184 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize publications so version manifests cannot be interrupted midway.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      image: ${{ steps.version.outputs.image }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate release tag against the crate version
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+        run: |
+          python3 - <<'PY'
+          import os, re, tomllib
+          from pathlib import Path
+
+          version = tomllib.loads(Path('crates/llmtrace/Cargo.toml').read_text())['package']['version']
+          tag = os.environ['RELEASE_TAG']
+          if os.environ['RELEASE_REF_TYPE'] != 'tag' or tag != f'v{version}':
+              raise SystemExit(f'Release from the v{version} tag, matching crates/llmtrace/Cargo.toml.')
+          if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', version):
+              raise SystemExit('Use a semantic version without build metadata for Docker tags.')
+          image = 'ghcr.io/' + os.environ['GITHUB_REPOSITORY'].lower()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print(f'version={version}', file=output)
+              print(f'image={image}', file=output)
+              print(f'prerelease={str("-" in version).lower()}', file=output)
+          PY
+
+  verify:
+    needs: prepare
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: [prepare, verify]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push the native image by digest
+        id: image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.licenses=MIT
+          cache-from: type=gha,scope=release-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.arch }}
+          provenance: mode=min
+          sbom: true
+      - name: Smoke-test and package the exact image binary
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          image_ref="$IMAGE@$DIGEST"
+          docker pull "$image_ref"
+          test "$(docker run --rm "$image_ref" --version)" = "llmtrace $VERSION"
+          docker run --rm --mount "type=bind,src=$GITHUB_WORKSPACE/llmtrace.example.toml,dst=/etc/llmtrace.toml,readonly" \
+            "$image_ref" --config /etc/llmtrace.toml --check-config
+          package="llmtrace-${VERSION}-linux-${ARCH}"
+          mkdir -p "dist/$package"
+          container_id=$(docker create "$image_ref")
+          trap 'docker rm -f "$container_id" >/dev/null' EXIT
+          docker cp "$container_id:/usr/local/bin/llmtrace" "dist/$package/llmtrace"
+          chmod 755 "dist/$package/llmtrace"
+          cp README.md llmtrace.example.toml llmtrace.litellm.example.toml "dist/$package/"
+          tar -C dist -czf "dist/$package.tar.gz" "$package"
+          printf '%s\n' "$DIGEST" > "dist/image-digest-${ARCH}.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ matrix.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/image-digest-*.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      packages: write
+    env:
+      IMAGE: ${{ needs.prepare.outputs.image }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_TAG: ${{ github.ref_name }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Create or resume a draft release
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft > "$RUNNER_TEMP/release.json" 2>/dev/null; then
+            jq --exit-status '.isDraft == true' "$RUNNER_TEMP/release.json" >/dev/null || {
+              echo 'This release is already published. Use a new version tag.' >&2
+              exit 1
+            }
+          else
+            printf 'Container image: %s:%s (linux/amd64 and linux/arm64).\n' "$IMAGE" "$VERSION" > "$RUNNER_TEMP/release-notes.md"
+            gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes \
+              --title "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --prerelease="$PRERELEASE"
+          fi
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the multi-architecture manifest
+        run: |
+          sources=()
+          for arch in amd64 arm64; do
+            digest=$(cat "dist/image-digest-${arch}.txt")
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            test -s "dist/llmtrace-${VERSION}-linux-${arch}.tar.gz"
+            sources+=("$IMAGE@$digest")
+          done
+          tags=(-t "$IMAGE:$VERSION" -t "$IMAGE:$RELEASE_TAG")
+          if [[ "$PRERELEASE" == false ]]; then
+            tags+=(-t "$IMAGE:latest")
+          fi
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+          docker buildx imagetools inspect "$IMAGE:$VERSION"
+      - name: Create the GitHub Release and attach checksummed archives
+        working-directory: dist
+        run: |
+          sha256sum ./*.tar.gz > SHA256SUMS
+          gh release upload "$RELEASE_TAG" ./*.tar.gz SHA256SUMS --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease="$PRERELEASE"

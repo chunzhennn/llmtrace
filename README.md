@@ -19,6 +19,13 @@ supporting APIs without creating conversation records.
 
 ## Quick start
 
+Version tags publish [GitHub Releases](https://github.com/chunzhennn/llmtrace/releases)
+with Linux amd64/arm64 binaries and a multi-architecture image at
+`ghcr.io/chunzhennn/llmtrace`. See the [release guide](docs/releases.md) for tagging,
+checksums, and package permissions. Releases require the existing tests and a
+full-history secret scan; the initial [credential audit](docs/security-audit.md)
+documents the checked history and reviewed example values.
+
 1. Start Postgres.
 2. Copy `llmtrace.example.toml` to `llmtrace.toml` and update `storage.postgres_url`.
 3. Run the server:

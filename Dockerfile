@@ -9,6 +9,7 @@ RUN pnpm run build
 
 FROM rust:1.96-bookworm AS build
 WORKDIR /app
+ARG CARGO_BUILD_JOBS=2
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY --from=ui /ui/build ./crates/llmtrace/ui/build

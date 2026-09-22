@@ -1,5 +1,7 @@
 /target
 /.env
+/.env.*
+!/.env.example
 /llmtrace.toml
 /spool
 /.cursor

@@ -1,0 +1,22 @@
+title = "llmtrace secret scanning"
+
+[extend]
+useDefault = true
+
+# These exact README examples were reviewed across the full Git history.
+# Keep exclusions limited to the matching rule, path, and placeholder value.
+[[allowlists]]
+description = "README provider-key placeholders"
+targetRules = ["curl-auth-header"]
+condition = "AND"
+paths = ['''^README\.md$''']
+regexTarget = "secret"
+regexes = ['''^sk-(ant-)?example$''']
+
+[[allowlists]]
+description = "README example conversation identifier is not an API key"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^README\.md$''']
+regexTarget = "secret"
+regexes = ['''^conversation-456$''']
