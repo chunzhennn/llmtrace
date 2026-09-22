@@ -19,7 +19,8 @@
 	import { describeTools, toolDeclarations } from '$lib/transcript/tools';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import ErrorState from '$lib/components/ErrorState.svelte';
-	import CopyButton from '$lib/components/CopyButton.svelte';
+	import { copyText } from '$lib/utils/clipboard';
+	import { toasts } from '$lib/state/toast.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import Skeleton from '$lib/components/Skeleton.svelte';
 	import { createResource } from '$lib/utils/resource.svelte';
@@ -28,6 +29,15 @@
 	import { formatDateTime, formatDuration, formatMs, formatBytes, formatCost, formatTokens } from '$lib/utils/format';
 
 	const id = $derived(page.params.id ?? '');
+
+	async function copyRequestId() {
+		try {
+			await copyText(id);
+			toasts.success('Request ID copied');
+		} catch {
+			toasts.error('Could not copy request ID');
+		}
+	}
 
 	const detail = createResource<RequestDetail>((signal) =>
 		requestsApi.getRequest(id, signal), () => id
@@ -87,12 +97,20 @@
 
 <svelte:head><title>Request · llmtrace</title></svelte:head>
 
-<PageHeader title="Request detail" description={id}>
+<PageHeader title="Request detail">
+	{#snippet description()}
+		<button
+			type="button"
+			class="hover:text-fg cursor-pointer font-mono underline underline-offset-2"
+			onclick={copyRequestId}
+			aria-label="Copy full request ID"
+			title={`Copy full request ID: ${id}`}
+		>{id}</button>
+	{/snippet}
 	{#snippet actions()}
 		<a class="btn" href={listReturnHref(page.url.searchParams.get('from'), `${base}/requests`)}>
 			<Icon name="chevron-left" size={16} /> Back
 		</a>
-		<CopyButton text={id} label="Copy ID" />
 	{/snippet}
 </PageHeader>
 
