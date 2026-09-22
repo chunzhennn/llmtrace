@@ -43,7 +43,7 @@ const PRIVATE_JSON_BODY_LIMIT_BYTES: usize = 256 * 1024;
 const STRICT_TRANSPORT_SECURITY_VALUE: &str = "max-age=31536000";
 
 #[derive(Parser, Debug)]
-#[command(name = "llmtrace")]
+#[command(name = "llmtrace", version)]
 #[command(about = "Application-layer LLM reverse proxy with tracing")]
 struct Args {
     #[arg(short, long, env = "LLMTRACE_CONFIG")]
