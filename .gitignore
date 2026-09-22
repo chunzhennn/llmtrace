@@ -4,3 +4,11 @@
 /spool
 /.cursor
 *.log
+
+# Node dependencies and package-manager cache
+node_modules/
+.pnpm-store/
+
+# Local root-level Node setup; the frontend package files live in crates/llmtrace/ui.
+/package.json
+/pnpm-lock.yaml
