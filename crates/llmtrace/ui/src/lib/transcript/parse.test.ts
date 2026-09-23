@@ -95,13 +95,28 @@ describe('complete captured transcript parsing', () => {
 		expect(parsed.outputComplete).toBe(true);
 		expect(parsed.notices).toEqual([]);
 	});
-	it.each(['data: [DONE]', 'data: [DONE]\n', 'data: {broken', 'data: {"choices":[{"delta":{"content":"tail"}}]}'])('shows an unterminated tail without treating it as an event: %s', (tail) => {
+	it.each(['data: [DONE]', 'data: [DONE]\n', 'data: [DONE]\r', 'data: [DONE]\r\n', 'data: {broken', 'data: {"choices":[{"delta":{"content":"tail"}}]}'])('shows an unterminated tail without treating it as an event: %s', (tail) => {
 		const parsed = parseRequest(record({ messages: [] }, sse({ choices: [{ delta: { content: 'kept' } }] }) + tail, 1, true));
 		expect(parsed.output[0].content).toBe('kept');
 		expect(parsed.output.at(-1)?.role).toBe('unparsed_event');
 		expect(parsed.output.at(-1)?.content).toContain(tail.slice(6).trim());
 		expect(parsed.outputComplete).toBe(false);
 		expect(parsed.notices.join(' ')).toContain('unterminated event');
+	});
+	it('retains valid choices after a malformed choice and continues with later events', () => {
+		const parsed = parseRequest(record({ messages: [] }, sse(
+			{ choices: [null, { index: 1, delta: { content: 'kept ' } }] },
+			{ choices: [{ index: 1, delta: { content: 'too' } }] }, '[DONE]'
+		), 1, true));
+		expect(parsed.output[0].content).toBe('kept too');
+		expect(parsed.outputComplete).toBe(false);
+	});
+	it('does not apply trailing data after a terminated DONE event', () => {
+		const tail = 'data: {"choices":[{"delta":{"content":"tail"}}]}';
+		const parsed = parseRequest(record({ messages: [] }, sse({ choices: [{ delta: { content: 'kept' } }] }, '[DONE]') + tail, 1, true));
+		expect(parsed.output[0].content).toBe('kept');
+		expect(parsed.output.at(-1)?.role).toBe('unparsed_event');
+		expect(parsed.outputComplete).toBe(false);
 	});
 	it('keeps large event data intact across chunk and surrogate boundaries', () => {
 		const content = '你好🙂'.repeat(10000);

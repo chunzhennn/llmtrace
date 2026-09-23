@@ -101,20 +101,6 @@ function outputMessages(value: unknown): ParsedOutput {
 	return { messages: [message(value, has(value, 'error') ? 'error' : 'response')], branches: [], complete: false };
 }
 
-/** Keep only one chunk's events queued while the library handles SSE framing. */
-function* events(text: string): Generator<{ data: string; complete: boolean }> {
-	let pending: string[] = [];
-	const parser = createParser({ onEvent: ({ data }) => pending.push(data) });
-	for (let offset = 0; offset < text.length; offset += 8192) {
-		parser.feed(text.slice(offset, offset + 8192));
-		for (const data of pending) yield { data, complete: true };
-		pending = [];
-	}
-	// Drain a captured tail only for forensic display. It must never be applied
-	// as a delta or accepted as a terminal marker without its original separator.
-	parser.feed('\n\n');
-	for (const data of pending) yield { data, complete: false };
-}
 function set(target: Obj, key: string, value: unknown) {
 	Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true });
 }
@@ -163,21 +149,21 @@ function streamMessages(text: string, notices: string[]): ParsedOutput {
 		if (!output.has(index)) output.set(index, { type: 'message', role: 'assistant', content: [] });
 		return output.get(index)!;
 	};
-	for (const event of events(text)) {
-		const { data } = event;
-		if (!event.complete) {
+	let readingTail = false;
+	const parser = createParser({ onEvent: ({ data }) => {
+		if (readingTail) {
 			extra.push(message(data, 'unparsed_event'));
 			notices.push('The captured stream ends with an unterminated event; its data is shown unchanged.');
 			complete = false;
-			continue;
+			return;
 		}
-		if (!data) continue;
-		if (data === '[DONE]') { terminal = true; continue; }
+		if (!data) return;
+		if (data === '[DONE]') { terminal = true; return; }
 		let v: unknown;
-		try { v = JSON.parse(data); } catch { extra.push(message(data, 'unparsed_event')); continue; }
-		if (!object(v)) { extra.push(message(v, 'event')); continue; }
+		try { v = JSON.parse(data); } catch { extra.push(message(data, 'unparsed_event')); return; }
+		if (!object(v)) { extra.push(message(v, 'event')); return; }
 		if (![v.index, v.output_index, v.content_index, v.summary_index].every(validIndex) || !safeDelta(v.choices)) {
-			extra.push(message(v, 'event')); continue;
+			extra.push(message(v, 'event')); return;
 		}
 		if (Array.isArray(v.choices)) {
 			for (const [i, choice] of v.choices.entries()) {
@@ -188,7 +174,7 @@ function streamMessages(text: string, notices: string[]): ParsedOutput {
 				else if (object(choice.delta)) mergeDelta(chat.get(index)!, choice.delta);
 				else if (typeof choice.text === 'string') append(chat.get(index)!, 'content', choice.text);
 			}
-			continue;
+			return;
 		}
 		const type = String(v.type ?? '');
 		const index = typeof v.index === 'number' ? v.index : 0;
@@ -248,7 +234,11 @@ function streamMessages(text: string, notices: string[]): ParsedOutput {
 		} else if (!['ping', 'message_delta', 'content_block_stop', 'response.created', 'response.in_progress'].includes(type)) {
 			extra.push(message(v, has(v, 'error') || type === 'error' ? 'error' : 'event'));
 		}
-	}
+	} });
+	parser.feed(text);
+	// Flush retained data for audit display only; never apply it as a real event.
+	readingTail = true;
+	parser.feed('\n\n');
 	if (!terminal) notices.push('The captured stream has no terminal event. All retained output is shown.');
 	let parsed: ParsedOutput;
 	if (final) parsed = outputMessages(final);

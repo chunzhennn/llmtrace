@@ -50,9 +50,10 @@ existing provider parsing tests.
 ## Transcript SSE (TypeScript)
 
 [eventsource-parser](https://github.com/rexxars/eventsource-parser) replaces the
-regular-expression block splitter and hand-written `data:` extraction. Feed
-8 KiB character chunks and consume events immediately rather than allocate an
-array for the whole capture. The parser handles CR/LF/CRLF, BOMs, comments, and
+regular-expression block splitter and hand-written `data:` extraction. The
+library's synchronous callback applies each event directly while scanning the
+capture, without a pending queue, generator, or copied input chunks. The parser
+handles CR/LF/CRLF, BOMs, comments, and
 multiline fields in the transcript worker without a network client.
 
 Unterminated trailing data is drained solely into an `unparsed_event` preview;
@@ -133,10 +134,13 @@ Backend checks rerun after simplifying the Cookie writers:
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`: passed.
 - `cargo fmt --all -- --check`: passed.
 
-Frontend results from the preceding UI refactor (no UI changes in this replacement):
+Frontend tests and types rerun after simplifying SSE callback handling:
 
-- UI `pnpm test`: 180 passed.
+- UI `pnpm test`: 184 passed.
 - UI `pnpm run check`: no errors or warnings.
+
+Build and browser results from the preceding UI refactor:
+
 - UI `pnpm run build`: static production build passed.
 - Headless Chrome with synthetic auth responses: login icons, notification
   rendering, dark/light switching, dismiss buttons, and a 390 px viewport passed
