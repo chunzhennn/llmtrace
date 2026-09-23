@@ -11,15 +11,18 @@ use axum::{Json, Router};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{Duration, Utc};
+use cookie::{Cookie, SameSite};
 use futures_util::StreamExt;
 use rand::RngCore;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::Row;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration as StdDuration;
+use subtle::ConstantTimeEq;
 use url::Url;
 
 use crate::config::{LocalAdminConfig, OAuthConfig};
@@ -667,13 +670,9 @@ async fn verify_local_admin_credentials_blocking(
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    let max_len = left.len().max(right.len());
-    let mut diff = left.len() ^ right.len();
-    for index in 0..max_len {
-        diff |= left.get(index).copied().unwrap_or(0) as usize
-            ^ right.get(index).copied().unwrap_or(0) as usize;
-    }
-    diff == 0
+    // Compare fixed-size digests: subtle's slice comparison otherwise returns
+    // early on unequal lengths. Password hashing still uses Argon2 above.
+    bool::from(Sha256::digest(left).ct_eq(&Sha256::digest(right)))
 }
 
 async fn create_session(
@@ -840,12 +839,9 @@ fn auth_cookie(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
         .iter()
         .filter_map(|value| value.to_str().ok())
     {
-        for part in cookie.split(';') {
-            let Some((name, value)) = part.trim().split_once('=') else {
-                continue;
-            };
-            if name == cookie_name && valid_auth_token(value) {
-                return Some(value.to_string());
+        for parsed in Cookie::split_parse(cookie).flatten() {
+            if parsed.name() == cookie_name && valid_auth_token(parsed.value()) {
+                return Some(parsed.value().to_owned());
             }
         }
     }
@@ -913,22 +909,23 @@ fn origin_matches_public_url(public_url: &str, candidate: &str) -> bool {
 }
 
 fn set_session_cookie(headers: &mut HeaderMap, state: &AppState, session_id: &str) {
-    let mut cookie = format!(
-        "{SESSION_COOKIE}={session_id}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}",
-        state.config.auth.session_ttl_hours * 3600
+    append_set_cookie(
+        headers,
+        &auth_cookie_header(
+            SESSION_COOKIE,
+            session_id,
+            "/",
+            state.config.auth.session_ttl_hours * 3600,
+            state.config.auth.cookie_secure,
+        ),
     );
-    if state.config.auth.cookie_secure {
-        cookie.push_str("; Secure");
-    }
-    append_set_cookie(headers, &cookie);
 }
 
 fn clear_session_cookie(headers: &mut HeaderMap, state: &AppState) {
-    let mut cookie = format!("{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
-    if state.config.auth.cookie_secure {
-        cookie.push_str("; Secure");
-    }
-    append_set_cookie(headers, &cookie);
+    append_set_cookie(
+        headers,
+        &auth_cookie_header(SESSION_COOKIE, "", "/", 0, state.config.auth.cookie_secure),
+    );
 }
 
 fn set_oauth_state_cookie(headers: &mut HeaderMap, state: &AppState, state_value: &str) {
@@ -950,13 +947,30 @@ fn clear_oauth_state_cookie(headers: &mut HeaderMap, state: &AppState) {
 }
 
 fn oauth_state_cookie_header(value: &str, max_age_secs: i64, secure: bool) -> String {
-    let mut cookie = format!(
-        "{OAUTH_STATE_COOKIE}={value}; Path=/api/auth/oauth; HttpOnly; SameSite=Lax; Max-Age={max_age_secs}"
-    );
-    if secure {
-        cookie.push_str("; Secure");
-    }
-    cookie
+    auth_cookie_header(
+        OAUTH_STATE_COOKIE,
+        value,
+        "/api/auth/oauth",
+        max_age_secs,
+        secure,
+    )
+}
+
+fn auth_cookie_header(
+    name: &str,
+    value: &str,
+    path: &str,
+    max_age_secs: i64,
+    secure: bool,
+) -> String {
+    Cookie::build((name, value))
+        .path(path)
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .max_age(cookie::time::Duration::seconds(max_age_secs))
+        .secure(secure)
+        .build()
+        .to_string()
 }
 
 fn append_set_cookie(headers: &mut HeaderMap, cookie: &str) {
@@ -1506,6 +1520,53 @@ mod tests {
         let headers = headers_with(header::COOKIE, &cookie);
 
         assert_eq!(session_cookie(&headers).as_deref(), Some(token.as_str()));
+    }
+
+    #[test]
+    fn auth_cookie_tokens_are_not_unquoted_or_percent_decoded() {
+        let token = test_auth_token('a');
+        for value in [format!("\"{token}\""), format!("%61{}", &token[1..])] {
+            let headers = headers_with(header::COOKIE, &format!("{SESSION_COOKIE}={value}"));
+            assert_eq!(session_cookie(&headers), None);
+        }
+    }
+
+    #[test]
+    fn credential_comparison_preserves_exact_bytes_and_lengths() {
+        for value in ["", "admin", "用户🙂", "secret\0"] {
+            assert!(constant_time_eq(value.as_bytes(), value.as_bytes()));
+            assert!(!constant_time_eq(
+                value.as_bytes(),
+                format!("{value}\0").as_bytes()
+            ));
+            assert!(!constant_time_eq(
+                format!("{value}\0").as_bytes(),
+                value.as_bytes()
+            ));
+        }
+        assert!(!constant_time_eq(b"secret", b"secreT"));
+    }
+
+    #[test]
+    fn auth_cookie_builder_preserves_scope_flags_and_removal() {
+        for (name, path, ttl) in [
+            (SESSION_COOKIE, "/", 86400),
+            (OAUTH_STATE_COOKIE, "/api/auth/oauth", 600),
+        ] {
+            for secure in [true, false] {
+                for (value, age) in [("token", ttl), ("", 0)] {
+                    let encoded = auth_cookie_header(name, value, path, age, secure);
+                    let parsed = Cookie::parse(encoded).unwrap();
+                    assert_eq!(parsed.name(), name);
+                    assert_eq!(parsed.value(), value);
+                    assert_eq!(parsed.path(), Some(path));
+                    assert_eq!(parsed.http_only(), Some(true));
+                    assert_eq!(parsed.same_site(), Some(SameSite::Lax));
+                    assert_eq!(parsed.secure().unwrap_or(false), secure);
+                    assert_eq!(parsed.max_age().unwrap().whole_seconds(), age);
+                }
+            }
+        }
     }
 
     #[test]

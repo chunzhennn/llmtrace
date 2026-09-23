@@ -55,3 +55,51 @@ and error (8 seconds) durations. `Toasts.svelte` only configures placement,
 dismiss buttons, colors, and the application's light/dark theme. The default
 three visible notifications keep bursts bounded on screen; hover/focus and page
 visibility behavior come from Sonner rather than another local timer system.
+
+## Authentication primitives
+
+The [cookie crate](https://docs.rs/cookie/latest/cookie/) handles Cookie header
+parsing and Set-Cookie serialization. The local code still enforces the exact
+URL-safe token alphabet/length, accepts the first valid matching token across
+multiple headers, and chooses the session/OAuth paths and lifetimes. Parsing is
+not percent-decoding, and quoted tokens still fail token validation. A shared
+builder applies HttpOnly, SameSite=Lax, configured Secure, and Max-Age for both
+issuance and removal.
+
+[subtle](https://docs.rs/subtle/latest/subtle/trait.ConstantTimeEq.html), already
+present transitively, replaces the manual XOR equality loop. Compare SHA-256
+digests of the two credential strings so the compared values have equal fixed
+lengths; subtle's slice implementation otherwise short-circuits on unequal
+lengths. Argon2 password verification and the rule to verify the password even
+for an incorrect username are unchanged.
+
+## Other reviewed code
+
+- Charts and query editing already delegate to Chart.js and CodeMirror.
+- The query-text parser implements a restricted application DSL, including
+  allowlisted fields and translation to `/api/query`. A general SQL parser would
+  still require that validation and introduce unsupported syntax expectations.
+- Provider delta assembly, transcript context deduplication, and bounded JSON
+  previews encode audit semantics and capture limits. Replacing them with generic
+  object merging, chat SDKs, or JSON viewers would not preserve those guarantees.
+- The JSONL reader preserves record-level backpressure and cancellation; the
+  small resource helper preserves navigation cancellation without introducing
+  cache/refetch policy. These are application adapters around browser primitives.
+- Simple visual wrappers (cards, labels, tables, pagination) contain layout and
+  application state binding rather than an independent widget engine. Keep them
+  small; adopt a headless component library if richer interactions are needed.
+
+No database schema, configuration, API contract, or live proxy behavior changes
+are required by these replacements.
+
+## Validation
+
+- `cargo test --workspace`: 308 passed; 28 existing opt-in tests ignored.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `cargo fmt --all -- --check`: passed.
+- UI `pnpm test`: 180 passed.
+- UI `pnpm run check`: no errors or warnings.
+- UI `pnpm run build`: static production build passed.
+- Headless Chrome with synthetic auth responses: login icons, notification
+  rendering, dark/light switching, dismiss buttons, and a 390 px viewport passed
+  without runtime exceptions. No real backend/session data was used.
