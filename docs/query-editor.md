@@ -28,6 +28,13 @@ column stays selected, and the schema's column, filter and sort limits are enfor
 by the controls. Numbered sort keys show their priority. Removing all sort keys
 uses the dataset's default order. The row limit is checked before execution.
 
+Desktop clause rows share a 56px height and 36px controls, including each filter
+and the limit row. Rows expand when controls wrap on smaller screens; mobile
+controls retain at least 44px touch targets. **Clear builder** keeps the current
+dataset, removes filters and explicit sort keys, restores default columns and a
+100-row limit, and clears results, errors and the associated code draft. It does
+not execute a query and is disabled while a query is running.
+
 On smaller screens, each condition wraps into a field row and an operator/value
 row. The results table scrolls horizontally within its own container. Column
 selection and query preview use native disclosure controls with keyboard support;
@@ -56,7 +63,7 @@ Screenshots with synthetic rows: [desktop, light](ui-review/query-builder/deskto
 [mobile](ui-review/query-builder/mobile-light.png). Browser checks covered
 360, 390, 768, 1024 and 1440 pixel widths, keyboard disclosure, column search,
 typed query requests, result rendering and mode switching. Frontend validation:
-`pnpm test` (195 passed), `pnpm run check` (no diagnostics), `pnpm run build`.
+`pnpm test` (197 passed), `pnpm run check` (no diagnostics), `pnpm run build`.
 `cargo test --workspace`: 310 passed, 28 ignored.
 
 The implementation uses CodeMirror and translates the supported statement grammar

@@ -170,6 +170,43 @@ it.each(['0', '501', '1.5', ''])('blocks invalid row limit %j before sending the
 	expect(target.querySelector('[role="alert"]')?.textContent).toContain('between 1 and 500');
 });
 
+it('clears builder conditions, projections, sorting and results without running a query', async () => {
+	await click('Code');
+	await writeCode('SELECT id, model FROM requests WHERE status >= 400 ORDER BY model ASC LIMIT 7');
+	await click('Builder');
+	await click('Run query');
+	await setControl('[aria-label="Search columns"]', 'model');
+	await setControl('#query-limit', '0');
+	await click('Run query');
+	expect(target.querySelector('[role="alert"]')).not.toBeNull();
+	await click('Clear builder');
+	expect(queryApi.runQuery).toHaveBeenCalledTimes(1);
+	expect(target.querySelector('[role="alert"]')).toBeNull();
+	expect(target.textContent).toContain('No results yet');
+	expect(target.querySelector('[aria-label="Filter field"]')).toBeNull();
+	expect(target.querySelector('[aria-label="Sort field"]')).toBeNull();
+	expect(target.querySelector<HTMLInputElement>('[aria-label="Search columns"]')?.value).toBe('');
+	await click('Run query');
+	expect(queryApi.runQuery).toHaveBeenLastCalledWith({
+		dataset: 'requests', fields: ['id'], filters: undefined, order_by: undefined, limit: 100
+	});
+});
+
+it('keeps the current dataset on clear and prevents an old code draft from returning', async () => {
+	await setControl('[aria-label="Dataset"]', 'sessions');
+	await click('Code');
+	await writeCode('SELECT session_key FROM sessions WHERE');
+	await click('Builder');
+	await click('Clear builder');
+	expect(target.querySelector<HTMLSelectElement>('[aria-label="Dataset"]')?.value).toBe('sessions');
+	await click('Code');
+	expect(parseQueryText(editor().state.doc.toString(), schema)).toEqual({
+		dataset: 'sessions', fields: ['session_key'], filters: [],
+		order_by: [{ field: 'session_key', direction: 'asc' }], limit: 100
+	});
+	expect(target.textContent).not.toContain('Restore code draft');
+});
+
 it('executes the same query after Code to Builder to Code conversion', async () => {
 	await click('Code');
 	const code = `SELECT id, "plugin_metadata.My-plugin.team" FROM requests

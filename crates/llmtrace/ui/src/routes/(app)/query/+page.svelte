@@ -7,6 +7,7 @@
 	import InboxIcon from '@lucide/svelte/icons/inbox';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { onMount } from 'svelte';
@@ -121,6 +122,18 @@
 	function onDatasetChange(name: string) {
 		const spec = schema.data?.datasets.find((d) => d.name === name);
 		if (spec) applyDatasetDefaults(spec);
+	}
+
+	function clearBuilder() {
+		if (!currentDataset || running) return;
+		applyDatasetDefaults(currentDataset);
+		orderBy = [];
+		limit = 100;
+		code = '';
+		savedCodeDraft = null;
+		builderAtCodeError = '';
+		codeAtEntry = '';
+		modeNotice = null;
 	}
 
 	function toggleField(name: string) {
@@ -354,8 +367,15 @@
 {:else if schema.data}
 	<div class="flex min-w-0 flex-col gap-4">
 		<section class="card min-w-0" aria-label="Query composer">
-			<div class="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
-				<Tabs tabs={[{ id: 'builder', label: 'Builder' }, { id: 'code', label: 'Code' }]} active={mode} onChange={changeMode} />
+			<div class="composer-toolbar flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-2">
+				<div class="flex flex-wrap items-center gap-3">
+					<Tabs tabs={[{ id: 'builder', label: 'Builder' }, { id: 'code', label: 'Code' }]} active={mode} onChange={changeMode} />
+					{#if mode === 'builder'}
+						<button type="button" class="btn !border-transparent !px-2 text-xs text-fg-muted" onclick={clearBuilder} disabled={running}>
+							<RotateCcwIcon size={14} /> Clear builder
+						</button>
+					{/if}
+				</div>
 				<div class="flex items-center gap-2">
 					<button type="button" class="btn" onclick={exportResults} disabled={running}>
 						<DownloadIcon size={15} /> Export
@@ -368,128 +388,132 @@
 			{#if modeNotice}<p class="border-b border-border px-4 py-3 text-sm text-fg-muted" role="status">{modeNotice}</p>{/if}
 			{#if runError}<p class="border-b border-border px-4 py-3 text-sm text-danger" role="alert">{runError}</p>{/if}
 			{#if mode === 'builder'}
-				<div class="clause-row border-b border-border px-4 py-4">
-					<label for="query-dataset" class="clause-label">From</label>
-					<div class="flex min-w-0 flex-wrap items-center gap-3">
-						<div class="flex items-center gap-2 text-brand">
-							<DatabaseIcon size={17} />
-							<select id="query-dataset" aria-label="Dataset" class="input !w-auto max-w-full pr-8 font-medium" value={dataset} onchange={(e) => onDatasetChange(e.currentTarget.value)}>
-								{#each schema.data.datasets as ds (ds.name)}<option value={ds.name}>{ds.name}</option>{/each}
-							</select>
-						</div>
-						<span class="text-xs text-fg-muted">{currentDataset?.fields.length ?? 0} available fields</span>
-					</div>
-				</div>
-
-				<div class="space-y-2 border-b border-border px-4 py-4" role="group" aria-label="Filters · match all conditions">
-					{#each filters as row, index (row.id)}
-						{@const inputKind = valueInputKind(rowKind(row), row.op)}
-						<div class="clause-row">
-							<span class="clause-label">{index === 0 ? 'Where' : 'And'}</span>
-							<div class="condition">
-								{#if row.custom}
-									<input class="input condition-field font-mono" aria-label="Plugin metadata path" placeholder="plugin_metadata.name.path" bind:value={row.field} />
-								{:else}
-									<select class="input condition-field pr-8 font-mono" aria-label="Filter field" value={row.field} onchange={(e) => onFilterFieldChange(row, e.currentTarget.value)}>
-										{#each filterableFields as f (f.name)}<option value={f.name}>{f.name}</option>{/each}
-									</select>
-								{/if}
-								<select class="input condition-operator pr-8" aria-label="Filter operator" value={row.op} onchange={(e) => onFilterOperatorChange(row, e.currentTarget.value as QueryOp)}>
-									{#each rowOperators(row) as op (op)}<option value={op}>{operatorLabels[op]}</option>{/each}
+				<div class="builder">
+					<div class="clause-row border-b border-border">
+						<label for="query-dataset" class="clause-label">From</label>
+						<div class="flex min-w-0 flex-wrap items-center gap-3">
+							<div class="flex items-center gap-2 text-brand">
+								<DatabaseIcon size={17} />
+								<select id="query-dataset" aria-label="Dataset" class="input !w-auto max-w-full pr-8 font-medium" value={dataset} onchange={(e) => onDatasetChange(e.currentTarget.value)}>
+									{#each schema.data.datasets as ds (ds.name)}<option value={ds.name}>{ds.name}</option>{/each}
 								</select>
-								{#if inputKind === 'bool'}
-									<select class="input condition-value pr-8" aria-label="Filter value" bind:value={row.value}>
-										<option value="true">true</option><option value="false">false</option>
-									</select>
-								{:else if inputKind === 'int'}
-									<input class="input condition-value font-mono" aria-label="Filter value" type="number" placeholder="Enter a number" bind:value={row.value} />
-								{:else if inputKind !== 'none'}
-									<input class="input condition-value font-mono" aria-label="Filter value" placeholder={inputKind === 'timestamp' ? 'YYYY-MM-DDTHH:mm:ssZ' : row.custom || rowKind(row) === 'json' ? 'Text or JSON value' : 'Enter a value'} bind:value={row.value} />
-								{:else}
-									<span class="condition-value px-3 text-xs text-fg-muted">No value needed</span>
-								{/if}
-								<button type="button" class="remove-button" aria-label="Remove filter" title="Remove filter" onclick={() => removeFilter(row.id)}><XIcon size={15} /></button>
 							</div>
-						</div>
-					{/each}
-					<div class="clause-row">
-						<span class="clause-label">{filters.length ? '' : 'Where'}</span>
-						<div class="flex flex-wrap items-center gap-3">
-							<select class="input !w-auto max-w-full cursor-pointer pr-8 text-brand" aria-label="Add filter" value="" disabled={filters.length >= maxFilters} onchange={(e) => { addFilter(e.currentTarget.value); e.currentTarget.value = ''; }}>
-								<option value="" disabled>+ Add filter</option>
-								{#each filterableFields as f (f.name)}<option value={f.name}>{f.name}</option>{/each}
-								{#if supportsPluginMetadata}<option value="__plugin__">Plugin metadata path…</option>{/if}
-							</select>
-							<span class="text-xs text-fg-muted">{filters.length ? `${filters.length} of ${maxFilters} filters · all must match` : 'All rows match. Add a filter to narrow your search.'}</span>
+							<span class="text-xs text-fg-muted">{currentDataset?.fields.length ?? 0} available fields</span>
 						</div>
 					</div>
-				</div>
 
-				<div class="clause-row border-b border-border px-4 py-4">
-					<span class="clause-label">Sort by</span>
-					<div class="flex min-w-0 flex-wrap items-center gap-2" role="group" aria-label="Sort order">
-						{#each orderBy as row, index (row.id)}
-							<div class="sort-key">
-								<span class="pl-2 text-xs text-fg-muted" title="Sort priority">{index + 1}</span>
-								{#if !fieldSpec(row.field)}
-									<input class="input min-w-0 flex-1 font-mono" aria-label="Sort field" bind:value={row.field} />
-								{:else}
-									<select class="input min-w-0 flex-1 pr-8 font-mono" aria-label="Sort field" bind:value={row.field}>
-										{#each currentDataset?.fields ?? [] as f (f.name)}<option value={f.name}>{f.name}</option>{/each}
+					<div role="group" aria-label="Filters · match all conditions">
+						{#each filters as row, index (row.id)}
+							{@const inputKind = valueInputKind(rowKind(row), row.op)}
+							<div class="clause-row border-b border-border">
+								<span class="clause-label">{index === 0 ? 'Where' : 'And'}</span>
+								<div class="condition">
+									{#if row.custom}
+										<input class="input condition-field font-mono" aria-label="Plugin metadata path" placeholder="plugin_metadata.name.path" bind:value={row.field} />
+									{:else}
+										<select class="input condition-field pr-8 font-mono" aria-label="Filter field" value={row.field} onchange={(e) => onFilterFieldChange(row, e.currentTarget.value)}>
+											{#each filterableFields as f (f.name)}<option value={f.name}>{f.name}</option>{/each}
+										</select>
+									{/if}
+									<select class="input condition-operator pr-8" aria-label="Filter operator" value={row.op} onchange={(e) => onFilterOperatorChange(row, e.currentTarget.value as QueryOp)}>
+										{#each rowOperators(row) as op (op)}<option value={op}>{operatorLabels[op]}</option>{/each}
 									</select>
-								{/if}
-								<select class="input !w-auto shrink-0 pr-8" aria-label="Sort direction" bind:value={row.direction}>
-									{#each schema.data.sort_directions as dir (dir)}<option value={dir}>{dir === 'asc' ? '↑ Asc' : '↓ Desc'}</option>{/each}
-								</select>
-								<button type="button" class="remove-button" aria-label="Remove sort" title="Remove sort" onclick={() => removeOrder(row.id)}><XIcon size={15} /></button>
+									{#if inputKind === 'bool'}
+										<select class="input condition-value pr-8" aria-label="Filter value" bind:value={row.value}>
+											<option value="true">true</option><option value="false">false</option>
+										</select>
+									{:else if inputKind === 'int'}
+										<input class="input condition-value font-mono" aria-label="Filter value" type="number" placeholder="Enter a number" bind:value={row.value} />
+									{:else if inputKind !== 'none'}
+										<input class="input condition-value font-mono" aria-label="Filter value" placeholder={inputKind === 'timestamp' ? 'YYYY-MM-DDTHH:mm:ssZ' : row.custom || rowKind(row) === 'json' ? 'Text or JSON value' : 'Enter a value'} bind:value={row.value} />
+									{:else}
+										<span class="condition-value px-3 text-xs text-fg-muted">No value needed</span>
+									{/if}
+									<button type="button" class="remove-button" aria-label="Remove filter" title="Remove filter" onclick={() => removeFilter(row.id)}><XIcon size={15} /></button>
+								</div>
 							</div>
 						{/each}
-						<button type="button" class="btn !border-transparent !px-2 text-xs" onclick={addOrder} disabled={orderBy.length >= maxOrder || orderBy.length >= (currentDataset?.fields.length ?? 0)}><PlusIcon size={14} /> Add sort</button>
-						{#if !orderBy.length}<span class="text-xs text-fg-muted">Dataset default order</span>{/if}
+						<div class="clause-row border-b border-border">
+							<span class="clause-label">{filters.length ? '' : 'Where'}</span>
+							<div class="flex flex-wrap items-center gap-3">
+								<select class="input !w-auto max-w-full cursor-pointer pr-8 text-brand" aria-label="Add filter" value="" disabled={filters.length >= maxFilters} onchange={(e) => { addFilter(e.currentTarget.value); e.currentTarget.value = ''; }}>
+									<option value="" disabled>+ Add filter</option>
+									{#each filterableFields as f (f.name)}<option value={f.name}>{f.name}</option>{/each}
+									{#if supportsPluginMetadata}<option value="__plugin__">Plugin metadata path…</option>{/if}
+								</select>
+								<span class="text-xs text-fg-muted">{filters.length ? `${filters.length} of ${maxFilters} filters · all must match` : 'All rows match. Add a filter to narrow your search.'}</span>
+							</div>
+						</div>
 					</div>
-				</div>
 
-				<details class="columns-panel border-b border-border">
-					<summary class="clause-row cursor-pointer px-4 py-4">
-						<span class="clause-label">Select</span>
-						<span class="flex min-w-0 flex-wrap items-center gap-2 text-sm">
-							<Columns3Icon size={16} class="text-fg-muted" />
-							<span class="font-medium">{selectedFields.length} columns</span>
-							<span class="hidden min-w-0 flex-1 gap-1.5 overflow-hidden sm:flex" aria-hidden="true">
-								{#each selectedFields.slice(0, 3) as name (name)}<span class="max-w-40 truncate rounded bg-surface-muted px-2 py-1 font-mono text-xs text-fg-muted">{name}</span>{/each}
-								{#if selectedFields.length > 3}<span class="self-center text-xs text-fg-muted">+{selectedFields.length - 3}</span>{/if}
+					<div class="clause-row border-b border-border">
+						<span class="clause-label">Sort by</span>
+						<div class="flex min-w-0 flex-wrap items-center gap-2" role="group" aria-label="Sort order">
+							{#each orderBy as row, index (row.id)}
+								<div class="sort-key">
+									<span class="pl-2 text-xs text-fg-muted" title="Sort priority">{index + 1}</span>
+									{#if !fieldSpec(row.field)}
+										<input class="input min-w-0 flex-1 font-mono" aria-label="Sort field" bind:value={row.field} />
+									{:else}
+										<select class="input min-w-0 flex-1 pr-8 font-mono" aria-label="Sort field" bind:value={row.field}>
+											{#each currentDataset?.fields ?? [] as f (f.name)}<option value={f.name}>{f.name}</option>{/each}
+										</select>
+									{/if}
+									<select class="input !w-auto shrink-0 pr-8" aria-label="Sort direction" bind:value={row.direction}>
+										{#each schema.data.sort_directions as dir (dir)}<option value={dir}>{dir === 'asc' ? '↑ Asc' : '↓ Desc'}</option>{/each}
+									</select>
+									<button type="button" class="remove-button" aria-label="Remove sort" title="Remove sort" onclick={() => removeOrder(row.id)}><XIcon size={15} /></button>
+								</div>
+							{/each}
+							<button type="button" class="btn !border-transparent !px-2 text-xs" onclick={addOrder} disabled={orderBy.length >= maxOrder || orderBy.length >= (currentDataset?.fields.length ?? 0)}><PlusIcon size={14} /> Add sort</button>
+							{#if !orderBy.length}<span class="text-xs text-fg-muted">Dataset default order</span>{/if}
+						</div>
+					</div>
+
+					<details class="columns-panel">
+						<summary class="clause-row cursor-pointer border-b border-border">
+							<span class="clause-label">Select</span>
+							<span class="flex min-w-0 flex-wrap items-center gap-2 text-sm">
+								<Columns3Icon size={16} class="text-fg-muted" />
+								<span class="font-medium">{selectedFields.length} columns</span>
+								<span class="hidden min-w-0 flex-1 gap-1.5 overflow-hidden sm:flex" aria-hidden="true">
+									{#each selectedFields.slice(0, 3) as name (name)}<span class="max-w-40 truncate rounded bg-surface-muted px-2 py-1 font-mono text-xs text-fg-muted">{name}</span>{/each}
+									{#if selectedFields.length > 3}<span class="self-center text-xs text-fg-muted">+{selectedFields.length - 3}</span>{/if}
+								</span>
+								<span class="ml-auto flex items-center gap-1 text-xs text-brand">Edit columns <ChevronDownIcon size={14} /></span>
 							</span>
-							<span class="ml-auto flex items-center gap-1 text-xs text-brand">Edit columns <ChevronDownIcon size={14} /></span>
-						</span>
-					</summary>
-					<div class="px-4 pb-4 sm:pl-24">
-						<div class="mb-3 flex flex-wrap items-center gap-2">
-							<input class="input min-w-0 sm:!w-64" type="search" aria-label="Search columns" placeholder="Search columns…" bind:value={columnSearch} />
-							<button type="button" class="btn text-xs" onclick={() => selectedFields = [...(currentDataset?.default_fields ?? [])]}>Use defaults</button>
-							<button type="button" class="btn text-xs" onclick={selectAllFields} disabled={availableColumns.length > maxFields}>Select all</button>
-							<span class="ml-auto text-xs text-fg-muted">{selectedFields.length} / {maxFields} selected</span>
+						</summary>
+						<div class="border-b border-border p-4 sm:pl-24">
+							<div class="mb-3 flex flex-wrap items-center gap-2">
+								<input class="input min-w-0 sm:!w-64" type="search" aria-label="Search columns" placeholder="Search columns…" bind:value={columnSearch} />
+								<button type="button" class="btn text-xs" onclick={() => selectedFields = [...(currentDataset?.default_fields ?? [])]}>Use defaults</button>
+								<button type="button" class="btn text-xs" onclick={selectAllFields} disabled={availableColumns.length > maxFields}>Select all</button>
+								<span class="ml-auto text-xs text-fg-muted">{selectedFields.length} / {maxFields} selected</span>
+							</div>
+							<div class="grid max-h-64 gap-x-4 overflow-y-auto sm:grid-cols-2 xl:grid-cols-3">
+								{#each matchingColumns as name (name)}
+									<label class="flex min-w-0 cursor-pointer items-center gap-2 rounded px-2 py-2 hover:bg-surface-muted">
+										<input type="checkbox" class="rounded border-border text-brand focus:ring-brand" checked={selectedFields.includes(name)} disabled={selectedFields.includes(name) ? selectedFields.length === 1 : selectedFields.length >= maxFields} onchange={() => toggleField(name)} />
+										<span class="break-all font-mono text-xs">{name}</span>
+									</label>
+								{:else}<p class="py-2 text-sm text-fg-muted">No columns match “{columnSearch}”.</p>{/each}
+							</div>
 						</div>
-						<div class="grid max-h-64 gap-x-4 overflow-y-auto sm:grid-cols-2 xl:grid-cols-3">
-							{#each matchingColumns as name (name)}
-								<label class="flex min-w-0 cursor-pointer items-center gap-2 rounded px-2 py-2 hover:bg-surface-muted">
-									<input type="checkbox" class="rounded border-border text-brand focus:ring-brand" checked={selectedFields.includes(name)} disabled={selectedFields.includes(name) ? selectedFields.length === 1 : selectedFields.length >= maxFields} onchange={() => toggleField(name)} />
-									<span class="break-all font-mono text-xs">{name}</span>
-								</label>
-							{:else}<p class="py-2 text-sm text-fg-muted">No columns match “{columnSearch}”.</p>{/each}
+					</details>
+
+					<div class="clause-row rounded-b-xl bg-surface-muted/40">
+						<label for="query-limit" class="clause-label">Limit</label>
+						<div class="flex min-w-0 flex-wrap items-center gap-3">
+							<input id="query-limit" aria-label="Row limit" class="input !w-24" type="number" min="1" max={maxLimit} bind:value={limit} />
+							<span class="text-xs text-fg-muted">Up to {maxLimit} rows</span>
+							{#if preview}
+								<details class="query-preview ml-auto min-w-0 text-xs">
+									<summary class="cursor-pointer text-fg-muted">Query preview</summary>
+									<pre class="mt-3 overflow-x-auto rounded-lg border border-border bg-surface p-3 leading-6 text-fg-muted">{preview}</pre>
+								</details>
+							{/if}
 						</div>
 					</div>
-				</details>
-
-				<div class="flex flex-wrap items-center gap-3 rounded-b-xl bg-surface-muted/40 px-4 py-3">
-					<label for="query-limit" class="text-xs font-medium text-fg-muted">Row limit</label>
-					<input id="query-limit" class="input !w-24" type="number" min="1" max={maxLimit} bind:value={limit} />
-					<span class="text-xs text-fg-muted">Up to {maxLimit} rows</span>
-					{#if preview}
-						<details class="query-preview ml-auto min-w-0 text-xs">
-							<summary class="cursor-pointer text-fg-muted">Query preview</summary>
-							<pre class="mt-3 overflow-x-auto rounded-lg border border-border bg-surface p-3 leading-6 text-fg-muted">{preview}</pre>
-						</details>
-					{/if}
 				</div>
 			{:else}
 				<div class="p-4">
@@ -567,15 +591,18 @@
 {/if}
 
 <style>
-	.clause-row { display: grid; grid-template-columns: 4rem minmax(0, 1fr); gap: 1rem; align-items: center; }
+	.builder { --control-height: 36px; }
+	.composer-toolbar, .clause-row { min-height: 56px; }
+	.clause-row { display: grid; grid-template-columns: 4rem minmax(0, 1fr); gap: 1rem; align-items: center; padding: 8px 16px; }
+	.builder .input, .builder .btn { height: var(--control-height); }
 	.clause-label { color: var(--color-fg-muted); font-size: 0.65rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
 	.condition { display: grid; grid-template-columns: minmax(10rem, 1fr) 10rem minmax(10rem, 1.4fr) 2.5rem; align-items: center; border: 1px solid var(--color-border); border-radius: 0.5rem; }
 	.condition:focus-within { border-color: var(--color-brand); }
-	.condition .input, .sort-key .input { min-width: 0; border: 0; border-radius: 0; background-color: transparent; font-size: 0.8rem; }
+	.condition .input, .sort-key .input { height: calc(var(--control-height) - 2px); min-width: 0; border: 0; border-radius: 0; background-color: transparent; font-size: 0.8rem; }
 	.condition .input:focus, .sort-key .input:focus { outline-offset: -2px; }
 	.condition .condition-field, .condition .condition-operator { border-right: 1px solid var(--color-border); }
 	.condition-operator { color: var(--color-fg-muted); }
-	.remove-button { display: inline-flex; align-items: center; justify-content: center; width: 2.5rem; height: 2.25rem; flex-shrink: 0; border-radius: 0.4rem; color: var(--color-fg-muted); cursor: pointer; }
+	.remove-button { display: inline-flex; align-items: center; justify-content: center; width: 2.5rem; height: calc(var(--control-height) - 2px); flex-shrink: 0; border-radius: 0.4rem; color: var(--color-fg-muted); cursor: pointer; }
 	.remove-button:hover { color: var(--color-danger); background: var(--color-surface-muted); }
 	.sort-key { display: flex; align-items: center; width: 23rem; max-width: 100%; border: 1px solid var(--color-border); border-radius: 0.5rem; }
 	.columns-panel > summary { list-style: none; }
@@ -588,6 +615,10 @@
 		.condition .condition-operator { grid-column: 1; grid-row: 2; }
 		.condition-value { grid-column: 2 / 4; grid-row: 2; }
 		.condition .remove-button { grid-column: 3; grid-row: 1; }
+	}
+	@media (max-width: 767px) {
+		.builder { --control-height: 46px; }
+		.clause-row { min-height: 64px; }
 	}
 	@media (max-width: 639px) {
 		.clause-row { grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
