@@ -41,6 +41,7 @@
 		"@lezer/highlight": "^1.2.3",
 		"@lucide/svelte": "^1.47.0",
 		"chart.js": "^4.5.1",
-		"eventsource-parser": "^4.1.1"
+		"eventsource-parser": "^4.1.1",
+		"svelte-sonner": "^1.2.1"
 	}
 }

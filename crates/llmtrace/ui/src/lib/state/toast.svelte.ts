@@ -1,39 +1,8 @@
-export type ToastKind = 'success' | 'error' | 'info';
+import { toast } from 'svelte-sonner';
 
-export interface Toast {
-	id: number;
-	kind: ToastKind;
-	message: string;
-}
-
-class ToastStore {
-	items = $state<Toast[]>([]);
-	#nextId = 1;
-
-	push(kind: ToastKind, message: string, timeoutMs = 5000): number {
-		const id = this.#nextId++;
-		this.items = [...this.items, { id, kind, message }];
-		if (timeoutMs > 0) {
-			setTimeout(() => this.dismiss(id), timeoutMs);
-		}
-		return id;
-	}
-
-	success(message: string): number {
-		return this.push('success', message);
-	}
-
-	error(message: string): number {
-		return this.push('error', message, 8000);
-	}
-
-	info(message: string): number {
-		return this.push('info', message);
-	}
-
-	dismiss(id: number): void {
-		this.items = this.items.filter((toast) => toast.id !== id);
-	}
-}
-
-export const toasts = new ToastStore();
+// Application durations; Sonner owns queueing, IDs, dismissal and timer cleanup.
+export const toasts = {
+	success: (message: string) => toast.success(message, { duration: 5000 }),
+	error: (message: string) => toast.error(message, { duration: 8000 }),
+	info: (message: string) => toast.info(message, { duration: 5000 })
+};

@@ -45,3 +45,13 @@ application names to statically imported components and forwards size/class.
 Per-icon imports avoid loading the full catalog, and icons remain decorative
 (`aria-hidden`) beside their existing accessible labels. Future icons should
 come from Lucide rather than new copied path strings.
+
+## Notifications
+
+[svelte-sonner](https://github.com/wobsoriano/svelte-sonner) owns the notification
+queue, IDs, dismissal, timer cleanup, animations, live region, and keyboard/focus
+behavior. The application facade keeps the existing success/info (5 seconds)
+and error (8 seconds) durations. `Toasts.svelte` only configures placement,
+dismiss buttons, colors, and the application's light/dark theme. The default
+three visible notifications keep bursts bounded on screen; hover/focus and page
+visibility behavior come from Sonner rather than another local timer system.
