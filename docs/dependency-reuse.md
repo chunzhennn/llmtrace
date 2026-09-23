@@ -36,3 +36,12 @@ it cannot contribute deltas or mark a transcript complete, even if it contains
 `[DONE]`. This aligns completion with the backend while retaining forensic text.
 Provider-specific reconstruction, unknown-event display and context deduplication
 remain local because they are trace audit behavior, not the SSE protocol.
+
+## Icons
+
+[Lucide for Svelte](https://lucide.dev/guide/svelte/getting-started) replaces the
+copied SVG path catalog and `{@html}` renderer. `Icon.svelte` only maps existing
+application names to statically imported components and forwards size/class.
+Per-icon imports avoid loading the full catalog, and icons remain decorative
+(`aria-hidden`) beside their existing accessible labels. Future icons should
+come from Lucide rather than new copied path strings.

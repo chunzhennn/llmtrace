@@ -32,6 +32,9 @@ importers:
       '@lezer/highlight':
         specifier: ^1.2.3
         version: 1.2.3
+      '@lucide/svelte':
+        specifier: ^1.47.0
+        version: 1.47.0(svelte@5.56.4)
       chart.js:
         specifier: ^4.5.1
         version: 4.5.1
@@ -208,6 +211,11 @@ packages:
 
   '@lezer/lr@1.4.10':
     resolution: {integrity: sha512-rnCpTIBafOx4mRp43xOxDJbFipJm/c0cia/V5TiGlhmMa+wsSdoGmUN3w5Bqrks/09Q/D4tNAmWaT8p6NRi77A==}
+
+  '@lucide/svelte@1.47.0':
+    resolution: {integrity: sha512-tpuE7JIK9FzYDWsJx6PxHj9ROyCpnDxZfvHu5q5yHGKS2CFNjzSyf1o9/Ypu2A27GLvkPGqZcIMrF6idM+eQZQ==}
+    peerDependencies:
+      svelte: ^5
 
   '@marijn/find-cluster-break@1.0.4':
     resolution: {integrity: sha512-Wy0V7+SGUjnF9/TkiM1hKVDPj7jKXduPNboMVtHTA8dySMURWqfg/JZ9E2Sq8JgSJmkl7k7Qe9FLeMSrSraWmQ==}
@@ -1201,6 +1209,10 @@ snapshots:
   '@lezer/lr@1.4.10':
     dependencies:
       '@lezer/common': 1.5.2
+
+  '@lucide/svelte@1.47.0(svelte@5.56.4)':
+    dependencies:
+      svelte: 5.56.4
 
   '@marijn/find-cluster-break@1.0.4': {}
 
