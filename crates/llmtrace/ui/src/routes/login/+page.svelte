@@ -1,8 +1,13 @@
 <script lang="ts">
+	import ActivityIcon from '@lucide/svelte/icons/activity';
+	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
+	import MoonIcon from '@lucide/svelte/icons/moon';
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+	import SunIcon from '@lucide/svelte/icons/sun';
+	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { base } from '$app/paths';
-	import Icon from '$lib/components/Icon.svelte';
 	import { ApiError } from '$lib/api/client';
 	import * as authApi from '$lib/api/endpoints/auth';
 	import { auth } from '$lib/state/auth.svelte';
@@ -57,6 +62,8 @@
 	function startOauth() {
 		window.location.href = authApi.OAUTH_START_URL;
 	}
+
+	const ThemeIcon = $derived(theme.dark ? SunIcon : MoonIcon);
 </script>
 
 <svelte:head>
@@ -70,12 +77,12 @@
 		aria-label="Toggle theme"
 		onclick={() => theme.toggle()}
 	>
-		<Icon name={theme.dark ? 'sun' : 'moon'} />
+		<ThemeIcon size={18} />
 	</button>
 
 	{#if checking}
 		<div class="text-fg-muted flex items-center gap-2 text-sm">
-			<Icon name="refresh" class="animate-spin" />
+			<RefreshCwIcon size={18} class="animate-spin" />
 			Checking session…
 		</div>
 	{:else}
@@ -85,7 +92,7 @@
 					class="flex h-10 w-10 items-center justify-center rounded-lg"
 					style="background-color: var(--color-brand); color: var(--color-brand-fg);"
 				>
-					<Icon name="activity" size={22} />
+					<ActivityIcon size={22} />
 				</div>
 				<div>
 					<h1 class="text-lg font-semibold leading-tight">llmtrace</h1>
@@ -124,14 +131,14 @@
 						style="background-color: color-mix(in srgb, var(--color-danger) 12%, transparent); color: var(--color-danger);"
 						role="alert"
 					>
-						<Icon name="alert" size={16} class="mt-0.5 shrink-0" />
+						<TriangleAlertIcon size={16} class="mt-0.5 shrink-0" />
 						<span>{error}</span>
 					</div>
 				{/if}
 
 				<button class="btn btn-brand w-full" type="submit" disabled={submitting}>
 					{#if submitting}
-						<Icon name="refresh" size={16} class="animate-spin" />
+						<RefreshCwIcon size={16} class="animate-spin" />
 						Signing in…
 					{:else}
 						Sign in
@@ -150,7 +157,7 @@
 			{/if}
 
 			<button class="btn w-full" type="button" onclick={startOauth}>
-				<Icon name="external" size={16} />
+				<ExternalLinkIcon size={16} />
 				Continue with SSO
 			</button>
 			{/if}

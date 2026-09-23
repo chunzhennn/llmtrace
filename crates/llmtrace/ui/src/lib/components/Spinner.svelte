@@ -1,5 +1,5 @@
 <script lang="ts">
-	import Icon from './Icon.svelte';
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 
 	interface Props {
 		size?: number;
@@ -10,6 +10,6 @@
 </script>
 
 <span class="text-fg-muted inline-flex items-center gap-2 text-sm">
-	<Icon name="refresh" {size} class="animate-spin" />
+	<RefreshCwIcon {size} class="animate-spin" />
 	{#if label}{label}{/if}
 </span>

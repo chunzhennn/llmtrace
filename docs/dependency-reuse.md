@@ -65,11 +65,12 @@ remain local because they are trace audit behavior, not the SSE protocol.
 ## Icons
 
 [Lucide for Svelte](https://lucide.dev/guide/svelte/getting-started) replaces the
-copied SVG path catalog and `{@html}` renderer. `Icon.svelte` only maps existing
-application names to statically imported components and forwards size/class.
-Per-icon imports avoid loading the full catalog, and icons remain decorative
-(`aria-hidden`) beside their existing accessible labels. Future icons should
-come from Lucide rather than new copied path strings.
+copied SVG path catalog and `{@html}` renderer. Static UI elements import their
+icons directly. Navigation, stat cards, and empty states receive typed Svelte
+components (`Component<LucideProps>`), not string names. The global registry and
+`Icon.svelte` compatibility wrapper are removed, so invalid names cannot silently
+render nothing and unrelated icons are no longer tied to a shared lookup table.
+Existing sizes, classes, and decorative accessibility semantics are preserved.
 
 ## Notifications
 
@@ -134,14 +135,14 @@ Backend checks rerun after simplifying the Cookie writers:
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`: passed.
 - `cargo fmt --all -- --check`: passed.
 
-Frontend tests and types rerun after simplifying SSE callback handling:
+Frontend checks rerun after simplifying SSE handling and removing the icon registry:
 
 - UI `pnpm test`: 184 passed.
 - UI `pnpm run check`: no errors or warnings.
 
-Build and browser results from the preceding UI refactor:
-
 - UI `pnpm run build`: static production build passed.
-- Headless Chrome with synthetic auth responses: login icons, notification
-  rendering, dark/light switching, dismiss buttons, and a 390 px viewport passed
-  without runtime exceptions. No real backend/session data was used.
+- Headless Chrome with synthetic auth/plugin responses: all ten navigation
+  icons, stat-card and empty-state component props, theme-dependent icons,
+  preserved sizes and aria-hidden attributes, and notification controls at a
+  390 px viewport passed without runtime exceptions. No real backend/session
+  data was used.

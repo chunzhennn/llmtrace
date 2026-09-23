@@ -1,4 +1,5 @@
 <script lang="ts">
+	import BoxIcon from '@lucide/svelte/icons/box';
 	import Card from './Card.svelte';
 	import Badge from './Badge.svelte';
 	import EmptyState from './EmptyState.svelte';
@@ -34,7 +35,7 @@
 			</article>
 		{/each}
 		{#if !history.calls.length && !resultCount && !notice}
-			<EmptyState icon="box" title="No tool calls in request history" message="This request body contains no tool calls or results." />
+			<EmptyState icon={BoxIcon} title="No tool calls in request history" message="This request body contains no tool calls or results." />
 		{/if}
 	</div>
 </Card>

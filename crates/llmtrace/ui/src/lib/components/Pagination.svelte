@@ -1,5 +1,6 @@
 <script lang="ts">
-	import Icon from './Icon.svelte';
+	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
+	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import { formatNumber } from '$lib/utils/format';
 
 	interface Props {
@@ -32,7 +33,7 @@
 			onclick={() => onChange(Math.max(0, offset - limit))}
 			aria-label="Previous page"
 		>
-			<Icon name="chevron-left" size={16} />
+			<ChevronLeftIcon size={16} />
 			Prev
 		</button>
 		<button
@@ -43,7 +44,7 @@
 			aria-label="Next page"
 		>
 			Next
-			<Icon name="chevron-right" size={16} />
+			<ChevronRightIcon size={16} />
 		</button>
 	</div>
 </div>

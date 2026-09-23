@@ -1,9 +1,10 @@
 <script lang="ts">
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import DataTable, { type Column } from '$lib/components/DataTable.svelte';
 	import Pagination from '$lib/components/Pagination.svelte';
 	import Badge from '$lib/components/Badge.svelte';
-	import Icon from '$lib/components/Icon.svelte';
 	import { createResource } from '$lib/utils/resource.svelte';
 	import * as admin from '$lib/api/endpoints/admin';
 	import { toasts } from '$lib/state/toast.svelte';
@@ -93,7 +94,7 @@
 				disabled={revoking === item.session_hash}
 				onclick={() => revoke(item)}
 			>
-				{#if revoking === item.session_hash}<Icon name="refresh" size={14} class="animate-spin" />{:else}<Icon name="trash" size={14} />{/if}
+				{#if revoking === item.session_hash}<RefreshCwIcon size={14} class="animate-spin" />{:else}<Trash2Icon size={14} />{/if}
 				Revoke
 			</button>
 		</td>

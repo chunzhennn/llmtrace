@@ -1,4 +1,5 @@
 <script lang="ts">
+	import InboxIcon from '@lucide/svelte/icons/inbox';
 	import Badge from './Badge.svelte';
 	import EmptyState from './EmptyState.svelte';
 	import type { HeaderValue, RedactedHeader } from '$lib/api/types';
@@ -25,7 +26,7 @@
 </script>
 
 {#if entries.length === 0}
-	<EmptyState icon="inbox" title="No headers captured" />
+	<EmptyState icon={InboxIcon} title="No headers captured" />
 {:else}
 	<div class="overflow-x-auto">
 		<table class="w-full border-collapse text-sm">

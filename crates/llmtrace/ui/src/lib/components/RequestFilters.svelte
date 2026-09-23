@@ -1,8 +1,9 @@
 <script lang="ts">
+	import FunnelIcon from '@lucide/svelte/icons/funnel';
+	import XIcon from '@lucide/svelte/icons/x';
 	import { requestKindLabel } from '$lib/utils/format';
 	import { untrack } from 'svelte';
 	import Field from './Field.svelte';
-	import Icon from './Icon.svelte';
 	import type { RequestFacets } from '$lib/api/types';
 	import { REQUEST_KINDS, STATUS_CLASSES } from '$lib/api/types';
 
@@ -185,14 +186,14 @@
 
 	<div class="flex flex-wrap items-center gap-2">
 		<button type="submit" class="btn btn-brand">
-			<Icon name="filter" size={16} /> Apply filters
+			<FunnelIcon size={16} /> Apply filters
 		</button>
 		<button type="button" class="btn" onclick={() => (showAdvanced = !showAdvanced)}>
 			{showAdvanced ? 'Fewer filters' : 'More filters'}
 		</button>
 		{#if activeFilterCount > 0}
 			<button type="button" class="btn" onclick={onReset}>
-				<Icon name="x" size={16} /> Reset ({activeFilterCount})
+				<XIcon size={16} /> Reset ({activeFilterCount})
 			</button>
 		{/if}
 	</div>

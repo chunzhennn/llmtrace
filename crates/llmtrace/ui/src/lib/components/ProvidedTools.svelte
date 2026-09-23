@@ -1,9 +1,9 @@
 <script lang="ts">
+	import BoxIcon from '@lucide/svelte/icons/box';
 	import { untrack } from 'svelte';
 	import { base } from '$app/paths';
 	import type { ToolDefinition as Definition } from '$lib/transcript/tools';
 	import ToolDefinition from './ToolDefinition.svelte';
-	import Icon from './Icon.svelte';
 	let { tools, initiallyOpen = true, requestId, repeated = false }: {
 		tools: Definition[];
 		initiallyOpen?: boolean;
@@ -15,7 +15,7 @@
 
 <details class="provided-tools min-w-0 rounded-lg border border-[var(--color-border)] p-3" bind:open={expanded}>
 	<summary class="cursor-pointer text-sm">
-		<span class="inline-flex items-center gap-1.5 align-middle font-medium"><Icon name="box" size={15} /> Tools available ({tools.length})</span>
+		<span class="inline-flex items-center gap-1.5 align-middle font-medium"><BoxIcon size={15} /> Tools available ({tools.length})</span>
 		{#if repeated}<span class="text-fg-muted text-xs"> · Same definitions</span>{/if}
 		{#if requestId}<span class="text-fg-muted text-xs"> · <a class="underline underline-offset-2" href={`${base}/requests/${requestId}`}>Request {requestId.slice(0, 8)}</a></span>{/if}
 	</summary>

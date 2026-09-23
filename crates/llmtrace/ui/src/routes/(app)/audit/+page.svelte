@@ -1,4 +1,11 @@
 <script lang="ts">
+	import ActivityIcon from '@lucide/svelte/icons/activity';
+	import DownloadIcon from '@lucide/svelte/icons/download';
+	import FunnelIcon from '@lucide/svelte/icons/funnel';
+	import KeyIcon from '@lucide/svelte/icons/key';
+	import ListIcon from '@lucide/svelte/icons/list';
+	import ShieldIcon from '@lucide/svelte/icons/shield';
+	import XIcon from '@lucide/svelte/icons/x';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
@@ -9,7 +16,6 @@
 	import DataTable, { type Column } from '$lib/components/DataTable.svelte';
 	import Pagination from '$lib/components/Pagination.svelte';
 	import Field from '$lib/components/Field.svelte';
-	import Icon from '$lib/components/Icon.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import { createResource } from '$lib/utils/resource.svelte';
 	import * as auditApi from '$lib/api/endpoints/audit';
@@ -87,15 +93,15 @@
 
 <PageHeader title="Audit Log" description="UI authentication and administrative events.">
 	{#snippet actions()}
-		<button type="button" class="btn" onclick={exportEvents}><Icon name="download" size={16} /> Export</button>
+		<button type="button" class="btn" onclick={exportEvents}><DownloadIcon size={16} /> Export</button>
 	{/snippet}
 </PageHeader>
 
 <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
-	<StatCard label="Events (7d)" value={formatNumber(totals?.event_count ?? 0)} icon="shield" loading={summary.loading} />
-	<StatCard label="Distinct users" value={formatNumber(totals?.user_count ?? 0)} icon="key" loading={summary.loading} />
-	<StatCard label="Remote addrs" value={formatNumber(totals?.remote_addr_count ?? 0)} icon="activity" loading={summary.loading} />
-	<StatCard label="Event types" value={formatNumber(summary.data?.event_types.length ?? 0)} icon="list" loading={summary.loading} />
+	<StatCard label="Events (7d)" value={formatNumber(totals?.event_count ?? 0)} icon={ShieldIcon} loading={summary.loading} />
+	<StatCard label="Distinct users" value={formatNumber(totals?.user_count ?? 0)} icon={KeyIcon} loading={summary.loading} />
+	<StatCard label="Remote addrs" value={formatNumber(totals?.remote_addr_count ?? 0)} icon={ActivityIcon} loading={summary.loading} />
+	<StatCard label="Event types" value={formatNumber(summary.data?.event_types.length ?? 0)} icon={ListIcon} loading={summary.loading} />
 </div>
 
 {#if (summary.data?.event_types.length ?? 0) > 0}
@@ -116,9 +122,9 @@
 		<input class="input" type="text" name="user_id" placeholder="admin" value={page.url.searchParams.get('user_id') ?? ''} />
 	</Field>
 	<div class="flex gap-2">
-		<button type="submit" class="btn btn-brand"><Icon name="filter" size={16} /> Apply</button>
+		<button type="submit" class="btn btn-brand"><FunnelIcon size={16} /> Apply</button>
 		{#if page.url.search}
-			<a class="btn" href={`${base}/audit`}><Icon name="x" size={16} /> Reset</a>
+			<a class="btn" href={`${base}/audit`}><XIcon size={16} /> Reset</a>
 		{/if}
 	</div>
 </form>

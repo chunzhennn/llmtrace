@@ -1,8 +1,9 @@
 <script lang="ts">
+	import EyeOffIcon from '@lucide/svelte/icons/eye-off';
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import Card from '$lib/components/Card.svelte';
 	import Field from '$lib/components/Field.svelte';
-	import Icon from '$lib/components/Icon.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import HeadersTable from '$lib/components/HeadersTable.svelte';
 	import KeyValue from '$lib/components/KeyValue.svelte';
@@ -71,7 +72,7 @@
 				<textarea class="input font-mono text-xs" rows="5" bind:value={body}></textarea>
 			</Field>
 			<button type="button" class="btn btn-brand self-start" onclick={run} disabled={running}>
-				{#if running}<Icon name="refresh" size={16} class="animate-spin" /> Previewing…{:else}<Icon name="eye-off" size={16} /> Preview redaction{/if}
+				{#if running}<RefreshCwIcon size={16} class="animate-spin" /> Previewing…{:else}<EyeOffIcon size={16} /> Preview redaction{/if}
 			</button>
 			{#if error}
 				<p class="text-sm" style="color: var(--color-danger);">{error}</p>
@@ -81,7 +82,7 @@
 
 	<div class="flex flex-col gap-4">
 		{#if !preview}
-			<Card><EmptyState icon="eye-off" title="No preview yet" message="Enter sample data and run the preview." /></Card>
+			<Card><EmptyState icon={EyeOffIcon} title="No preview yet" message="Enter sample data and run the preview." /></Card>
 		{:else}
 			<Card title="Redaction settings">
 				<div class="grid grid-cols-2 gap-x-4">

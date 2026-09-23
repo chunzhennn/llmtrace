@@ -1,4 +1,11 @@
 <script lang="ts">
+	import ActivityIcon from '@lucide/svelte/icons/activity';
+	import ClockIcon from '@lucide/svelte/icons/clock';
+	import DownloadIcon from '@lucide/svelte/icons/download';
+	import ListIcon from '@lucide/svelte/icons/list';
+	import MessageCircleIcon from '@lucide/svelte/icons/message-circle';
+	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
+	import UploadIcon from '@lucide/svelte/icons/upload';
 	import { requestKindLabel } from '$lib/utils/format';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
@@ -169,18 +176,18 @@
 
 {#if tab === 'summary'}
 	<div class="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-		<StatCard label="Requests" value={formatNumber(summaryTotals?.request_count ?? 0)} icon="list" loading={summary.loading} />
+		<StatCard label="Requests" value={formatNumber(summaryTotals?.request_count ?? 0)} icon={ListIcon} loading={summary.loading} />
 		<StatCard
 			label="Errors"
 			value={formatNumber(summaryTotals?.error_count ?? 0)}
-			icon="alert"
+			icon={TriangleAlertIcon}
 			tone={summaryTotals && summaryTotals.error_count > 0 ? 'danger' : 'default'}
 			loading={summary.loading}
 		/>
-		<StatCard label="Bytes in" value={formatBytes(summaryTotals?.bytes_in ?? 0)} icon="download" loading={summary.loading} />
-		<StatCard label="Bytes out" value={formatBytes(summaryTotals?.bytes_out ?? 0)} icon="upload" loading={summary.loading} />
-		<StatCard label="Avg duration" value={formatMs(summaryTotals?.avg_duration_ms)} icon="activity" loading={summary.loading} />
-		<StatCard label="Avg TTFT" value={formatMs(summaryTotals?.avg_ttft_ms)} icon="activity" loading={summary.loading} />
+		<StatCard label="Bytes in" value={formatBytes(summaryTotals?.bytes_in ?? 0)} icon={DownloadIcon} loading={summary.loading} />
+		<StatCard label="Bytes out" value={formatBytes(summaryTotals?.bytes_out ?? 0)} icon={UploadIcon} loading={summary.loading} />
+		<StatCard label="Avg duration" value={formatMs(summaryTotals?.avg_duration_ms)} icon={ActivityIcon} loading={summary.loading} />
+		<StatCard label="Avg TTFT" value={formatMs(summaryTotals?.avg_ttft_ms)} icon={ActivityIcon} loading={summary.loading} />
 	</div>
 
 	<div class="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -252,14 +259,14 @@
 {:else if tab === 'latency'}
 	{@const totals = latency.data?.totals}
 	<div class="grid grid-cols-2 gap-3 md:grid-cols-4">
-		<StatCard label="p50 duration" value={formatMs(totals?.p50_duration_ms)} icon="activity" loading={latency.loading} />
-		<StatCard label="p90 duration" value={formatMs(totals?.p90_duration_ms)} icon="activity" loading={latency.loading} />
-		<StatCard label="p95 duration" value={formatMs(totals?.p95_duration_ms)} icon="activity" loading={latency.loading} />
-		<StatCard label="p99 duration" value={formatMs(totals?.p99_duration_ms)} icon="activity" loading={latency.loading} />
-		<StatCard label="p50 TTFT" value={formatMs(totals?.p50_ttft_ms)} icon="clock" loading={latency.loading} />
-		<StatCard label="p90 TTFT" value={formatMs(totals?.p90_ttft_ms)} icon="clock" loading={latency.loading} />
-		<StatCard label="p95 TTFT" value={formatMs(totals?.p95_ttft_ms)} icon="clock" loading={latency.loading} />
-		<StatCard label="p99 TTFT" value={formatMs(totals?.p99_ttft_ms)} icon="clock" loading={latency.loading} />
+		<StatCard label="p50 duration" value={formatMs(totals?.p50_duration_ms)} icon={ActivityIcon} loading={latency.loading} />
+		<StatCard label="p90 duration" value={formatMs(totals?.p90_duration_ms)} icon={ActivityIcon} loading={latency.loading} />
+		<StatCard label="p95 duration" value={formatMs(totals?.p95_duration_ms)} icon={ActivityIcon} loading={latency.loading} />
+		<StatCard label="p99 duration" value={formatMs(totals?.p99_duration_ms)} icon={ActivityIcon} loading={latency.loading} />
+		<StatCard label="p50 TTFT" value={formatMs(totals?.p50_ttft_ms)} icon={ClockIcon} loading={latency.loading} />
+		<StatCard label="p90 TTFT" value={formatMs(totals?.p90_ttft_ms)} icon={ClockIcon} loading={latency.loading} />
+		<StatCard label="p95 TTFT" value={formatMs(totals?.p95_ttft_ms)} icon={ClockIcon} loading={latency.loading} />
+		<StatCard label="p99 TTFT" value={formatMs(totals?.p99_ttft_ms)} icon={ClockIcon} loading={latency.loading} />
 	</div>
 
 	{#snippet latencyTable(title: string, rows: (LatencyMetric & { name: string })[])}
@@ -373,10 +380,10 @@
 {:else if tab === 'errors'}
 	{@const t = errors.data?.totals}
 	<div class="grid grid-cols-2 gap-3 md:grid-cols-4">
-		<StatCard label="Errors" value={formatNumber(t?.error_count ?? 0)} icon="alert" tone={t && t.error_count > 0 ? 'danger' : 'default'} loading={errors.loading} />
-		<StatCard label="Proxy errors" value={formatNumber(t?.proxy_error_count ?? 0)} icon="alert" loading={errors.loading} />
-		<StatCard label="HTTP 5xx" value={formatNumber(t?.http_5xx_count ?? 0)} icon="alert" loading={errors.loading} />
-		<StatCard label="Affected sessions" value={formatNumber(t?.affected_sessions ?? 0)} icon="messages" loading={errors.loading} />
+		<StatCard label="Errors" value={formatNumber(t?.error_count ?? 0)} icon={TriangleAlertIcon} tone={t && t.error_count > 0 ? 'danger' : 'default'} loading={errors.loading} />
+		<StatCard label="Proxy errors" value={formatNumber(t?.proxy_error_count ?? 0)} icon={TriangleAlertIcon} loading={errors.loading} />
+		<StatCard label="HTTP 5xx" value={formatNumber(t?.http_5xx_count ?? 0)} icon={TriangleAlertIcon} loading={errors.loading} />
+		<StatCard label="Affected sessions" value={formatNumber(t?.affected_sessions ?? 0)} icon={MessageCircleIcon} loading={errors.loading} />
 	</div>
 
 	<div class="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">

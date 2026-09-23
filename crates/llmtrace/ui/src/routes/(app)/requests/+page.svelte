@@ -1,4 +1,5 @@
 <script lang="ts">
+	import DownloadIcon from '@lucide/svelte/icons/download';
 	import { requestKindLabel } from '$lib/utils/format';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
@@ -8,7 +9,6 @@
 	import Pagination from '$lib/components/Pagination.svelte';
 	import StatusPill from '$lib/components/StatusPill.svelte';
 	import RequestFilters from '$lib/components/RequestFilters.svelte';
-	import Icon from '$lib/components/Icon.svelte';
 	import { createResource } from '$lib/utils/resource.svelte';
 	import * as requestsApi from '$lib/api/endpoints/requests';
 	import { exportJsonl } from '$lib/api/download';
@@ -113,7 +113,7 @@
 <PageHeader title="Requests" description="Explore captured proxy requests with filters, facets, and export.">
 	{#snippet actions()}
 		<button type="button" class="btn" onclick={runExport} disabled={exporting}>
-			<Icon name="download" size={16} />
+			<DownloadIcon size={16} />
 			{exporting ? 'Exporting…' : 'Export page (JSONL)'}
 		</button>
 	{/snippet}

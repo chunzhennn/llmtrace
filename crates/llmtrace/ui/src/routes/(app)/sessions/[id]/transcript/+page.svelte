@@ -1,4 +1,7 @@
 <script lang="ts">
+	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
+	import DownloadIcon from '@lucide/svelte/icons/download';
+	import MessageCircleIcon from '@lucide/svelte/icons/message-circle';
 	import { page } from '$app/state';
 	import { base } from '$app/paths';
 	import { onDestroy } from 'svelte';
@@ -9,7 +12,6 @@
 	import ErrorState from '$lib/components/ErrorState.svelte';
 	import Skeleton from '$lib/components/Skeleton.svelte';
 	import Spinner from '$lib/components/Spinner.svelte';
-	import Icon from '$lib/components/Icon.svelte';
 	import { copyText } from '$lib/utils/clipboard';
 	import { formatNumber } from '$lib/utils/format';
 	import { toasts } from '$lib/state/toast.svelte';
@@ -80,8 +82,8 @@
 			aria-label="Copy full session ID" title={`Copy full session ID: ${id}`}>{id.slice(0, 8)}</button>
 	{/snippet}
 	{#snippet actions()}
-		<a class="btn" href={sessionHref}><Icon name="chevron-left" size={16} /> Back to session</a>
-		{#if header}<a class="btn" href={sessionExportUrl(id)} download><Icon name="download" size={16} /> Export full session</a>{/if}
+		<a class="btn" href={sessionHref}><ChevronLeftIcon size={16} /> Back to session</a>
+		{#if header}<a class="btn" href={sessionExportUrl(id)} download><DownloadIcon size={16} /> Export full session</a>{/if}
 	{/snippet}
 </PageHeader>
 
@@ -93,7 +95,7 @@
 	<Card title="Conversation" bodyClass="p-4 md:p-6"
 		subtitle={`${formatNumber(messageCount)} messages · ${formatNumber(blocks.length)} of ${formatNumber(header.request_count)} requests · ${formatNumber(reusedCount)} repeated context messages folded`}>
 		{#if !blocks.length && complete}
-			<EmptyState icon="messages" title="No messages" message="This session has no captured requests." />
+			<EmptyState icon={MessageCircleIcon} title="No messages" message="This session has no captured requests." />
 		{:else}
 			<ol class="flex min-w-0 flex-col gap-6" aria-label="Conversation requests">
 				{#each blocks as block (block.id)}

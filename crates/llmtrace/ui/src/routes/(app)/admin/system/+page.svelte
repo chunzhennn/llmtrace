@@ -5,7 +5,6 @@
 	import KeyValue from '$lib/components/KeyValue.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import DataTable, { type Column } from '$lib/components/DataTable.svelte';
-	import Icon from '$lib/components/Icon.svelte';
 	import { createResource } from '$lib/utils/resource.svelte';
 	import * as admin from '$lib/api/endpoints/admin';
 	import * as analytics from '$lib/api/endpoints/analytics';

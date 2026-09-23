@@ -1,8 +1,24 @@
 <script lang="ts">
-	import { onMount, tick } from 'svelte';
+	import ActivityIcon from '@lucide/svelte/icons/activity';
+	import BoxIcon from '@lucide/svelte/icons/box';
+	import ChartNoAxesColumnIcon from '@lucide/svelte/icons/chart-no-axes-column';
+	import EyeOffIcon from '@lucide/svelte/icons/eye-off';
+	import HouseIcon from '@lucide/svelte/icons/house';
+	import KeyIcon from '@lucide/svelte/icons/key';
+	import ListIcon from '@lucide/svelte/icons/list';
+	import LogOutIcon from '@lucide/svelte/icons/log-out';
+	import MenuIcon from '@lucide/svelte/icons/menu';
+	import MessageCircleIcon from '@lucide/svelte/icons/message-circle';
+	import MoonIcon from '@lucide/svelte/icons/moon';
+	import SearchIcon from '@lucide/svelte/icons/search';
+	import SettingsIcon from '@lucide/svelte/icons/settings';
+	import ShieldIcon from '@lucide/svelte/icons/shield';
+	import SunIcon from '@lucide/svelte/icons/sun';
+	import XIcon from '@lucide/svelte/icons/x';
+	import type { LucideProps } from '@lucide/svelte';
+	import { onMount, tick, type Component } from 'svelte';
 	import { page } from '$app/state';
 	import { base } from '$app/paths';
-	import Icon from '$lib/components/Icon.svelte';
 	import { auth } from '$lib/state/auth.svelte';
 	import { theme } from '$lib/state/theme.svelte';
 
@@ -60,7 +76,7 @@
 	interface NavItem {
 		href: string;
 		label: string;
-		icon: string;
+		icon: Component<LucideProps>;
 	}
 	interface NavGroup {
 		label: string;
@@ -71,21 +87,21 @@
 		{
 			label: 'Observe',
 			items: [
-				{ href: '/', label: 'Overview', icon: 'home' },
-				{ href: '/requests', label: 'Requests', icon: 'list' },
-				{ href: '/sessions', label: 'Sessions', icon: 'messages' },
-				{ href: '/analytics', label: 'Analytics', icon: 'chart' },
-				{ href: '/query', label: 'Query', icon: 'search' }
+				{ href: '/', label: 'Overview', icon: HouseIcon },
+				{ href: '/requests', label: 'Requests', icon: ListIcon },
+				{ href: '/sessions', label: 'Sessions', icon: MessageCircleIcon },
+				{ href: '/analytics', label: 'Analytics', icon: ChartNoAxesColumnIcon },
+				{ href: '/query', label: 'Query', icon: SearchIcon }
 			]
 		},
 		{
 			label: 'Admin',
 			items: [
-				{ href: '/audit', label: 'Audit Log', icon: 'shield' },
-				{ href: '/admin/ui-sessions', label: 'UI Sessions', icon: 'key' },
-				{ href: '/admin/plugins', label: 'Plugins', icon: 'box' },
-				{ href: '/admin/system', label: 'System', icon: 'settings' },
-				{ href: '/admin/redaction', label: 'Redaction', icon: 'eye-off' }
+				{ href: '/audit', label: 'Audit Log', icon: ShieldIcon },
+				{ href: '/admin/ui-sessions', label: 'UI Sessions', icon: KeyIcon },
+				{ href: '/admin/plugins', label: 'Plugins', icon: BoxIcon },
+				{ href: '/admin/system', label: 'System', icon: SettingsIcon },
+				{ href: '/admin/redaction', label: 'Redaction', icon: EyeOffIcon }
 			]
 		}
 	];
@@ -101,6 +117,8 @@
 	function href(item: NavItem): string {
 		return item.href === '/' ? `${base}/` : `${base}${item.href}`;
 	}
+
+	const ThemeIcon = $derived(theme.dark ? SunIcon : MoonIcon);
 </script>
 
 <svelte:window onkeydown={menuKeydown} />
@@ -123,11 +141,11 @@
 				class="flex h-8 w-8 items-center justify-center rounded-lg"
 				style="background-color: var(--color-brand); color: var(--color-brand-fg);"
 			>
-				<Icon name="activity" size={18} />
+				<ActivityIcon size={18} />
 			</div>
 			<span class="font-semibold">llmtrace</span>
 			<button type="button" class="btn ml-auto !p-2 md:hidden" aria-label="Close menu" onclick={() => closeMenu()}>
-				<Icon name="x" />
+				<XIcon size={18} />
 			</button>
 		</div>
 
@@ -147,7 +165,7 @@
 							onclick={() => closeMenu(false)}
 							aria-current={isActive(item.href) ? 'page' : undefined}
 						>
-							<Icon name={item.icon} size={17} />
+							<item.icon size={17} />
 							{item.label}
 						</a>
 					{/each}
@@ -181,7 +199,7 @@
 				bind:this={menuButton}
 				onclick={() => (mobileOpen = true)}
 			>
-				<Icon name="menu" />
+				<MenuIcon size={18} />
 			</button>
 
 			<div class="flex-1"><span class="text-sm font-semibold md:hidden">llmtrace</span></div>
@@ -193,7 +211,7 @@
 				title="Toggle theme"
 				onclick={() => theme.toggle()}
 			>
-				<Icon name={theme.dark ? 'sun' : 'moon'} />
+				<ThemeIcon size={18} />
 			</button>
 
 			<div class="flex items-center gap-2 pl-1">
@@ -212,7 +230,7 @@
 					title="Log out"
 					onclick={() => auth.logout()}
 				>
-					<Icon name="log-out" />
+					<LogOutIcon size={18} />
 				</button>
 			</div>
 		</header>

@@ -1,5 +1,6 @@
 <script lang="ts">
-	import Icon from './Icon.svelte';
+	import CircleCheckBigIcon from '@lucide/svelte/icons/circle-check-big';
+	import CopyIcon from '@lucide/svelte/icons/copy';
 	import { copyText } from '$lib/utils/clipboard';
 
 	interface Props {
@@ -23,9 +24,11 @@
 			copied = false;
 		}
 	}
+
+	const FeedbackIcon = $derived(copied ? CircleCheckBigIcon : CopyIcon);
 </script>
 
 <button type="button" class="btn !px-2 !py-1 text-xs {className}" onclick={copy} title={label}>
-	<Icon name={copied ? 'check' : 'copy'} size={14} />
+	<FeedbackIcon size={14} />
 	{copied ? 'Copied' : label}
 </button>

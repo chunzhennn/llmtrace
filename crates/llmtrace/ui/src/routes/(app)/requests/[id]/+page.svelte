@@ -1,4 +1,6 @@
 <script lang="ts">
+	import BoxIcon from '@lucide/svelte/icons/box';
+	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import { requestKindLabel } from '$lib/utils/format';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
@@ -21,7 +23,6 @@
 	import ErrorState from '$lib/components/ErrorState.svelte';
 	import { copyText } from '$lib/utils/clipboard';
 	import { toasts } from '$lib/state/toast.svelte';
-	import Icon from '$lib/components/Icon.svelte';
 	import Skeleton from '$lib/components/Skeleton.svelte';
 	import { createResource } from '$lib/utils/resource.svelte';
 	import * as requestsApi from '$lib/api/endpoints/requests';
@@ -109,7 +110,7 @@
 	{/snippet}
 	{#snippet actions()}
 		<a class="btn" href={listReturnHref(page.url.searchParams.get('from'), `${base}/requests`)}>
-			<Icon name="chevron-left" size={16} /> Back
+			<ChevronLeftIcon size={16} /> Back
 		</a>
 	{/snippet}
 </PageHeader>
@@ -228,7 +229,7 @@
 				<RequestToolCalls history={inputToolHistory} notice={requestData.notice} />
 				<Card title="New tool calls in response" subtitle={`${d.tool_calls.length} new calls · arguments are captured previews`}>
 					{#if d.tool_calls.length === 0}
-						<EmptyState icon="box" title="No new tool calls in this response" message="Calls carried in the request history are shown above." />
+						<EmptyState icon={BoxIcon} title="No new tool calls in this response" message="Calls carried in the request history are shown above." />
 					{:else}
 						{#each d.tool_calls as tool, index (index)}
 							<div class="mb-4">
@@ -241,7 +242,7 @@
 			</div>
         {:else if activeTab === 'plugins'}
 			{#if pluginNames.length === 0}
-				<Card><EmptyState icon="box" title="No plugin metadata" message="No plugins enriched this request." /></Card>
+				<Card><EmptyState icon={BoxIcon} title="No plugin metadata" message="No plugins enriched this request." /></Card>
 			{:else}
 				<div class="flex flex-col gap-4">
 					{#each pluginNames as name (name)}

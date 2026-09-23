@@ -1,4 +1,10 @@
 <script lang="ts">
+	import ActivityIcon from '@lucide/svelte/icons/activity';
+	import ClockIcon from '@lucide/svelte/icons/clock';
+	import DatabaseIcon from '@lucide/svelte/icons/database';
+	import ListIcon from '@lucide/svelte/icons/list';
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
 	import { onMount } from 'svelte';
 	import { base } from '$app/paths';
 	import PageHeader from '$lib/components/PageHeader.svelte';
@@ -9,7 +15,6 @@
 	import StatusPill from '$lib/components/StatusPill.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import UsageRanking from '$lib/components/UsageRanking.svelte';
-	import Icon from '$lib/components/Icon.svelte';
 	import { createResource } from '$lib/utils/resource.svelte';
 	import * as analytics from '$lib/api/endpoints/analytics';
 	import * as requestsApi from '$lib/api/endpoints/requests';
@@ -124,25 +129,25 @@
 		<div class="flex items-center justify-between gap-3">
 			<span class="text-sm" style="color: var(--color-danger);">{core.error}</span>
 			<button type="button" class="btn" onclick={() => core.load()}>
-				<Icon name="refresh" size={16} /> Retry
+				<RefreshCwIcon size={16} /> Retry
 			</button>
 		</div>
 	</Card>
 {:else}
 	<div class="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
-		<StatCard label="Total requests" hint="All retained history" value={formatNumber(stats?.total ?? 0)} icon="list" loading={core.loading} />
-		<StatCard label="Last hour" value={formatNumber(stats?.last_hour ?? 0)} icon="clock" loading={core.loading} />
+		<StatCard label="Total requests" hint="All retained history" value={formatNumber(stats?.total ?? 0)} icon={ListIcon} loading={core.loading} />
+		<StatCard label="Last hour" value={formatNumber(stats?.last_hour ?? 0)} icon={ClockIcon} loading={core.loading} />
 		<StatCard
 			label="Errors (all)"
 			value={formatNumber(stats?.errors ?? 0)}
-			icon="alert"
+			icon={TriangleAlertIcon}
 			tone={stats && stats.errors > 0 ? 'danger' : 'default'}
 			hint={`${formatPercent(errorRate)} error rate`}
 			loading={core.loading}
 		/>
-		<StatCard label="Captured" value={formatBytes(stats?.captured_bytes ?? 0)} icon="database" loading={core.loading} />
-		<StatCard label="Avg duration" value={formatMs(stats?.avg_duration_ms)} icon="activity" loading={core.loading} />
-		<StatCard label="Avg TTFT" value={formatMs(stats?.avg_ttft_ms)} icon="activity" loading={core.loading} />
+		<StatCard label="Captured" value={formatBytes(stats?.captured_bytes ?? 0)} icon={DatabaseIcon} loading={core.loading} />
+		<StatCard label="Avg duration" value={formatMs(stats?.avg_duration_ms)} icon={ActivityIcon} loading={core.loading} />
+		<StatCard label="Avg TTFT" value={formatMs(stats?.avg_ttft_ms)} icon={ActivityIcon} loading={core.loading} />
 	</div>
 
 	<div class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-3">

@@ -1,4 +1,14 @@
 <script lang="ts">
+	import ActivityIcon from '@lucide/svelte/icons/activity';
+	import BoxIcon from '@lucide/svelte/icons/box';
+	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
+	import ClockIcon from '@lucide/svelte/icons/clock';
+	import DatabaseIcon from '@lucide/svelte/icons/database';
+	import DownloadIcon from '@lucide/svelte/icons/download';
+	import ListIcon from '@lucide/svelte/icons/list';
+	import MessageCircleIcon from '@lucide/svelte/icons/message-circle';
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
 	import { page } from '$app/state';
 	import { listReturnHref } from '$lib/utils/navigation';
 	import { base } from '$app/paths';
@@ -9,7 +19,6 @@
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import ErrorState from '$lib/components/ErrorState.svelte';
 	import Skeleton from '$lib/components/Skeleton.svelte';
-	import Icon from '$lib/components/Icon.svelte';
 	import { copyText } from '$lib/utils/clipboard';
 	import SessionRequests from '$lib/components/SessionRequests.svelte';
 	import { createResource } from '$lib/utils/resource.svelte';
@@ -82,11 +91,11 @@
 		>{id.slice(0, 8)}</button>
 	{/snippet}
 	{#snippet actions()}
-		<a class="btn" href={listReturnHref(page.url.searchParams.get('from'), `${base}/sessions`)}><Icon name="chevron-left" size={16} /> Back</a>
-		<a class="btn" href={`${base}/sessions/${id}/transcript${page.url.search}`}><Icon name="messages" size={16} /> View transcript</a>
+		<a class="btn" href={listReturnHref(page.url.searchParams.get('from'), `${base}/sessions`)}><ChevronLeftIcon size={16} /> Back</a>
+		<a class="btn" href={`${base}/sessions/${id}/transcript${page.url.search}`}><MessageCircleIcon size={16} /> View transcript</a>
 		{#if session}
 			<a class="btn" href={sessionsApi.sessionExportUrl(id)} download>
-				<Icon name="download" size={16} /> Export full session
+				<DownloadIcon size={16} /> Export full session
 			</a>
 		{/if}
 	{/snippet}
@@ -98,24 +107,24 @@
 	<Card><ErrorState message={error} onRetry={loadSession} /></Card>
 {:else if session}
 	<div class="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-		<StatCard label="Requests" value={formatNumber(stats?.request_count ?? 0)} icon="list" />
-		<StatCard label="Errors" value={formatNumber(stats?.error_count ?? 0)} icon="alert" tone={stats && stats.error_count > 0 ? 'danger' : 'default'} />
-		<StatCard label="Captured" value={formatBytes(stats?.captured_bytes ?? 0)} icon="database" />
-		<StatCard label="Avg duration" value={formatDuration(stats?.avg_duration_ms)} icon="activity" />
-		<StatCard label="Max duration" value={formatDuration(stats?.max_duration_ms)} icon="clock" />
-		<StatCard label="Avg TTFT" value={formatDuration(stats?.avg_ttft_ms)} icon="activity" />
+		<StatCard label="Requests" value={formatNumber(stats?.request_count ?? 0)} icon={ListIcon} />
+		<StatCard label="Errors" value={formatNumber(stats?.error_count ?? 0)} icon={TriangleAlertIcon} tone={stats && stats.error_count > 0 ? 'danger' : 'default'} />
+		<StatCard label="Captured" value={formatBytes(stats?.captured_bytes ?? 0)} icon={DatabaseIcon} />
+		<StatCard label="Avg duration" value={formatDuration(stats?.avg_duration_ms)} icon={ActivityIcon} />
+		<StatCard label="Max duration" value={formatDuration(stats?.max_duration_ms)} icon={ClockIcon} />
+		<StatCard label="Avg TTFT" value={formatDuration(stats?.avg_ttft_ms)} icon={ActivityIcon} />
 	</div>
 
 	<div class="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
-		<StatCard label="Input tokens" value={formatTokens(stats?.input_tokens)} icon="activity" tooltip={usageCoverage} />
-		<StatCard label="Output tokens" value={formatTokens(stats?.output_tokens)} icon="activity" tooltip={usageCoverage} />
-		<StatCard label="Tool calls captured" value={formatNumber(stats?.tool_call_count ?? 0)} icon="box" />
-		<StatCard label="Estimated token cost" value={formatCost(stats?.estimated_cost_microusd)} icon="database" tooltip={costCoverage} />
+		<StatCard label="Input tokens" value={formatTokens(stats?.input_tokens)} icon={ActivityIcon} tooltip={usageCoverage} />
+		<StatCard label="Output tokens" value={formatTokens(stats?.output_tokens)} icon={ActivityIcon} tooltip={usageCoverage} />
+		<StatCard label="Tool calls captured" value={formatNumber(stats?.tool_call_count ?? 0)} icon={BoxIcon} />
+		<StatCard label="Estimated token cost" value={formatCost(stats?.estimated_cost_microusd)} icon={DatabaseIcon} tooltip={costCoverage} />
 	</div>
 	<div id="transcript" class="mt-4 grid scroll-mt-20 grid-cols-1 gap-4 xl:grid-cols-2">
 		<Card title="Transcript previews" subtitle={`${messages.length} messages loaded · request snapshots may repeat conversation history`}>
 			{#if messages.length === 0}
-				<EmptyState icon="messages" title="No messages" message="No parsed messages for this session." />
+				<EmptyState icon={MessageCircleIcon} title="No messages" message="No parsed messages for this session." />
 			{:else}
 				<div class="flex max-h-[36rem] flex-col gap-4 overflow-y-auto pr-1">
 					{#each messages as message (message.id)}
@@ -131,7 +140,7 @@
 				{#if messagesPage?.has_more}
 					<div class="mt-3 flex justify-center">
 						<button type="button" class="btn" onclick={loadMoreMessages} disabled={loadingMore}>
-							{#if loadingMore}<Icon name="refresh" size={16} class="animate-spin" /> Loading…{:else}Load more{/if}
+							{#if loadingMore}<RefreshCwIcon size={16} class="animate-spin" /> Loading…{:else}Load more{/if}
 						</button>
 					</div>
 				{/if}

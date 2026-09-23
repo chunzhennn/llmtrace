@@ -1,9 +1,15 @@
 <script lang="ts">
+	import ChartNoAxesColumnIcon from '@lucide/svelte/icons/chart-no-axes-column';
+	import DownloadIcon from '@lucide/svelte/icons/download';
+	import InboxIcon from '@lucide/svelte/icons/inbox';
+	import PlusIcon from '@lucide/svelte/icons/plus';
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+	import SearchIcon from '@lucide/svelte/icons/search';
+	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import { onMount } from 'svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import Card from '$lib/components/Card.svelte';
 	import Field from '$lib/components/Field.svelte';
-	import Icon from '$lib/components/Icon.svelte';
 	import Spinner from '$lib/components/Spinner.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import ErrorState from '$lib/components/ErrorState.svelte';
@@ -333,10 +339,10 @@
 		<Tabs tabs={[{ id: 'builder', label: 'Builder' }, { id: 'code', label: 'Code' }]} active={mode} onChange={changeMode} />
 		<div class="flex gap-2">
 			<button type="button" class="btn btn-brand" onclick={run} disabled={running}>
-				{#if running}<Icon name="refresh" size={16} class="animate-spin" /> Running…{:else}<Icon name="search" size={16} /> Run query{/if}
+				{#if running}<RefreshCwIcon size={16} class="animate-spin" /> Running…{:else}<SearchIcon size={16} /> Run query{/if}
 			</button>
 			<button type="button" class="btn" onclick={exportResults} disabled={running}>
-				<Icon name="download" size={16} /> Export
+				<DownloadIcon size={16} /> Export
 			</button>
 		</div>
 	</div>
@@ -396,7 +402,7 @@
 			<Card title="Filters">
 				{#snippet actions()}
 					<button type="button" class="btn !px-2 !py-1 text-xs" onclick={addFilter}>
-						<Icon name="plus" size={14} /> Filter
+						<PlusIcon size={14} /> Filter
 					</button>
 				{/snippet}
 				<div class="flex flex-col gap-3">
@@ -422,7 +428,7 @@
 									</select>
 								{/if}
 								<button type="button" class="btn !px-2 !py-1" aria-label="Remove filter" onclick={() => removeFilter(row.id)}>
-									<Icon name="trash" size={14} />
+									<Trash2Icon size={14} />
 								</button>
 							</div>
 							<div class="mt-2 grid grid-cols-2 items-center gap-2">
@@ -449,7 +455,7 @@
 					{/each}
 					{#if supportsPluginMetadata}
 						<button type="button" class="btn !px-2 !py-1 self-start text-xs" onclick={addPluginFilter}>
-							<Icon name="plus" size={14} /> Plugin metadata filter
+							<PlusIcon size={14} /> Plugin metadata filter
 						</button>
 					{/if}
 				</div>
@@ -458,7 +464,7 @@
 			<Card title="Sort">
 				{#snippet actions()}
 					<button type="button" class="btn !px-2 !py-1 text-xs" onclick={addOrder}>
-						<Icon name="plus" size={14} /> Sort
+						<PlusIcon size={14} /> Sort
 					</button>
 				{/snippet}
 				<div class="flex flex-col gap-2">
@@ -482,7 +488,7 @@
 								{/each}
 							</select>
 							<button type="button" class="btn !px-2 !py-1" aria-label="Remove sort" onclick={() => removeOrder(row.id)}>
-								<Icon name="trash" size={14} />
+								<Trash2Icon size={14} />
 							</button>
 						</div>
 					{/each}
@@ -533,9 +539,9 @@
 				{#if running}
 					<div class="p-6"><Spinner label="Running query…" /></div>
 				{:else if !result}
-					<div class="p-6"><EmptyState icon="chart" title="No results yet" message="Configure the query and run it." /></div>
+					<div class="p-6"><EmptyState icon={ChartNoAxesColumnIcon} title="No results yet" message="Configure the query and run it." /></div>
 				{:else if result.rows.length === 0}
-					<div class="p-6"><EmptyState icon="inbox" title="No rows" message="The query returned no rows." /></div>
+					<div class="p-6"><EmptyState icon={InboxIcon} title="No rows" message="The query returned no rows." /></div>
 				{:else}
 					<div class="overflow-x-auto">
 						<table class="w-full text-left text-sm">

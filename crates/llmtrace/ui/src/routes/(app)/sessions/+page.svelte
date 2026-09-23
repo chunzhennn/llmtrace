@@ -1,11 +1,12 @@
 <script lang="ts">
+	import SearchIcon from '@lucide/svelte/icons/search';
+	import XIcon from '@lucide/svelte/icons/x';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { base } from '$app/paths';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import DataTable, { type Column } from '$lib/components/DataTable.svelte';
 	import Pagination from '$lib/components/Pagination.svelte';
-	import Icon from '$lib/components/Icon.svelte';
 	import { createResource } from '$lib/utils/resource.svelte';
 	import * as sessionsApi from '$lib/api/endpoints/sessions';
 	import type { Paginated, SessionSummary } from '$lib/api/types';
@@ -76,11 +77,11 @@
 		value={page.url.searchParams.get('q') ?? ''}
 	/>
 	<button type="submit" class="btn btn-brand">
-		<Icon name="search" size={16} /> Search
+		<SearchIcon size={16} /> Search
 	</button>
 	{#if page.url.searchParams.get('q')}
 		<a class="btn" href={`${base}/sessions`}>
-			<Icon name="x" size={16} /> Clear
+			<XIcon size={16} /> Clear
 		</a>
 	{/if}
 </form>

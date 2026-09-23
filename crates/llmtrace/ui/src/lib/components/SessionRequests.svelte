@@ -1,9 +1,9 @@
 <script lang="ts">
+	import DownloadIcon from '@lucide/svelte/icons/download';
 	import { base } from '$app/paths';
 	import DataTable, { type Column } from './DataTable.svelte';
 	import Pagination from './Pagination.svelte';
 	import StatusPill from './StatusPill.svelte';
-	import Icon from './Icon.svelte';
 	import Badge from './Badge.svelte';
 	import { createResource } from '$lib/utils/resource.svelte';
 	import * as sessionsApi from '$lib/api/endpoints/sessions';
@@ -51,7 +51,7 @@
 <div class="mb-2 flex items-center justify-between">
 	<h2 class="text-sm font-semibold">Requests</h2>
 	<button type="button" class="btn !px-2 !py-1 text-xs" onclick={exportRequests}>
-		<Icon name="download" size={14} /> Export page
+		<DownloadIcon size={14} /> Export page
 	</button>
 </div>
 <DataTable

@@ -1,4 +1,8 @@
 <script lang="ts">
+	import BoxIcon from '@lucide/svelte/icons/box';
+	import CircleCheckBigIcon from '@lucide/svelte/icons/circle-check-big';
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
 	import { onMount } from 'svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import Card from '$lib/components/Card.svelte';
@@ -7,7 +11,6 @@
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import ErrorState from '$lib/components/ErrorState.svelte';
 	import Spinner from '$lib/components/Spinner.svelte';
-	import Icon from '$lib/components/Icon.svelte';
 	import { createResource } from '$lib/utils/resource.svelte';
 	import * as admin from '$lib/api/endpoints/admin';
 	import type { PluginsResponse } from '$lib/api/types';
@@ -22,7 +25,7 @@
 
 <PageHeader title="Plugins" description="WASM trace-enrichment plugins and their load status.">
 	{#snippet actions()}
-		<button type="button" class="btn" onclick={() => plugins.load()}><Icon name="refresh" size={16} /> Refresh</button>
+		<button type="button" class="btn" onclick={() => plugins.load()}><RefreshCwIcon size={16} /> Refresh</button>
 	{/snippet}
 </PageHeader>
 
@@ -32,13 +35,13 @@
 	<Card><ErrorState message={plugins.error} onRetry={() => plugins.load()} /></Card>
 {:else if plugins.data}
 	<div class="grid grid-cols-3 gap-3">
-		<StatCard label="Configured" value={formatNumber(plugins.data.configured_count)} icon="box" />
-		<StatCard label="Loaded" value={formatNumber(plugins.data.loaded_count)} icon="check" tone="success" />
-		<StatCard label="Failed" value={formatNumber(plugins.data.failed_count)} icon="alert" tone={plugins.data.failed_count > 0 ? 'danger' : 'default'} />
+		<StatCard label="Configured" value={formatNumber(plugins.data.configured_count)} icon={BoxIcon} />
+		<StatCard label="Loaded" value={formatNumber(plugins.data.loaded_count)} icon={CircleCheckBigIcon} tone="success" />
+		<StatCard label="Failed" value={formatNumber(plugins.data.failed_count)} icon={TriangleAlertIcon} tone={plugins.data.failed_count > 0 ? 'danger' : 'default'} />
 	</div>
 
 	{#if plugins.data.items.length === 0}
-		<Card class="mt-4"><EmptyState icon="box" title="No plugins" message="No WASM plugins are configured." /></Card>
+		<Card class="mt-4"><EmptyState icon={BoxIcon} title="No plugins" message="No WASM plugins are configured." /></Card>
 	{:else}
 		<div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
 			{#each plugins.data.items as plugin (plugin.name)}
@@ -46,7 +49,7 @@
 					<div class="flex items-start justify-between gap-3">
 						<div class="min-w-0">
 							<div class="flex items-center gap-2">
-								<Icon name="box" size={16} />
+								<BoxIcon size={16} />
 								<span class="truncate font-semibold">{plugin.name}</span>
 							</div>
 							<div class="mt-2 flex flex-wrap gap-1">

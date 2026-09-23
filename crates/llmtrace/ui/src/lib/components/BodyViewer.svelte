@@ -1,7 +1,9 @@
 <script lang="ts">
+	import DownloadIcon from '@lucide/svelte/icons/download';
+	import InboxIcon from '@lucide/svelte/icons/inbox';
+	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
 	import Badge from './Badge.svelte';
 	import CopyButton from './CopyButton.svelte';
-	import Icon from './Icon.svelte';
 	import JsonViewer from './JsonViewer.svelte';
 	import EmptyState from './EmptyState.svelte';
 	import { formatBytes, safeJsonParse } from '$lib/utils/format';
@@ -81,7 +83,7 @@
 		{#if body.length > 0}
 			<CopyButton text={body} />
 			<button type="button" class="btn !px-2 !py-1 text-xs" onclick={download}>
-				<Icon name="download" size={14} />
+				<DownloadIcon size={14} />
 				Download
 			</button>
 		{/if}
@@ -89,11 +91,11 @@
 
 	{#if large}<p class="text-xs opacity-70">Showing the first 128 KiB of text. Download the captured body to inspect the rest.</p>{/if}
 	{#if status === 'missing' || status === 'unreadable'}
-		<EmptyState icon="alert" title="Body unavailable" message={status === 'missing' ? 'Traffic was recorded, but its stored body is missing.' : 'The stored body could not be read or failed its integrity check.'} />
+		<EmptyState icon={TriangleAlertIcon} title="Body unavailable" message={status === 'missing' ? 'Traffic was recorded, but its stored body is missing.' : 'The stored body could not be read or failed its integrity check.'} />
 	{:else if body.length === 0 && status === 'available'}
-		<EmptyState icon="inbox" title="Empty body" message="The captured payload contains no bytes." />
+		<EmptyState icon={InboxIcon} title="Empty body" message="The captured payload contains no bytes." />
 	{:else if body.length === 0}
-		<EmptyState icon="inbox" title="No body captured" message="This payload was empty or not stored." />
+		<EmptyState icon={InboxIcon} title="No body captured" message="This payload was empty or not stored." />
 	{:else if showJson}
 		<JsonViewer value={parsed.value} />
 	{:else}

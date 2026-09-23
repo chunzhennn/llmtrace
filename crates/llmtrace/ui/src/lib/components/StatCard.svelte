@@ -1,11 +1,12 @@
 <script lang="ts">
-	import type { Snippet } from 'svelte';
-	import Icon from './Icon.svelte';
+	import InfoIcon from '@lucide/svelte/icons/info';
+	import type { Component, Snippet } from 'svelte';
+	import type { LucideProps } from '@lucide/svelte';
 
 	interface Props {
 		label: string;
 		value: string | number;
-		icon?: string;
+		icon?: Component<LucideProps>;
 		hint?: string;
 		tooltip?: string;
 		tone?: 'default' | 'success' | 'warning' | 'danger';
@@ -16,7 +17,7 @@
 	let {
 		label,
 		value,
-		icon,
+		icon: Icon,
 		hint,
 		tooltip,
 		tone = 'default',
@@ -36,8 +37,8 @@
 <div class="card relative min-w-0 p-3 sm:p-4">
 	<div class="flex items-start justify-between gap-2">
 		<span class="text-fg-muted text-xs font-medium uppercase tracking-wide">{label}</span>
-		{#if icon}
-			<span style="color: {color};"><Icon name={icon} size={16} /></span>
+		{#if Icon}
+			<span style="color: {color};"><Icon size={16} /></span>
 		{/if}
 	</div>
 	{#if loading}
@@ -48,7 +49,7 @@
 			{#if tooltip}
 				<details class="shrink-0">
 					<summary class="text-fg-muted hover:text-fg flex size-7 cursor-pointer list-none items-center justify-center rounded focus-visible:outline-2 focus-visible:outline-offset-2 [&::-webkit-details-marker]:hidden" aria-label={`About ${label.toLowerCase()}`} title={tooltip}>
-						<Icon name="info" size={14} />
+						<InfoIcon size={14} />
 					</summary>
 					<p class="bg-surface text-fg absolute inset-x-0 top-full z-20 mt-1 rounded-lg border border-[var(--color-border)] p-3 text-xs shadow-lg">{tooltip}</p>
 				</details>
