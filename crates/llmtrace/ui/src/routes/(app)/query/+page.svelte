@@ -451,7 +451,7 @@
 						<div class="flex min-w-0 flex-wrap items-center gap-2" role="group" aria-label="Sort order">
 							{#each orderBy as row, index (row.id)}
 								<div class="sort-key">
-									<span class="pl-2 text-xs text-fg-muted" title="Sort priority">{index + 1}</span>
+									<span class="sort-priority font-mono text-fg-muted" title="Sort priority">{index + 1}</span>
 									{#if !fieldSpec(row.field)}
 										<input class="input min-w-0 flex-1 font-mono" aria-label="Sort field" bind:value={row.field} />
 									{:else}
@@ -459,7 +459,7 @@
 											{#each currentDataset?.fields ?? [] as f (f.name)}<option value={f.name}>{f.name}</option>{/each}
 										</select>
 									{/if}
-									<select class="input !w-auto shrink-0 pr-8" aria-label="Sort direction" bind:value={row.direction}>
+									<select class="input !w-auto shrink-0 pr-8 font-mono" aria-label="Sort direction" bind:value={row.direction}>
 										{#each schema.data.sort_directions as dir (dir)}<option value={dir}>{dir === 'asc' ? '↑ Asc' : '↓ Desc'}</option>{/each}
 									</select>
 									<button type="button" class="remove-button" aria-label="Remove sort" title="Remove sort" onclick={() => removeOrder(row.id)}><XIcon size={15} /></button>
@@ -595,6 +595,7 @@
 	.composer-toolbar, .clause-row { min-height: 56px; }
 	.clause-row { display: grid; grid-template-columns: 4rem minmax(0, 1fr); gap: 1rem; align-items: center; padding: 8px 16px; }
 	.builder .input, .builder .btn { height: var(--control-height); }
+	.builder .input { padding-block: 0; line-height: 1.25; }
 	.clause-label { color: var(--color-fg-muted); font-size: 0.65rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
 	.condition { display: grid; grid-template-columns: minmax(10rem, 1fr) 10rem minmax(10rem, 1.4fr) 2.5rem; align-items: center; border: 1px solid var(--color-border); border-radius: 0.5rem; }
 	.condition:focus-within { border-color: var(--color-brand); }
@@ -605,6 +606,7 @@
 	.remove-button { display: inline-flex; align-items: center; justify-content: center; width: 2.5rem; height: calc(var(--control-height) - 2px); flex-shrink: 0; border-radius: 0.4rem; color: var(--color-fg-muted); cursor: pointer; }
 	.remove-button:hover { color: var(--color-danger); background: var(--color-surface-muted); }
 	.sort-key { display: flex; align-items: center; width: 23rem; max-width: 100%; border: 1px solid var(--color-border); border-radius: 0.5rem; }
+	.sort-priority { display: flex; align-items: center; align-self: stretch; padding-left: 0.5rem; font-size: 0.8rem; line-height: 1.25; }
 	.columns-panel > summary { list-style: none; }
 	.columns-panel > summary::-webkit-details-marker { display: none; }
 	.columns-panel > summary:hover { background: var(--color-surface-muted); }
@@ -623,7 +625,7 @@
 	@media (max-width: 639px) {
 		.clause-row { grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
 		.clause-label:empty { display: none; }
-		.condition .input, .sort-key .input { font-size: 1rem; }
+		.condition .input, .sort-key .input, .sort-priority { font-size: 1rem; }
 		.remove-button { width: 2.75rem; height: 2.75rem; }
 		.condition { grid-template-columns: minmax(10rem, 1fr) minmax(0, 7rem) 2.75rem; }
 		.sort-key { width: 100%; }
