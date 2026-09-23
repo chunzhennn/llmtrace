@@ -13,8 +13,52 @@ query and offers **Restore code draft** to recover the earlier statement.
 **Query preview** shows the generated statement in
 Builder without changing modes.
 
-This interaction follows Grafana's
-[Builder and Code query editors](https://grafana.com/docs/grafana/latest/datasources/postgres/query-editor/).
+## Visual builder
+
+The query composer spans the page above the results table. Its clauses read from
+top to bottom: **From**, **Where / And**, **Sort by**, and **Select**. Choose a
+field in **Add filter** to create a condition, then edit its operator and value
+inline. Operators have readable labels, such as `at least` for `>=` and `is missing`
+for `IS NULL`. All conditions must match. Plugin metadata paths are available in
+the same picker on the requests dataset.
+
+**Edit columns** opens a searchable checklist; selected columns are retained when
+searching. **Use defaults** restores the dataset's default columns. At least one
+column stays selected, and the schema's column, filter and sort limits are enforced
+by the controls. Numbered sort keys show their priority. Removing all sort keys
+uses the dataset's default order. The row limit is checked before execution.
+
+On smaller screens, each condition wraps into a field row and an operator/value
+row. The results table scrolls horizontally within its own container. Column
+selection and query preview use native disclosure controls with keyboard support;
+field and operator pickers use native selects.
+
+### Product research and design choices
+
+Reviewed on 2026-09-23:
+
+| Product | Relevant pattern | Applied here |
+| --- | --- | --- |
+| [Grafana Loki](https://grafana.com/docs/grafana/latest/datasources/loki/query-editor/) | Label, operator and value controls; synchronized Builder/Code modes | Inline conditions and the existing mode conversion and draft protection |
+| [Honeycomb](https://docs.honeycomb.io/investigate/query/build/) | Dataset scope above an editor organized around query clauses | A single full-width composer with a clear clause hierarchy |
+| [Elastic Discover](https://www.elastic.co/observability-labs/blog/kibana-discover-search-kql-lucene-esql) | Visible, editable filter pills alongside a document table | Compact conditions above full-width results; column choices collapsed until needed |
+
+The previous always-visible field checklist and stacked sidebar cards gave display
+settings more space than filtering and results. This layout prioritizes those two
+tasks. Inline editing avoids an extra dialog for every condition. Native controls,
+the existing Lucide icons and CodeMirror cover the required interactions without
+adding a general-purpose query-builder dependency. Facet value suggestions, charts,
+OR groups and aggregations require capabilities beyond the current query API and
+are not presented as working controls.
+
+Screenshots with synthetic rows: [desktop, light](ui-review/query-builder/desktop-light.png),
+[desktop, dark](ui-review/query-builder/desktop-dark.png),
+[mobile](ui-review/query-builder/mobile-light.png). Browser checks covered
+360, 390, 768, 1024 and 1440 pixel widths, keyboard disclosure, column search,
+typed query requests, result rendering and mode switching. Frontend validation:
+`pnpm test` (195 passed), `pnpm run check` (no diagnostics), `pnpm run build`.
+`cargo test --workspace`: 310 passed, 28 ignored.
+
 The implementation uses CodeMirror and translates the supported statement grammar
 into the existing allowlisted `POST /api/query` request. SQL text is never sent to
 Postgres or a raw SQL endpoint. No backend route, configuration or migration changes
