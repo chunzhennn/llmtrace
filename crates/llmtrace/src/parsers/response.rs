@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
+use futures_codec::{BytesMut, Decoder};
 use serde_json::Value;
+use sse_codec::{Event, SSECodec};
 
 use crate::types::RequestKind;
 use crate::types::{TokenUsage, ToolCall};
@@ -34,26 +36,36 @@ impl ResponseDetails {
             parser.terminal = true;
             parser.final_usage_seen = true;
         } else {
-            // Decode one event at a time; a truncated UTF-8 tail must not discard
-            // earlier complete usage, messages, or errors.
-            let mut data = Vec::new();
-            let mut offset = 0;
-            for line in body.split_inclusive(|byte| *byte == b'\n') {
-                offset += line.len();
-                let line = line.strip_suffix(b"\n").unwrap_or(line);
-                let line = line.strip_suffix(b"\r").unwrap_or(line);
-                if line.is_empty() {
-                    if data == b"[DONE]" {
+            // Feed through each line ending rather than copy the whole capture
+            // or make the codec rescan a long partial line on every small chunk.
+            // The codec owns SSE framing; consumed bytes still drive TTFT.
+            let mut codec = SSECodec::default();
+            let mut buffer = BytesMut::new();
+            let mut fed = 0;
+            'capture: for chunk in body.split_inclusive(|byte| matches!(byte, b'\r' | b'\n')) {
+                buffer.extend_from_slice(chunk);
+                fed += chunk.len();
+                loop {
+                    let event = match codec.decode(&mut buffer) {
+                        Ok(Some(event)) => event,
+                        Ok(None) => break,
+                        // Keep complete events preceding an invalid UTF-8 tail.
+                        Err(_) => break 'capture,
+                    };
+                    let Event::Message { data, .. } = event else {
+                        continue;
+                    };
+                    let mut offset = fed - buffer.len();
+                    // The codec dispatches on CR before consuming the LF of
+                    // CRLF. Include both bytes in our exclusive event offset.
+                    if body.get(offset - 1) == Some(&b'\r') && body.get(offset) == Some(&b'\n') {
+                        offset += 1;
+                    }
+                    if data == "[DONE]" {
                         parser.terminal = true;
-                    } else if let Ok(value) = serde_json::from_slice::<Value>(&data) {
+                    } else if let Ok(value) = serde_json::from_str::<Value>(&data) {
                         parser.event(&value, offset);
                     }
-                    data.clear();
-                } else if let Some(line) = line.strip_prefix(b"data:") {
-                    if !data.is_empty() {
-                        data.push(b'\n');
-                    }
-                    data.extend_from_slice(line.strip_prefix(b" ").unwrap_or(line));
                 }
             }
             parser.details.stream_complete = Some(parser.terminal);
@@ -486,6 +498,59 @@ mod tests {
         body.extend_from_slice(b"data: {\"delta\":\"\xff");
         let parsed = ResponseDetails::parse(&body, None, RequestKind::OpenAiChatCompletions);
         assert_eq!(parsed.text, "hello");
+    }
+
+    #[test]
+    fn sse_line_endings_bom_and_metadata_preserve_output_offsets() {
+        for newline in ["\n", "\r\n", "\r"] {
+            let prefix = format!(
+                "\u{feff}: keepalive{newline}retry:1000{newline}id: 7{newline}event: chunk{newline}"
+            );
+            let output = format!(
+                "data: {{\"choices\":{newline}data{newline}data: [{{\"delta\":{{\"content\":\"你好🙂\"}}}}]}}{newline}{newline}"
+            );
+            let body = format!("{prefix}{output}data: [DONE]{newline}{newline}");
+            let parsed =
+                ResponseDetails::parse(body.as_bytes(), None, RequestKind::OpenAiChatCompletions);
+            assert_eq!(parsed.text, "你好🙂");
+            assert_eq!(
+                parsed.first_output_offset,
+                Some(prefix.len() + output.len())
+            );
+            assert_eq!(parsed.stream_complete, Some(true));
+        }
+    }
+
+    #[test]
+    fn sse_capture_requires_a_terminated_event() {
+        for tail in ["data: [DONE]", "data: [DONE]\n", "data: {\"choices\":"] {
+            let output = "data: {\"choices\":[{\"delta\":{\"content\":\"kept\"}}]}\n\n";
+            let body = format!("{output}{tail}");
+            let parsed =
+                ResponseDetails::parse(body.as_bytes(), None, RequestKind::OpenAiChatCompletions);
+            assert_eq!(parsed.text, "kept");
+            assert_eq!(parsed.first_output_offset, Some(output.len()));
+            assert_eq!(parsed.stream_complete, Some(false));
+        }
+    }
+
+    #[test]
+    fn sse_large_multiline_events_keep_byte_offsets() {
+        let content = "你好🙂".repeat(1000);
+        let prefix = ": keepalive\r\n\r\n";
+        let output = format!(
+            "data: {}\r\n\r\n",
+            json!({"choices":[{"delta":{"content":content}}]})
+        );
+        let body = format!("{prefix}{output}data: [DONE]\n\n");
+        let parsed =
+            ResponseDetails::parse(body.as_bytes(), None, RequestKind::OpenAiChatCompletions);
+        assert_eq!(parsed.text, content);
+        assert_eq!(
+            parsed.first_output_offset,
+            Some(prefix.len() + output.len())
+        );
+        assert_eq!(parsed.stream_complete, Some(true));
     }
 
     #[test]
