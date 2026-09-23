@@ -1,3 +1,4 @@
+import { createParser } from 'eventsource-parser';
 import type { SessionExportBody } from '$lib/api/types';
 import type { ExportRequest, ParsedMessage, ParsedRequest } from './types';
 import { toolDeclarations } from './tools';
@@ -100,15 +101,19 @@ function outputMessages(value: unknown): ParsedOutput {
 	return { messages: [message(value, has(value, 'error') ? 'error' : 'response')], branches: [], complete: false };
 }
 
-/** SSE blocks are walked once; never split a whole large capture into a second array of strings. */
-function* events(text: string): Generator<string> {
-	let start = 0;
-	const separator = /\r?\n\r?\n/g;
-	for (let match; (match = separator.exec(text));) {
-		yield text.slice(start, match.index);
-		start = separator.lastIndex;
+/** Keep only one chunk's events queued while the library handles SSE framing. */
+function* events(text: string): Generator<{ data: string; complete: boolean }> {
+	let pending: string[] = [];
+	const parser = createParser({ onEvent: ({ data }) => pending.push(data) });
+	for (let offset = 0; offset < text.length; offset += 8192) {
+		parser.feed(text.slice(offset, offset + 8192));
+		for (const data of pending) yield { data, complete: true };
+		pending = [];
 	}
-	if (start < text.length) yield text.slice(start);
+	// Drain a captured tail only for forensic display. It must never be applied
+	// as a delta or accepted as a terminal marker without its original separator.
+	parser.feed('\n\n');
+	for (const data of pending) yield { data, complete: false };
 }
 function set(target: Obj, key: string, value: unknown) {
 	Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true });
@@ -158,8 +163,14 @@ function streamMessages(text: string, notices: string[]): ParsedOutput {
 		if (!output.has(index)) output.set(index, { type: 'message', role: 'assistant', content: [] });
 		return output.get(index)!;
 	};
-	for (const block of events(text)) {
-		const data = block.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).replace(/^ /, '')).join('\n');
+	for (const event of events(text)) {
+		const { data } = event;
+		if (!event.complete) {
+			extra.push(message(data, 'unparsed_event'));
+			notices.push('The captured stream ends with an unterminated event; its data is shown unchanged.');
+			complete = false;
+			continue;
+		}
 		if (!data) continue;
 		if (data === '[DONE]') { terminal = true; continue; }
 		let v: unknown;
@@ -294,7 +305,7 @@ export function parseRequest(record: ExportRequest): ParsedRequest {
 			}
 		}
 		catch {
-			if (/(^|\n)data:/.test(response)) result = streamMessages(response, notices);
+			if (/(^\uFEFF?|[\r\n])data(?::|[\r\n]|$)/.test(response)) result = streamMessages(response, notices);
 			else { result.messages.push(message(response, 'response')); notices.push('Response body is not recognized; the captured text is shown unchanged.'); }
 		}
 	}

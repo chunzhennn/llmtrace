@@ -88,6 +88,27 @@ describe('complete captured transcript parsing', () => {
 		const parsed = parseRequest(record({ messages: [] }, 'data: {"choices":\r\ndata: [{"delta":{"content":"ok"}}]}\r\n\r\ndata: {broken\r\n\r\ndata: [DONE]\r\n\r\n', 1, true));
 		expect(text(parsed)).toContain('ok'); expect(text(parsed)).toContain('{broken');
 	});
+	it.each(['\n', '\r\n', '\r'])('parses BOMs, comments and multiline data with %j separators', (nl) => {
+		const response = `\uFEFFdata: {"choices":${nl}data${nl}data: [{"delta":{"content":"你好🙂"}}]}${nl}${nl}: keepalive${nl}retry: 1000${nl}id: 7${nl}event: done${nl}data: [DONE]${nl}${nl}`;
+		const parsed = parseRequest(record({ messages: [] }, response, 1, true));
+		expect(parsed.output[0].content).toBe('你好🙂');
+		expect(parsed.outputComplete).toBe(true);
+		expect(parsed.notices).toEqual([]);
+	});
+	it.each(['data: [DONE]', 'data: [DONE]\n', 'data: {broken', 'data: {"choices":[{"delta":{"content":"tail"}}]}'])('shows an unterminated tail without treating it as an event: %s', (tail) => {
+		const parsed = parseRequest(record({ messages: [] }, sse({ choices: [{ delta: { content: 'kept' } }] }) + tail, 1, true));
+		expect(parsed.output[0].content).toBe('kept');
+		expect(parsed.output.at(-1)?.role).toBe('unparsed_event');
+		expect(parsed.output.at(-1)?.content).toContain(tail.slice(6).trim());
+		expect(parsed.outputComplete).toBe(false);
+		expect(parsed.notices.join(' ')).toContain('unterminated event');
+	});
+	it('keeps large event data intact across chunk and surrogate boundaries', () => {
+		const content = '你好🙂'.repeat(10000);
+		const parsed = parseRequest(record({ messages: [] }, sse({ choices: [{ delta: { content } }] }, '[DONE]'), 1, true));
+		expect(parsed.output[0].content).toBe(content);
+		expect(parsed.outputComplete).toBe(true);
+	});
 	it('reports missing, truncated and binary bodies without substituting previews', () => {
 		const r = record({ messages: [user('full')] }, chat('answer'));
 		r.request_body = { status: 'missing', encoding: null, data: null, captured_bytes: null, truncated: false };

@@ -22,3 +22,17 @@ application logic. Parsing still runs outside the live proxy path.
 Regression coverage includes all three newline conventions, BOMs, multiline
 data, unterminated terminal markers, large UTF-8 events, and exact TTFT
 byte offsets, alongside the existing provider parsing tests.
+
+## Transcript SSE (TypeScript)
+
+[eventsource-parser](https://github.com/rexxars/eventsource-parser) replaces the
+regular-expression block splitter and hand-written `data:` extraction. Feed
+8 KiB character chunks and consume events immediately rather than allocate an
+array for the whole capture. The parser handles CR/LF/CRLF, BOMs, comments, and
+multiline fields in the transcript worker without a network client.
+
+Unterminated trailing data is drained solely into an `unparsed_event` preview;
+it cannot contribute deltas or mark a transcript complete, even if it contains
+`[DONE]`. This aligns completion with the backend while retaining forensic text.
+Provider-specific reconstruction, unknown-event display and context deduplication
+remain local because they are trace audit behavior, not the SSE protocol.
