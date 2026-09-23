@@ -4,24 +4,48 @@ Keep provider-specific trace semantics and resource limits in this project;
 delegate general protocols and widgets to maintained libraries when their APIs
 fit the capture pipeline and SPA.
 
+Selection prioritizes active maintenance and demonstrated downstream adoption.
+A specialized library may have few GitHub stars; record that limitation instead
+of presenting it as a large-community project. Check release history, public
+API suitability, dependency cost, and protocol regressions before integrating.
+
 ## Captured SSE responses (Rust)
 
-[sse-codec](https://github.com/goto-bus-stop/sse-codec) handles event framing,
-multiline data, comments, BOMs, and LF/CRLF/CR line endings. Its synchronous
-`Decoder` interface fits the existing background parser and exposes consumed
-bytes for TTFT. `futures_codec` supplies its decoder trait and buffer type; it
-does not introduce another executor or HTTP client. Feed through each line ending
-to avoid copying the entire capture or repeatedly scanning a large partial line.
-Memory remains bounded by capture limits.
+[sse-stream](https://github.com/4t145/sse-stream) 0.3 handles event framing,
+multiline data, comments, BOMs, and LF/CRLF/CR line endings. It replaces
+`sse-codec` and removes the `futures_codec` dependency.
+
+The maintenance/adoption review on 2026-09-23 found:
+
+- `sse-stream` 0.3.0 was published on 2026-09-18. Its repository had 11 stars;
+  community size is a limitation, not the selection rationale.
+- The [official MCP Rust SDK's manifest](https://github.com/modelcontextprotocol/rust-sdk/blob/main/crates/rmcp/Cargo.toml)
+  uses `sse-stream` 0.2.4. That establishes adoption of the project, not production
+  validation of the newer 0.3 API selected here. The latter is covered by our
+  capture parsing and TTFT regression tests.
+- `sse-codec` had 13 stars and its last commit was 2026-02-12;
+  `eventsource-stream` had 38 stars and its last commit was 2022-02-17.
+  A convenient API or high download count alone does not establish active maintenance.
+
+`SseByteStream` consumes a borrowed `bytes::Buf` directly. A small adapter counts
+the bytes actually advanced by the parser so TTFT uses each event's exact end,
+even when many events share one input buffer. There is no whole-capture copy or
+application line splitter. The finite in-memory source is immediately ready, so
+polling it needs neither an executor nor a network client. Provider parsing stays
+in the existing synchronous background pipeline. Memory remains bounded by
+capture limits; protocol scratch buffers belong to the library.
 
 Only terminated events are interpreted; an incomplete event at EOF is discarded.
-Complete events before invalid UTF-8 remain available. Provider delta assembly,
-usage/tool limits, terminal markers, and byte-offset-to-timestamp mapping remain
-application logic. Parsing still runs outside the live proxy path.
+The decoder stops on invalid UTF-8 in recognized fields while preserving earlier
+complete events. Metadata-only blocks are ignored by the response parser.
+Provider delta assembly, usage/tool limits, terminal markers, and the
+byte-offset-to-timestamp mapping remain application logic. Parsing still runs
+outside the live proxy path.
 
-Regression coverage includes all three newline conventions, BOMs, multiline
-data, unterminated terminal markers, large UTF-8 events, and exact TTFT
-byte offsets, alongside the existing provider parsing tests.
+Regression coverage includes all three newline conventions, leading versus
+embedded BOMs, multiline data, metadata/role-only events, unterminated terminal
+markers, invalid UTF-8, large events, and exact TTFT byte offsets, alongside the
+existing provider parsing tests.
 
 ## Transcript SSE (TypeScript)
 
@@ -94,9 +118,14 @@ are required by these replacements.
 
 ## Validation
 
-- `cargo test --workspace`: 308 passed; 28 existing opt-in tests ignored.
-- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+Backend checks rerun for the `sse-stream` replacement:
+
+- `cargo test --workspace --locked`: 311 passed; 28 existing opt-in tests ignored.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`: passed.
 - `cargo fmt --all -- --check`: passed.
+
+Frontend results from the preceding UI refactor (no UI changes in this replacement):
+
 - UI `pnpm test`: 180 passed.
 - UI `pnpm run check`: no errors or warnings.
 - UI `pnpm run build`: static production build passed.

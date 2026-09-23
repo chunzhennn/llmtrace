@@ -884,19 +884,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "futures_codec"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad004dd81205978a2bba6c566ed70535ccf88c0be34649e628186474603f43ca"
-dependencies = [
- "bytes",
- "futures-sink",
- "futures-util",
- "memchr",
- "pin-project-lite",
-]
-
-[[package]]
 name = "fxhash"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1456,7 +1443,6 @@ dependencies = [
  "clap",
  "cookie",
  "futures-util",
- "futures_codec",
  "hex",
  "http",
  "rand 0.8.6",
@@ -1466,7 +1452,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
- "sse-codec",
+ "sse-stream",
  "subtle",
  "thiserror 2.0.18",
  "tokio",
@@ -2408,6 +2394,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "simdutf8"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2656,14 +2648,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "sse-codec"
-version = "0.3.3"
+name = "sse-stream"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a395a858c7ff5c4b42aeab0501e07c978ac5e1ae5059f301884dab3fa405f47"
+checksum = "d385160fc0fba84f7b9cc8ef3263e410d0e3ca7ab4927f1356df33145ace69a4"
 dependencies = [
- "futures-io",
- "futures_codec",
+ "bytes",
+ "futures-util",
+ "http-body",
+ "http-body-util",
  "memchr",
+ "pin-project-lite",
+ "simdutf8",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

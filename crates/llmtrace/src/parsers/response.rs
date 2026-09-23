@@ -1,8 +1,11 @@
+use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::convert::Infallible;
 
-use futures_codec::{BytesMut, Decoder};
+use bytes::Buf;
+use futures_util::{FutureExt, StreamExt, stream};
 use serde_json::Value;
-use sse_codec::{Event, SSECodec};
+use sse_stream::SseByteStream;
 
 use crate::types::RequestKind;
 use crate::types::{TokenUsage, ToolCall};
@@ -36,41 +39,54 @@ impl ResponseDetails {
             parser.terminal = true;
             parser.final_usage_seen = true;
         } else {
-            // Feed through each line ending rather than copy the whole capture
-            // or make the codec rescan a long partial line on every small chunk.
-            // The codec owns SSE framing; consumed bytes still drive TTFT.
-            let mut codec = SSECodec::default();
-            let mut buffer = BytesMut::new();
-            let mut fed = 0;
-            'capture: for chunk in body.split_inclusive(|byte| matches!(byte, b'\r' | b'\n')) {
-                buffer.extend_from_slice(chunk);
-                fed += chunk.len();
-                loop {
-                    let event = match codec.decode(&mut buffer) {
-                        Ok(Some(event)) => event,
-                        Ok(None) => break,
-                        // Keep complete events preceding an invalid UTF-8 tail.
-                        Err(_) => break 'capture,
-                    };
-                    let Event::Message { data, .. } = event else {
-                        continue;
-                    };
-                    let mut offset = fed - buffer.len();
-                    // The codec dispatches on CR before consuming the LF of
-                    // CRLF. Include both bytes in our exclusive event offset.
-                    if body.get(offset - 1) == Some(&b'\r') && body.get(offset) == Some(&b'\n') {
-                        offset += 1;
-                    }
-                    if data == "[DONE]" {
-                        parser.terminal = true;
-                    } else if let Ok(value) = serde_json::from_str::<Value>(&data) {
-                        parser.event(&value, offset);
-                    }
+            let consumed = Cell::new(0);
+            let capture = CapturedSseBytes {
+                remaining: body,
+                consumed: &consumed,
+            };
+            let mut events = SseByteStream::new(stream::iter([Ok::<_, Infallible>(capture)]));
+            // The source is already in memory and cannot return Pending, so no
+            // executor or I/O is needed. EOF and decoder errors keep prior events.
+            while let Some(Ok(event)) = events
+                .next()
+                .now_or_never()
+                .expect("captured SSE bytes are immediately ready")
+            {
+                let Some(data) = event.data else {
+                    continue;
+                };
+                if data == "[DONE]" {
+                    parser.terminal = true;
+                } else if let Ok(value) = serde_json::from_str::<Value>(&data) {
+                    parser.event(&value, consumed.get());
                 }
             }
             parser.details.stream_complete = Some(parser.terminal);
         }
         parser.finish()
+    }
+}
+
+/// Borrow the capture without copying it. Count bytes consumed by the library,
+/// not bytes supplied to it: several events can share the same input buffer.
+/// This keeps TTFT tied to the exact event boundary, including CRLF and BOM bytes.
+struct CapturedSseBytes<'a> {
+    remaining: &'a [u8],
+    consumed: &'a Cell<usize>,
+}
+
+impl Buf for CapturedSseBytes<'_> {
+    fn remaining(&self) -> usize {
+        self.remaining.len()
+    }
+
+    fn chunk(&self) -> &[u8] {
+        self.remaining
+    }
+
+    fn advance(&mut self, count: usize) {
+        self.remaining.advance(count);
+        self.consumed.set(self.consumed.get() + count);
     }
 }
 
@@ -532,6 +548,49 @@ mod tests {
             assert_eq!(parsed.first_output_offset, Some(output.len()));
             assert_eq!(parsed.stream_complete, Some(false));
         }
+    }
+
+    #[test]
+    fn sse_metadata_and_role_only_events_do_not_shift_first_output() {
+        for newline in ["\n", "\r\n", "\r"] {
+            let prefix = format!(
+                "\u{feff}: keepalive{newline}{newline}id: 7{newline}retry: 1000{newline}{newline}data: {{\"choices\":[{{\"delta\":{{\"role\":\"assistant\"}}}}]}}{newline}{newline}"
+            );
+            let output = format!(
+                "data: {{\"choices\":[{{\"delta\":{{\"content\":\"你好🙂\"}}}}]}}{newline}{newline}"
+            );
+            let body = format!("{prefix}{output}data: [DONE]{newline}{newline}");
+            let parsed =
+                ResponseDetails::parse(body.as_bytes(), None, RequestKind::OpenAiChatCompletions);
+            assert_eq!(parsed.text, "你好🙂");
+            assert_eq!(
+                parsed.first_output_offset,
+                Some(prefix.len() + output.len())
+            );
+            assert_eq!(parsed.stream_complete, Some(true));
+        }
+    }
+
+    #[test]
+    fn sse_bom_is_only_stripped_at_the_start() {
+        let output = "\u{feff}data: {\"choices\":[{\"delta\":{\"content\":\"kept\"}}]}\n\n";
+        let body = format!("{output}\u{feff}data: [DONE]\n\n");
+        let parsed =
+            ResponseDetails::parse(body.as_bytes(), None, RequestKind::OpenAiChatCompletions);
+        assert_eq!(parsed.text, "kept");
+        assert_eq!(parsed.first_output_offset, Some(output.len()));
+        assert_eq!(parsed.stream_complete, Some(false));
+    }
+
+    #[test]
+    fn sse_invalid_utf8_event_keeps_prior_output_without_claiming_completion() {
+        let output = b"data: {\"choices\":[{\"delta\":{\"content\":\"kept\"}}]}\n\n";
+        let mut body = output.to_vec();
+        body.extend_from_slice(b"data: \xff\n\ndata: [DONE]\n\n");
+        let parsed = ResponseDetails::parse(&body, None, RequestKind::OpenAiChatCompletions);
+        assert_eq!(parsed.text, "kept");
+        assert_eq!(parsed.first_output_offset, Some(output.len()));
+        assert_eq!(parsed.stream_complete, Some(false));
     }
 
     #[test]
