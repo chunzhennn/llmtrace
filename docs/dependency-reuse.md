@@ -90,6 +90,13 @@ not percent-decoding, and quoted tokens still fail token validation. A shared
 builder applies HttpOnly, SameSite=Lax, configured Secure, and Max-Age for both
 issuance and removal.
 
+Session and OAuth writers each own their path and lifetime and call a single
+`write_auth_cookie` function that serializes and appends the header. Passing
+`None` removes a cookie using that same policy with Max-Age=0. The redundant
+OAuth string wrapper, separate clear functions, and generic string/header
+forwarders have been removed. Tests exercise these actual writers, including
+mixed issuance/removal without overwriting other Set-Cookie headers.
+
 [subtle](https://docs.rs/subtle/latest/subtle/trait.ConstantTimeEq.html), already
 present transitively, replaces the manual XOR equality loop. Compare SHA-256
 digests of the two credential strings so the compared values have equal fixed
@@ -118,9 +125,11 @@ are required by these replacements.
 
 ## Validation
 
-Backend checks rerun for the `sse-stream` replacement:
+Backend checks rerun after simplifying the Cookie writers:
 
-- `cargo test --workspace --locked`: 311 passed; 28 existing opt-in tests ignored.
+- `cargo test --workspace --locked`: 310 passed; 28 existing opt-in tests ignored.
+  The Cookie scope/security tests now exercise both writers directly; a duplicate
+  OAuth-only serializer test was consolidated into those cases.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`: passed.
 - `cargo fmt --all -- --check`: passed.
 
