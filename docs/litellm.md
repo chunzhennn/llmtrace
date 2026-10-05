@@ -81,7 +81,19 @@ needed. For a transparent proxy of the entire LiteLLM application, set:
 [proxy]
 preset = "litellm"
 path_prefixes = ["/"]
+forward_cookies = true
 ```
+
+Forwarding the routes is not enough to keep the UI usable. LiteLLM's dashboard
+session is a browser cookie: the SSO callback calls `set_session_token_cookie`,
+which issues `token=<jwt>` for the SPA to read via `document.cookie`. The proxy
+strips `Cookie` and `Set-Cookie` unless `proxy.forward_cookies` is enabled, so
+with it off the browser never receives that cookie, lands on `/ui/?login=success`
+still unauthenticated, and is sent back to SSO — an endless sign-in loop that
+also mints a fresh UI key on every pass. Enable `forward_cookies` whenever a
+browser UI is proxied. It does not widen what reaches the archive: `redaction.rs`
+treats `cookie` and `set-cookie` as sensitive unconditionally, so stored traces
+are masked either way.
 
 This exposes LiteLLM's own UI/management routes, protected by LiteLLM's permissions;
 they receive no conversation capture by default. In split mode `/ui`, `/api`,

@@ -30,6 +30,15 @@ allow_upstreams = []
 # Explicit prefixes capture all methods on matching forwarded routes; [] disables.
 # capture_path_prefixes = ["/v1/chat/completions", "/v1/responses"]
 upstream_header = "x-llmtrace-upstream"
+# Forward request `Cookie` and response `Set-Cookie` through to the upstream.
+# Off by default: an API-only deployment has no use for cookies, and dropping
+# them keeps this proxy from relaying session state it cannot see into.
+# Enable it when the upstream serves a browser UI whose session lives in a
+# cookie. With this off, such a login never completes -- the app issues its
+# session cookie, the proxy drops it, and the browser loops back to sign-in
+# forever. Stored traces are unaffected either way (redaction always masks
+# cookie/set-cookie), so this does not widen what lands in the archive.
+# forward_cookies = false
 timeout_secs = 300
 # Live proxy traffic limits. Oversized HTTP request bodies are rejected with 413.
 # Response capture is preserved for auditing until max_response_body_bytes.

@@ -74,6 +74,17 @@ pub struct ProxyConfig {
     pub path_prefixes: Option<Vec<String>>,
     pub capture_path_prefixes: Option<Vec<String>>,
     pub upstream_header: String,
+    /// Forward request `Cookie` and response `Set-Cookie` instead of stripping
+    /// them. Off by default: an API-only deployment has no use for cookies, and
+    /// dropping them keeps this proxy from relaying session state it cannot see
+    /// into. Turn it on when the upstream serves a browser UI whose session
+    /// lives in a cookie -- stripping `Set-Cookie` there breaks sign-in with a
+    /// redirect loop that never completes, because the browser never receives
+    /// the session cookie the app just issued.
+    ///
+    /// Stored traces are unaffected either way: `redaction.rs` treats `cookie`
+    /// and `set-cookie` as sensitive unconditionally.
+    pub forward_cookies: bool,
     pub timeout_secs: u64,
     pub max_request_body_bytes: usize,
     pub max_response_body_bytes: usize,
@@ -1126,6 +1137,7 @@ fn apply_env_overrides(
     set_env!(parse_bool_env;
         "LLMTRACE_JOURNAL_ENABLED" => config.storage.journal.enabled,
         "LLMTRACE_UI_ENABLED" => config.server.ui_enabled,
+        "LLMTRACE_PROXY_FORWARD_COOKIES" => config.proxy.forward_cookies,
         "LLMTRACE_AUTH_COOKIE_SECURE" => config.auth.cookie_secure,
         "LLMTRACE_LOGIN_RATE_LIMIT_ENABLED" => config.auth.login_rate_limit.enabled,
         "LLMTRACE_OAUTH_ENABLED" => config.auth.oauth.enabled,
@@ -1467,6 +1479,7 @@ impl Default for ProxyConfig {
             path_prefixes: None,
             capture_path_prefixes: None,
             upstream_header: "x-llmtrace-upstream".to_string(),
+            forward_cookies: false,
             timeout_secs: 300,
             max_request_body_bytes: 64 * 1024 * 1024,
             max_response_body_bytes: 64 * 1024 * 1024,
