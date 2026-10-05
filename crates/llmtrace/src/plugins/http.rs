@@ -1,8 +1,11 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use wasmtime::{Caller, Linker, StoreLimits, StoreLimitsBuilder};
+
+use super::cache::PluginCache;
 
 const MAX_REQUEST_BYTES: usize = 16 * 1024;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
@@ -14,10 +17,16 @@ pub(super) struct HostState {
     deadline: Instant,
     calls: usize,
     runtime: Option<tokio::runtime::Handle>,
+    pub cache: Arc<PluginCache>,
 }
 
 impl HostState {
-    pub fn new(client: reqwest::Client, urls: &[url::Url], timeout_ms: u64) -> Self {
+    pub fn new(
+        client: reqwest::Client,
+        urls: &[url::Url],
+        timeout_ms: u64,
+        cache: Arc<PluginCache>,
+    ) -> Self {
         Self {
             limits: StoreLimitsBuilder::new()
                 .memory_size(128 * 1024 * 1024)
@@ -30,6 +39,7 @@ impl HostState {
             deadline: Instant::now() + Duration::from_millis(timeout_ms),
             calls: 0,
             runtime: tokio::runtime::Handle::try_current().ok(),
+            cache,
         }
     }
 }
@@ -166,10 +176,23 @@ mod tests {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
-        let mut store = wasmtime::Store::new(&engine, HostState::new(client, &allowed, timeout_ms));
+        let mut store = wasmtime::Store::new(
+            &engine,
+            HostState::new(
+                client,
+                &allowed,
+                timeout_ms,
+                Arc::new(PluginCache::new(
+                    0,
+                    1,
+                    crate::metrics::RuntimeMetrics::default(),
+                )),
+            ),
+        );
         store.limiter(|state| &mut state.limits);
         let mut linker = Linker::new(&engine);
         register(&mut linker)?;
+        crate::plugins::cache::register(&mut linker)?;
         let instance = linker.instantiate(&mut store, &module)?;
         let run = instance.get_typed_func::<(), i32>(&mut store, "run")?;
         let len = run.call(&mut store, ())?;

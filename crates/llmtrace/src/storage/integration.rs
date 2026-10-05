@@ -6,7 +6,11 @@ use crate::trace::{TraceEvent, build_trace};
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires DATABASE_URL pointing to a local PostgreSQL test server"]
 async fn enterprise_storage_round_trip(pool: PgPool) -> anyhow::Result<()> {
-    let plugins = PluginManager::load(&[])?;
+    let plugins = PluginManager::load(
+        &[],
+        &Default::default(),
+        &crate::metrics::RuntimeMetrics::default(),
+    )?;
     let root = std::env::temp_dir().join(format!("llmtrace-archive-test-{}", Uuid::new_v4()));
     let request_body = serde_json::to_vec(&json!({
         "model":"test-model", "metadata":{"session_id":"conversation"},
@@ -180,7 +184,11 @@ async fn enterprise_proxy_stream_and_admin_access(pool: PgPool) -> anyhow::Resul
             cache_write: None,
         },
     );
-    let plugins = Arc::new(PluginManager::load(&[])?);
+    let plugins = Arc::new(PluginManager::load(
+        &[],
+        &Default::default(),
+        &crate::metrics::RuntimeMetrics::default(),
+    )?);
     let metrics = RuntimeMetrics::default();
     let (recorder, pipeline) = TraceRecorder::spawn(
         pool.clone(),

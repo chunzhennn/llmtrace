@@ -1517,6 +1517,7 @@ mod tests {
                 timeout_ms: 100,
                 http_get_urls: Vec::new(),
             }],
+            plugin_cache: Default::default(),
         };
 
         let summary = config_summary(&config);

@@ -16,7 +16,11 @@ async fn collect_export(export: SessionExport) -> anyhow::Result<Vec<Value>> {
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires DATABASE_URL pointing to a local PostgreSQL test server"]
 async fn session_export_preserves_archives_and_snapshot(pool: PgPool) -> anyhow::Result<()> {
-    let plugins = PluginManager::load(&[])?;
+    let plugins = PluginManager::load(
+        &[],
+        &Default::default(),
+        &crate::metrics::RuntimeMetrics::default(),
+    )?;
     let root = std::env::temp_dir().join(format!("llmtrace-export-test-{}", Uuid::new_v4()));
     let request = serde_json::to_vec(&json!({
         "model": "test-model", "metadata": {"session_id": "export-test"},

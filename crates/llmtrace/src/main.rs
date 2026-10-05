@@ -97,7 +97,10 @@ async fn main() -> anyhow::Result<()> {
         config.archive.clone(),
         runtime_metrics.clone(),
     );
-    let plugins = Arc::new(PluginManager::load(&config.plugins).context("failed to load plugins")?);
+    let plugins = Arc::new(
+        PluginManager::load(&config.plugins, &config.plugin_cache, &runtime_metrics)
+            .context("failed to load plugins")?,
+    );
     let (recorder, pipeline) = TraceRecorder::spawn(
         pool.clone(),
         plugins.clone(),

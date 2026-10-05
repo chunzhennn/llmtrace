@@ -686,7 +686,11 @@ async fn performance_storage_scaling(pool: PgPool) -> anyhow::Result<()> {
         ..Default::default()
     };
     let body = payload(1024);
-    let plugins = crate::plugins::PluginManager::load(&[])?;
+    let plugins = crate::plugins::PluginManager::load(
+        &[],
+        &Default::default(),
+        &crate::metrics::RuntimeMetrics::default(),
+    )?;
     let mut event = crate::trace::TraceEvent::base(Uuid::new_v4(), Utc::now());
     event.original_uri = "/v1/chat/completions".into();
     event.request_body = body.to_vec();

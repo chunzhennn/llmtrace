@@ -92,7 +92,11 @@ async fn litellm_split_listeners_stream_and_isolate_admin(pool: PgPool) -> anyho
     config.archive.storage_backend = ArchiveStorageBackend::Postgres;
     config.storage.journal.enabled = false;
     config.validate()?;
-    let plugins = Arc::new(PluginManager::load(&[])?);
+    let plugins = Arc::new(PluginManager::load(
+        &[],
+        &Default::default(),
+        &crate::metrics::RuntimeMetrics::default(),
+    )?);
     let metrics = RuntimeMetrics::default();
     let (recorder, pipeline) = TraceRecorder::spawn(
         pool.clone(),

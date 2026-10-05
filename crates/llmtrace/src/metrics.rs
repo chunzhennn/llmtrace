@@ -29,6 +29,10 @@ struct RuntimeMetricsInner {
     trace_build_failures: AtomicU64,
     trace_persist_failures: AtomicU64,
     traces_persisted: AtomicU64,
+
+    plugin_cache_hits: AtomicU64,
+    plugin_cache_misses: AtomicU64,
+    plugin_cache_stores: AtomicU64,
     retention: Mutex<RetentionMetrics>,
 }
 
@@ -145,6 +149,22 @@ impl RuntimeMetrics {
         self.inner.traces_persisted.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn plugin_cache_hit(&self) {
+        self.inner.plugin_cache_hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn plugin_cache_miss(&self) {
+        self.inner
+            .plugin_cache_misses
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn plugin_cache_store(&self) {
+        self.inner
+            .plugin_cache_stores
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn retention_succeeded(&self, result: &RetentionPruneResult) {
         let mut retention = self
             .inner
@@ -212,6 +232,13 @@ impl RuntimeMetrics {
                 "ack_failed": self.inner.journal_ack_failed.load(Ordering::Relaxed),
                 "retry": self.inner.journal_retry.load(Ordering::Relaxed),
                 "recovered": self.inner.journal_recovered.load(Ordering::Relaxed),
+            },
+            "plugins": {
+                "cache": {
+                    "hits": self.inner.plugin_cache_hits.load(Ordering::Relaxed),
+                    "misses": self.inner.plugin_cache_misses.load(Ordering::Relaxed),
+                    "stores": self.inner.plugin_cache_stores.load(Ordering::Relaxed),
+                },
             },
             "retention": {
                 "runs": retention.runs,
@@ -420,6 +447,27 @@ impl RuntimeMetrics {
         );
         push_metric(
             &mut output,
+            "counter",
+            "llmtrace_plugin_cache_hits_total",
+            "Plugin cache reads served before the entry expired.",
+            counters.plugin_cache_hits,
+        );
+        push_metric(
+            &mut output,
+            "counter",
+            "llmtrace_plugin_cache_misses_total",
+            "Plugin cache reads that found no live entry.",
+            counters.plugin_cache_misses,
+        );
+        push_metric(
+            &mut output,
+            "counter",
+            "llmtrace_plugin_cache_stores_total",
+            "Values accepted into the plugin cache.",
+            counters.plugin_cache_stores,
+        );
+        push_metric(
+            &mut output,
             "gauge",
             "llmtrace_trace_pipeline_queue_capacity",
             "Configured capacity of the bounded trace pipeline queue.",
@@ -542,6 +590,9 @@ impl RuntimeMetrics {
             trace_build_failures: self.inner.trace_build_failures.load(Ordering::Relaxed),
             trace_persist_failures: self.inner.trace_persist_failures.load(Ordering::Relaxed),
             traces_persisted: self.inner.traces_persisted.load(Ordering::Relaxed),
+            plugin_cache_hits: self.inner.plugin_cache_hits.load(Ordering::Relaxed),
+            plugin_cache_misses: self.inner.plugin_cache_misses.load(Ordering::Relaxed),
+            plugin_cache_stores: self.inner.plugin_cache_stores.load(Ordering::Relaxed),
         }
     }
 
@@ -562,6 +613,9 @@ struct RuntimeCounters {
     trace_build_failures: u64,
     trace_persist_failures: u64,
     traces_persisted: u64,
+    plugin_cache_hits: u64,
+    plugin_cache_misses: u64,
+    plugin_cache_stores: u64,
 }
 
 fn push_metric(output: &mut String, kind: &str, name: &str, help: &str, value: u64) {

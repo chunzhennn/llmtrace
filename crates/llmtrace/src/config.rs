@@ -36,6 +36,8 @@ const MAX_OAUTH_TIMEOUT_SECS: u64 = 300;
 const MAX_PLUGINS: usize = 64;
 const MAX_PLUGIN_NAME_BYTES: usize = 128;
 const MAX_PLUGIN_TIMEOUT_MS: u64 = 30_000;
+const MAX_PLUGIN_CACHE_CAPACITY: usize = 100_000;
+const MAX_PLUGIN_CACHE_TTL_SECS: u64 = 3600;
 const UPSTREAM_ALLOWLIST_SCHEMES: &[&str] = &["http", "https", "ws", "wss"];
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -49,6 +51,7 @@ pub struct Config {
     pub observability: ObservabilityConfig,
     pub redaction: RedactionConfig,
     pub plugins: Vec<PluginConfig>,
+    pub plugin_cache: PluginCacheConfig,
     pub pricing: crate::pricing::PriceTable,
 }
 
@@ -221,6 +224,29 @@ pub struct PluginConfig {
     pub timeout_ms: u64,
     /// Exact GET URLs a plugin may contact; empty disables network access.
     pub http_get_urls: Vec<String>,
+}
+
+/// Process-wide bounded KV store exposed to plugins through the `cache_get`
+/// and `cache_put` WASM imports. Plugins own the caching semantics (keys,
+/// values, per-entry TTL); the host enforces the bounds a plugin cannot:
+/// entry capacity, key/value sizes, and race-free LRU eviction. Keys are
+/// hashed before they rest in memory, so raw credentials passed as keys never
+/// persist. `capacity = 0` disables the store: every `cache_get` misses and
+/// every `cache_put` is rejected, so plugins must treat both as optional.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct PluginCacheConfig {
+    pub capacity: usize,
+    pub ttl_secs: u64,
+}
+
+impl Default for PluginCacheConfig {
+    fn default() -> Self {
+        Self {
+            capacity: 512,
+            ttl_secs: 300,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -469,6 +495,7 @@ impl Config {
         self.validate_observability(&mut errors);
         self.validate_redaction(&mut errors);
         self.validate_plugins(&mut errors);
+        self.validate_plugin_cache(&mut errors);
         for (model, price) in &self.pricing {
             if model.trim().is_empty() || !price.valid() {
                 errors.push(
@@ -1061,6 +1088,23 @@ impl Config {
             }
         }
     }
+
+    fn validate_plugin_cache(&self, errors: &mut Vec<String>) {
+        let cache = &self.plugin_cache;
+        if cache.capacity > MAX_PLUGIN_CACHE_CAPACITY {
+            errors.push(format!(
+                "plugin_cache.capacity must be at most {MAX_PLUGIN_CACHE_CAPACITY}"
+            ));
+        }
+        if cache.capacity > 0 {
+            validate_positive_range(
+                errors,
+                "plugin_cache.ttl_secs",
+                cache.ttl_secs,
+                MAX_PLUGIN_CACHE_TTL_SECS,
+            );
+        }
+    }
 }
 
 fn plugin_hooks_have_duplicates(hooks: &[PluginHook]) -> bool {
@@ -1106,6 +1150,7 @@ fn apply_env_overrides(
         "LLMTRACE_METRICS_BEARER_TOKEN" => config.observability.metrics_bearer_token,
     );
     set_env!(parse_unsigned_env;
+        "LLMTRACE_PLUGIN_CACHE_TTL_SECS" => config.plugin_cache.ttl_secs,
         "LLMTRACE_STORAGE_MAX_CONNECTIONS" => config.storage.max_connections,
         "LLMTRACE_RETENTION_PRUNE_INTERVAL_SECS" => config.storage.retention_prune_interval_secs,
         "LLMTRACE_ROTATE_SIZE_BYTES" => config.storage.rotate_size_bytes,
@@ -1130,6 +1175,7 @@ fn apply_env_overrides(
         "LLMTRACE_OAUTH_TIMEOUT_SECS" => config.auth.oauth.timeout_secs,
     );
     set_env!(parse_integer_env;
+        "LLMTRACE_PLUGIN_CACHE_CAPACITY" => config.plugin_cache.capacity,
         "LLMTRACE_RETENTION_PRUNE_BATCH_SIZE" => config.storage.retention_prune_batch_size,
         "LLMTRACE_ARCHIVE_COMPRESSION_LEVEL" => config.archive.compression_level,
         "LLMTRACE_SESSION_TTL_HOURS" => config.auth.session_ttl_hours,
@@ -2460,6 +2506,37 @@ mod tests {
         assert!(error.contains("plugins[1].hooks must not be empty"));
         assert!(error.contains("plugins[1].timeout_ms must be at most"));
         assert!(error.contains("plugins[2].name must be at most"));
+    }
+
+    #[test]
+    fn plugin_cache_accepts_defaults_and_disabled_state() {
+        assert!(Config::default().validate().is_ok());
+        let mut config = Config::default();
+        config.plugin_cache.capacity = 0;
+        config.plugin_cache.ttl_secs = 0;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn plugin_cache_rejects_out_of_range_values() {
+        let mut config = Config::default();
+        config.plugin_cache.capacity = MAX_PLUGIN_CACHE_CAPACITY + 1;
+        config.plugin_cache.ttl_secs = MAX_PLUGIN_CACHE_TTL_SECS + 1;
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("plugin_cache.capacity must be at most"));
+        assert!(error.contains("plugin_cache.ttl_secs must be at most"));
+    }
+
+    #[test]
+    fn plugin_cache_rejects_zero_ttl_when_enabled() {
+        let mut config = Config::default();
+        config.plugin_cache.ttl_secs = 0;
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("plugin_cache.ttl_secs must be greater than 0"));
     }
 
     #[test]

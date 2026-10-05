@@ -10,7 +10,11 @@ async fn browser_ui_review(pool: PgPool) -> anyhow::Result<()> {
     };
     let directory = PathBuf::from(directory);
     fs::create_dir_all(&directory)?;
-    let plugins = crate::plugins::PluginManager::load(&[])?;
+    let plugins = crate::plugins::PluginManager::load(
+        &[],
+        &Default::default(),
+        &crate::metrics::RuntimeMetrics::default(),
+    )?;
     let archive = ArchiveConfig {
         storage_backend: ArchiveStorageBackend::Postgres,
         ..Default::default()

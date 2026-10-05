@@ -9,7 +9,11 @@ async fn request_and_analytics_reads_preserve_filtering_and_aggregation(
         plugins::PluginManager,
         trace::{TraceEvent, build_trace},
     };
-    let plugins = PluginManager::load(&[])?;
+    let plugins = PluginManager::load(
+        &[],
+        &Default::default(),
+        &crate::metrics::RuntimeMetrics::default(),
+    )?;
     let archive = ArchiveConfig {
         storage_backend: ArchiveStorageBackend::Postgres,
         ..Default::default()

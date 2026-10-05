@@ -62,6 +62,56 @@ Limits per invocation:
 - 128 MiB linear memory, one memory and instance, 100,000 table elements.
 - Existing 64 KiB hook output limit and epoch timeout remain in force.
 
-The host uses the Tokio runtime from the blocking trace worker; it does not block a live proxy handler. Each invocation receives a fresh instance. There is no shared identity cache or retry queue yet. Prefer a request-start-only lookup hook, give network lookups a realistic timeout, and monitor trace queue/persistence metrics. These permissions allow a trusted plugin to transmit captured credentials to the configured endpoint, so review the plugin and its exact URLs together.
+The host uses the Tokio runtime from the blocking trace worker; it does not block a live proxy handler. Each invocation receives a fresh instance. Prefer a request-start-only lookup hook, give network lookups a realistic timeout, and monitor trace queue/persistence metrics. These permissions allow a trusted plugin to transmit captured credentials to the configured endpoint, so review the plugin and its exact URLs together.
+
+## Shared plugin KV cache
+
+Plugins get a fresh WASM instance per invocation and cannot keep state, so the host also offers a process-wide bounded KV store through two additional imports (module `llmtrace`):
+
+```c
+// Both buffers below belong to the plugin's exported linear memory.
+// Returns the bytes written, 0 for a miss, and -1 for a rejected call.
+int32_t cache_get(int32_t key_ptr, int32_t key_len, int32_t output_ptr, int32_t output_capacity);
+// Returns 0 when accepted, and -1 for a rejected call.
+int32_t cache_put(int32_t key_ptr, int32_t key_len, int32_t value_ptr, int32_t value_len, int32_t ttl_secs);
+```
+
+The division of labor is deliberate: the plugin owns the caching semantics — what to key on, what to store, how fresh it must be (`ttl_secs = 0` uses the configured default) — while the host enforces the bounds a plugin cannot uphold itself: at most 256-byte keys and 16 KiB values, a per-entry TTL capped at 3600 seconds, a bounded entry count, and race-free least-recently-used eviction across the concurrent trace workers (a plugin-side order ledger would need read-modify-write cycles the workers race on). Keys are opaque bytes hashed before they rest in memory, so a plugin that passes a raw credential as a key still never leaves the secret in cache structures — but prefer hashing in the plugin anyway so the digest doubles as a stable identifier.
+
+Treat both calls as optional optimizations: with `plugin_cache.capacity = 0` every `cache_get` misses and every `cache_put` is rejected, so caching must never be load-bearing for correctness.
+
+```toml
+[plugin_cache]
+capacity = 512  # entries; 0 disables the store and its metrics
+ttl_secs = 300  # default TTL for cache_put calls passing 0
+```
+
+Environment overrides: `LLMTRACE_PLUGIN_CACHE_CAPACITY` and `LLMTRACE_PLUGIN_CACHE_TTL_SECS`. Capacity is capped at 100000 entries and the default TTL at 3600 seconds. Size capacity for the distinct keys active within one TTL window; values are capped at 16 KiB, so the default bounds memory to a few MiB. Hit, miss, and store counters are exported as `llmtrace_plugin_cache_hits_total`, `llmtrace_plugin_cache_misses_total`, and `llmtrace_plugin_cache_stores_total` on `/metrics`, and in the `/api/metrics` JSON under `plugins.cache`.
+
+## Bundled LiteLLM identity plugin
+
+`crates/litellm-user-plugin` builds the reference plugin for a LiteLLM upstream. It reads the caller's credential from the unredacted request headers (`authorization`, `x-api-key` or `api-key`) and resolves it through the gateway's self-service endpoints, which accept the key itself and need no master key:
+
+- `GET {origin}/key/info` — returns `user_id`, `team_id`, `org_id`, `key_alias` for the calling key.
+- `GET {origin}/user/info` — returns `user_email`, `user_alias`, `user_role`, `teams` for the calling key's user.
+
+The origin is derived from the trace's `upstream_url`, so one binary serves any deployment; pin both URLs in `http_get_urls`. Output populates `user_id`/`user_name` plus `custom_fields` (`key_alias`, `team_id`, `org_id`, `user_email`, `user_alias`, `user_role`, `teams`, `litellm_key_hash`, `identity_source`). `litellm_key_hash` is the SHA-256 of the bare key — the same digest LiteLLM stores in `LiteLLM_VerificationToken.token` — so traces can be joined against LiteLLM tables offline without persisting the raw credential. Team or service keys without a user get the `litellm_key_without_user` tag; failed lookups get `litellm_identity_lookup_failed` plus a warning; the plugin never fabricates an identity and never sets `session_key`.
+
+The plugin is also the reference consumer of the KV cache: it keys on `litellm_key_hash` and stores a compact identity document (< 1 KiB), so a hit skips both gateway calls entirely. Fully resolved identities — including team keys without a user — are cached for one hour: the primary attribution (`user_id`, `user_email`) is effectively immutable per key, while an expiring entry still picks up drifting secondary fields (a key's reassigned `team_id`, SSO-synced `teams`/`user_role`). Failed or partial resolutions are never cached and retry on the next trace; a hit emits output identical to a fresh resolution.
+
+```sh
+cargo build -p litellm-user-plugin --target wasm32-unknown-unknown --release
+```
+
+```toml
+[[plugins]]
+name = "litellm-user"
+wasm_path = "target/wasm32-unknown-unknown/release/litellm_user_plugin.wasm"
+hooks = ["on_request_start"]
+timeout_ms = 5000
+http_get_urls = ["http://litellm:4000/key/info", "http://litellm:4000/user/info"]
+```
+
+The test `plugins::tests::litellm_user_plugin_resolves_identity_and_caches_in_the_plugin_kv` loads the built module through the real host, resolves identity against a mock gateway, and verifies the second invocation is served from the plugin KV cache with no additional gateway requests.
 
 The test `plugins::http::tests::http_host_looks_up_identity_without_following_redirects_and_times_out` exercises a real local HTTP server through the WASM import. The actual enterprise identity schema still needs to be supplied and implemented by the deployment's plugin.

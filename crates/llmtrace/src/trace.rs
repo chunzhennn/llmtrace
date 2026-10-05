@@ -724,7 +724,12 @@ mod tests {
     #[test]
     fn session_scope_is_independent_of_header_hash_storage() {
         use axum::http::{HeaderMap, HeaderValue};
-        let plugins = PluginManager::load(&[]).unwrap();
+        let plugins = PluginManager::load(
+            &[],
+            &Default::default(),
+            &crate::metrics::RuntimeMetrics::default(),
+        )
+        .unwrap();
         let capture = |credential: &'static str, store_hash: bool, legacy: bool| {
             let mut headers = HeaderMap::new();
             headers.insert("authorization", HeaderValue::from_static(credential));
@@ -813,7 +818,12 @@ mod tests {
 
     #[test]
     fn first_output_timing_uses_the_chunk_containing_the_complete_event() {
-        let plugins = PluginManager::load(&[]).unwrap();
+        let plugins = PluginManager::load(
+            &[],
+            &Default::default(),
+            &crate::metrics::RuntimeMetrics::default(),
+        )
+        .unwrap();
         let mut event = TraceEvent::base(Uuid::new_v4(), Utc::now());
         event.original_uri = "/v1/chat/completions".into();
         event.response_body = b"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n".to_vec();
@@ -850,7 +860,12 @@ mod tests {
 
     #[test]
     fn missing_stream_terminator_is_an_error_only_when_capture_is_complete() {
-        let plugins = PluginManager::load(&[]).unwrap();
+        let plugins = PluginManager::load(
+            &[],
+            &Default::default(),
+            &crate::metrics::RuntimeMetrics::default(),
+        )
+        .unwrap();
         for truncated in [false, true] {
             let mut event = TraceEvent::base(Uuid::new_v4(), Utc::now());
             event.original_uri = "/v1/responses".into();
@@ -1024,7 +1039,12 @@ mod tests {
 
     #[test]
     fn build_trace_redacts_uri_query_values_before_persistence() {
-        let plugins = PluginManager::load(&[]).unwrap();
+        let plugins = PluginManager::load(
+            &[],
+            &Default::default(),
+            &crate::metrics::RuntimeMetrics::default(),
+        )
+        .unwrap();
         let mut event = TraceEvent::base(Uuid::new_v4(), Utc::now());
         event.method = "GET".to_string();
         event.original_uri = "/v1/messages?api_key=sk-secret&debug=true".to_string();

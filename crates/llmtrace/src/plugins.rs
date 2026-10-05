@@ -8,9 +8,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use wasmtime::{Config, Engine, Linker, Module, Store};
 
+mod cache;
 mod http;
 
-use crate::config::PluginConfig;
+use crate::config::{PluginCacheConfig, PluginConfig};
+use crate::metrics::RuntimeMetrics;
 use crate::types::PluginHook;
 
 /// Wall-clock granularity of the epoch ticker that enforces plugin timeouts.
@@ -67,6 +69,7 @@ pub struct PluginManager {
     statuses: Vec<PluginStatus>,
     _ticker: Option<EpochTicker>,
     http: reqwest::Client,
+    cache: Arc<cache::PluginCache>,
 }
 
 struct WasmPlugin {
@@ -80,7 +83,11 @@ struct WasmPlugin {
 }
 
 impl PluginManager {
-    pub fn load(configs: &[PluginConfig]) -> anyhow::Result<Self> {
+    pub fn load(
+        configs: &[PluginConfig],
+        cache_config: &PluginCacheConfig,
+        metrics: &RuntimeMetrics,
+    ) -> anyhow::Result<Self> {
         let engine = Engine::new(Config::new().epoch_interruption(true))?;
         let mut plugins = Vec::new();
         let mut statuses = Vec::new();
@@ -140,6 +147,11 @@ impl PluginManager {
             http: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
+            cache: Arc::new(cache::PluginCache::new(
+                cache_config.capacity,
+                cache_config.ttl_secs,
+                metrics.clone(),
+            )),
         })
     }
 
@@ -159,7 +171,7 @@ impl PluginManager {
             if !plugin.hooks.contains(&hook) {
                 continue;
             }
-            match plugin.invoke(&self.engine, &self.http, &input) {
+            match plugin.invoke(&self.engine, &self.http, &self.cache, &input) {
                 Ok(Some(output)) => effects.merge(plugin.name.as_str(), output),
                 Ok(None) => {}
                 Err(error) => effects.warnings.push(format!(
@@ -200,18 +212,25 @@ impl WasmPlugin {
         &self,
         engine: &Engine,
         http: &reqwest::Client,
+        cache: &Arc<cache::PluginCache>,
         input: &HookInput,
     ) -> anyhow::Result<Option<HookOutput>> {
         let export_name = format!("llmtrace_{}", input.hook.as_str());
         let mut store = Store::new(
             engine,
-            http::HostState::new(http.clone(), &self.http_get_urls, self.timeout_ms),
+            http::HostState::new(
+                http.clone(),
+                &self.http_get_urls,
+                self.timeout_ms,
+                cache.clone(),
+            ),
         );
         store.limiter(|state| &mut state.limits);
         store.set_epoch_deadline(self.epoch_deadline);
 
         let mut linker = Linker::new(engine);
         http::register(&mut linker)?;
+        cache::register(&mut linker)?;
         let instance = linker.instantiate(&mut store, &self.module)?;
         let Some(func) = instance.get_func(&mut store, &export_name) else {
             return Ok(None);
@@ -383,5 +402,142 @@ mod tests {
 
     fn pack_output(ptr: i32, len: i32) -> i64 {
         ((ptr as i64) << 32) | (len as u32 as i64)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the built plugin wasm and permission to bind a local HTTP test server; build with: cargo build -p litellm-user-plugin --target wasm32-unknown-unknown --release"]
+    async fn litellm_user_plugin_resolves_identity_and_caches_in_the_plugin_kv()
+    -> anyhow::Result<()> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use axum::{Router, http::HeaderMap, routing::get};
+
+        let key_lookups = Arc::new(AtomicUsize::new(0));
+        let user_lookups = Arc::new(AtomicUsize::new(0));
+        let key_counter = key_lookups.clone();
+        let user_counter = user_lookups.clone();
+        let app = Router::new()
+            .route(
+                "/key/info",
+                get(move |headers: HeaderMap| async move {
+                    assert_eq!(headers["authorization"], "Bearer sk-test-1234");
+                    key_counter.fetch_add(1, Ordering::SeqCst);
+                    axum::Json(json!({
+                        "key": "sk-test-1234",
+                        "info": {
+                            "key_alias": "laptop",
+                            "team_id": "team-7",
+                            "user_id": "authentik-sub-42",
+                        }
+                    }))
+                }),
+            )
+            .route(
+                "/user/info",
+                get(move |headers: HeaderMap| async move {
+                    assert_eq!(headers["authorization"], "Bearer sk-test-1234");
+                    user_counter.fetch_add(1, Ordering::SeqCst);
+                    axum::Json(json!({
+                        "user_id": "authentik-sub-42",
+                        "user_info": {
+                            "user_id": "authentik-sub-42",
+                            "user_email": "alice@example.com",
+                            "user_role": "internal_user",
+                            "teams": ["team-7"],
+                        },
+                        "keys": [],
+                        "teams": [],
+                    }))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let wasm_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/wasm32-unknown-unknown/release/litellm_user_plugin.wasm");
+        let config = crate::config::PluginConfig {
+            name: "litellm-user".to_string(),
+            wasm_path,
+            hooks: vec![crate::types::PluginHook::RequestStart],
+            timeout_ms: 5_000,
+            http_get_urls: vec![
+                format!("http://{address}/key/info"),
+                format!("http://{address}/user/info"),
+            ],
+        };
+        let metrics = crate::metrics::RuntimeMetrics::default();
+        let manager = Arc::new(PluginManager::load(
+            &[config],
+            &Default::default(),
+            &metrics,
+        )?);
+        anyhow::ensure!(
+            manager.statuses().iter().all(|status| status.loaded),
+            "plugin wasm failed to load; was it built for wasm32-unknown-unknown?"
+        );
+
+        let hook_input = HookInput {
+            hook: crate::types::PluginHook::RequestStart,
+            trace_id: "0b7b8f8e-1111-4222-8333-444455556666".to_string(),
+            method: "POST".to_string(),
+            uri: "/v1/chat/completions".to_string(),
+            upstream_url: format!("http://{address}/v1/chat/completions"),
+            headers: json!({"authorization": "Bearer sk-test-1234"}),
+            body_utf8: None,
+        };
+        let effects = {
+            let manager = manager.clone();
+            let hook_input = hook_input.clone();
+            tokio::task::spawn_blocking(move || {
+                manager.run_hook(crate::types::PluginHook::RequestStart, hook_input)
+            })
+            .await?
+        };
+
+        assert!(
+            effects.warnings.is_empty(),
+            "warnings: {:?}",
+            effects.warnings
+        );
+        assert_eq!(effects.user_id.as_deref(), Some("authentik-sub-42"));
+        assert_eq!(effects.user_name.as_deref(), Some("alice@example.com"));
+        assert_eq!(effects.metadata["litellm-user"]["key_alias"], "laptop");
+        assert_eq!(effects.metadata["litellm-user"]["team_id"], "team-7");
+        assert_eq!(
+            effects.metadata["litellm-user"]["user_email"],
+            "alice@example.com"
+        );
+        assert_eq!(effects.session_key, None);
+        assert_eq!(key_lookups.load(Ordering::SeqCst), 1);
+        assert_eq!(user_lookups.load(Ordering::SeqCst), 1);
+
+        // Same credential again: the plugin must serve the cached identity
+        // document through cache_get without touching the gateway.
+        let effects = {
+            let manager = manager.clone();
+            tokio::task::spawn_blocking(move || {
+                manager.run_hook(crate::types::PluginHook::RequestStart, hook_input)
+            })
+            .await?
+        };
+        assert_eq!(effects.user_id.as_deref(), Some("authentik-sub-42"));
+        assert_eq!(effects.user_name.as_deref(), Some("alice@example.com"));
+        assert_eq!(
+            key_lookups.load(Ordering::SeqCst),
+            1,
+            "key info came from the cache"
+        );
+        assert_eq!(
+            user_lookups.load(Ordering::SeqCst),
+            1,
+            "user info came from the cache"
+        );
+        let snapshot = metrics.snapshot(crate::metrics::TraceQueueMetrics::default());
+        assert_eq!(snapshot["plugins"]["cache"]["stores"], 1);
+        assert_eq!(snapshot["plugins"]["cache"]["hits"], 1);
+
+        server.abort();
+        Ok(())
     }
 }

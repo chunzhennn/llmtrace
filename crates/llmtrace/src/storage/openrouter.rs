@@ -121,7 +121,11 @@ async fn openrouter_live(pool: PgPool) -> anyhow::Result<()> {
         timeout_ms: 5000,
         http_get_urls: vec!["https://openrouter.ai/api/v1/key".into()],
     });
-    let loaded = crate::plugins::PluginManager::load(&config.plugins)?;
+    let loaded = crate::plugins::PluginManager::load(
+        &config.plugins,
+        &Default::default(),
+        &crate::metrics::RuntimeMetrics::default(),
+    )?;
     ensure!(
         loaded.statuses().iter().all(|p| p.loaded),
         "identity test plugin failed to compile"

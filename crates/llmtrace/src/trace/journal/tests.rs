@@ -238,7 +238,11 @@ async fn journal_process_helper() -> anyhow::Result<()> {
     journal.append(&capture)?;
     if std::env::var("LLMTRACE_TEST_CRASH_STAGE")?.as_str() == "committed" {
         let pool = sqlx::PgPool::connect(&url).await?;
-        let plugins = crate::plugins::PluginManager::load(&[])?;
+        let plugins = crate::plugins::PluginManager::load(
+            &[],
+            &Default::default(),
+            &crate::metrics::RuntimeMetrics::default(),
+        )?;
         let built = crate::trace::build_trace(capture, &plugins)?;
         let archive = crate::config::ArchiveConfig {
             storage_backend: crate::config::ArchiveStorageBackend::Postgres,
@@ -348,7 +352,11 @@ async fn journal_replays_after_kill_and_does_not_resurrect_rotated_commits(
                 .execute(&pool)
                 .await?;
         }
-        let plugins = Arc::new(crate::plugins::PluginManager::load(&[])?);
+        let plugins = Arc::new(crate::plugins::PluginManager::load(
+            &[],
+            &Default::default(),
+            &crate::metrics::RuntimeMetrics::default(),
+        )?);
         let metrics = crate::metrics::RuntimeMetrics::default();
         let archive = crate::config::ArchiveConfig {
             storage_backend: crate::config::ArchiveStorageBackend::Postgres,
@@ -416,7 +424,11 @@ async fn journal_keeps_capturing_during_database_failure_and_retries(
         .execute(&mut *blocker)
         .await?;
     let metrics = crate::metrics::RuntimeMetrics::default();
-    let plugins = Arc::new(crate::plugins::PluginManager::load(&[])?);
+    let plugins = Arc::new(crate::plugins::PluginManager::load(
+        &[],
+        &Default::default(),
+        &crate::metrics::RuntimeMetrics::default(),
+    )?);
     let archive = crate::config::ArchiveConfig {
         storage_backend: crate::config::ArchiveStorageBackend::Postgres,
         ..Default::default()
@@ -481,7 +493,11 @@ async fn journal_receipt_makes_concurrent_replay_idempotent(
         br#"{"choices":[{"message":{"role":"assistant","content":"hello"}}]}"#.to_vec();
     capture.response_body_bytes = capture.response_body.len() as i64;
     journal.append(&capture)?;
-    let plugins = crate::plugins::PluginManager::load(&[])?;
+    let plugins = crate::plugins::PluginManager::load(
+        &[],
+        &Default::default(),
+        &crate::metrics::RuntimeMetrics::default(),
+    )?;
     let archive = crate::config::ArchiveConfig {
         storage_backend: crate::config::ArchiveStorageBackend::Postgres,
         ..Default::default()
@@ -513,7 +529,11 @@ async fn journal_retry_reuses_files_after_database_transaction_rollback(
     capture.request_body = br#"{"messages":[{"role":"user","content":"hello"}]}"#.to_vec();
     capture.request_body_bytes = capture.request_body.len() as i64;
     journal.append(&capture)?;
-    let plugins = crate::plugins::PluginManager::load(&[])?;
+    let plugins = crate::plugins::PluginManager::load(
+        &[],
+        &Default::default(),
+        &crate::metrics::RuntimeMetrics::default(),
+    )?;
     let archive = crate::config::ArchiveConfig {
         storage_backend: crate::config::ArchiveStorageBackend::Filesystem,
         filesystem_root: archive_fixture.0.clone(),
@@ -595,7 +615,11 @@ async fn journal_proxy_reports_complete_and_interrupted_payloads(
     };
     config.proxy.default_upstream = upstream_url;
     config.archive.storage_backend = crate::config::ArchiveStorageBackend::Postgres;
-    let plugins = Arc::new(crate::plugins::PluginManager::load(&[])?);
+    let plugins = Arc::new(crate::plugins::PluginManager::load(
+        &[],
+        &Default::default(),
+        &crate::metrics::RuntimeMetrics::default(),
+    )?);
     let metrics = crate::metrics::RuntimeMetrics::default();
     let (recorder, pipeline) = crate::trace::TraceRecorder::spawn(
         pool.clone(),
@@ -705,7 +729,11 @@ async fn journal_quarantines_corruption_and_reports_full_without_stopping_replay
     let metrics = crate::metrics::RuntimeMetrics::default();
     let (recorder, pipeline) = crate::trace::TraceRecorder::spawn(
         pool.clone(),
-        Arc::new(crate::plugins::PluginManager::load(&[])?),
+        Arc::new(crate::plugins::PluginManager::load(
+            &[],
+            &Default::default(),
+            &crate::metrics::RuntimeMetrics::default(),
+        )?),
         crate::config::ArchiveConfig {
             storage_backend: crate::config::ArchiveStorageBackend::Postgres,
             ..Default::default()

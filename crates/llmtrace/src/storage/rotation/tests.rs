@@ -17,7 +17,14 @@ async fn capture(pool: &PgPool, archive: &ArchiveConfig, offset: i64) -> anyhow:
         br#"{"choices":[{"message":{"role":"assistant","content":"hello back"}}]}"#.to_vec();
     event.request_body_bytes = event.request_body.len() as i64;
     event.response_body_bytes = event.response_body.len() as i64;
-    let (trace, messages, user_id, user_name) = build_trace(event, &PluginManager::load(&[])?)?;
+    let (trace, messages, user_id, user_name) = build_trace(
+        event,
+        &PluginManager::load(
+            &[],
+            &Default::default(),
+            &crate::metrics::RuntimeMetrics::default(),
+        )?,
+    )?;
     insert_trace(pool, archive, trace, messages, user_id, user_name).await?;
     Ok(id)
 }
