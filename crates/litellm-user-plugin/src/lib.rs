@@ -591,7 +591,8 @@ mod tests {
             body: json!({
                 "key": "sk-1234",
                 "info": {
-                    "token": "5f2b29b5c8f1f7e4a9d0c3b6e8f1a4d7c2e5b8a1f4d7c0e3b6a9d2c5e8f1b4a7",
+                    // LiteLLM pops the hashed token before responding, so a
+                    // faithful fixture carries no token field at all.
                     "key_alias": "laptop",
                     "team_id": "team-7",
                     "org_id": null,

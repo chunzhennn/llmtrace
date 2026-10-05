@@ -29,6 +29,12 @@ excludes only these exact values, constrained to the README and matching rules;
 it does not exclude entire commits, source directories or tests. Other checked
 credentials were explicit local-development defaults or synthetic test values.
 
+A fourth exclusion covers one synthetic 64-hex-character placeholder that a
+`litellm-user` plugin unit-test fixture used to stand in for LiteLLM's hashed
+token column. It is not a credential, and the fixture no longer includes a
+token field (LiteLLM pops it before responding); the exclusion documents the
+value already present in pushed history, constrained to that file and rule.
+
 Verify CI now scans full history on branch pushes and pull requests. Release
 builds depend on that scan. Logs redact any detected value. The scanner binary
 version and checksum are pinned; no external scanning service receives source
