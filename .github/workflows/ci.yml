@@ -83,6 +83,10 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Build litellm-user plugin wasm for the embedded end-to-end test
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo build --locked -p litellm-user-plugin --target wasm32-unknown-unknown --release
       - name: Functional, database, and process crash tests
         run: cargo test --workspace --locked -- --include-ignored --skip performance_ --skip journal_process_helper --skip openrouter_live
       - name: Apply embedded migrations
