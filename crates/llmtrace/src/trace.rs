@@ -505,7 +505,11 @@ pub(crate) fn build_trace(
             incomplete_stream.then(|| "upstream stream ended without a terminal event".to_string())
         }),
         request_kind: event.request_kind.unwrap_or(parsed.request_kind),
-        model: event.model.or(parsed.model),
+        model: event
+            .model
+            .or(parsed.model)
+            .map(|model| strip_nul_bytes_owned(model).0)
+            .filter(|model| !model.is_empty()),
         api_key_hash: event.api_key_hash,
         session_key,
         session_id: None,
@@ -527,7 +531,11 @@ pub(crate) fn build_trace(
         request_body_truncated: event.request_body_truncated,
         response_body_truncated: event.response_body_truncated,
         content_type: event.content_type,
-        plugin_metadata: Value::Object(metadata),
+        plugin_metadata: {
+            let mut metadata = Value::Object(metadata);
+            strip_nul_bytes_from_value(&mut metadata);
+            metadata
+        },
         tags,
     };
 
@@ -573,11 +581,57 @@ fn bound_optional_text(value: Option<String>, max_bytes: usize) -> (Option<Strin
     let Some(value) = value else {
         return (None, false);
     };
+    // Postgres text cannot hold NUL bytes, and JSON `\u0000` escapes decode
+    // into them legally, so plugin-derived identity must be stripped before
+    // it reaches a bind parameter. Stripping counts as modification so the
+    // trace is tagged like a truncation.
+    let (value, modified) = strip_nul_bytes_owned(value);
     if value.is_empty() {
-        return (None, false);
+        return (None, modified);
     }
     let (value, truncated) = truncate_utf8_owned(value, max_bytes);
-    (Some(value), truncated)
+    (Some(value), modified || truncated)
+}
+
+/// Removes NUL characters so the value can be bound to Postgres text (and,
+/// after JSON escaping, survive the jsonb parser, which rejects `\u0000`).
+fn strip_nul_bytes_owned(value: String) -> (String, bool) {
+    if !value.contains('\0') {
+        return (value, false);
+    }
+    (value.replace('\0', ""), true)
+}
+
+/// Strips NUL characters from every string in a plugin metadata tree, object
+/// keys included: the jsonb parser rejects `\u0000` escapes wherever they
+/// appear, so a poisoned key or nested value would otherwise fail persistence.
+fn strip_nul_bytes_from_value(value: &mut Value) {
+    match value {
+        Value::String(text) => {
+            if text.contains('\0') {
+                *text = text.replace('\0', "");
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                strip_nul_bytes_from_value(item);
+            }
+        }
+        Value::Object(map) => {
+            let cleaned: Map<String, Value> = std::mem::take(map)
+                .into_iter()
+                .map(|(mut key, mut item)| {
+                    strip_nul_bytes_from_value(&mut item);
+                    if key.contains('\0') {
+                        key = key.replace('\0', "");
+                    }
+                    (key, item)
+                })
+                .collect();
+            *map = cleaned;
+        }
+        _ => {}
+    }
 }
 
 fn bound_trace_tags(
@@ -592,8 +646,13 @@ fn bound_trace_tags(
         if tag.is_empty() {
             continue;
         }
+        let (tag, tag_stripped) = strip_nul_bytes_owned(tag);
+        if tag.is_empty() {
+            tags_truncated |= tag_stripped;
+            continue;
+        }
         let (tag, tag_truncated) = truncate_utf8_owned(tag, MAX_TRACE_TAG_BYTES);
-        tags_truncated |= tag_truncated;
+        tags_truncated |= tag_stripped || tag_truncated;
         if !normalized.contains(&tag) {
             normalized.push(tag);
         }
@@ -916,6 +975,41 @@ mod tests {
         let user_name = user_name.unwrap();
         assert_eq!(user_name.len(), MAX_TRACE_IDENTITY_BYTES - 1);
         assert!(user_name.is_char_boundary(user_name.len()));
+    }
+
+    #[test]
+    fn identity_fields_tags_model_and_metadata_lose_nul_bytes() {
+        // Postgres text rejects 0x00 and jsonb rejects \u0000, so a plugin
+        // returning JSON `\u0000` escapes must not poison persistence.
+        let (session_key, user_id, user_name, truncated) = bound_trace_identity_fields(
+            Some("sess\0ion".to_string()),
+            Some("user\0\0id".to_string()),
+            Some("name\0".to_string()),
+        );
+        assert_eq!(session_key.as_deref(), Some("session"));
+        assert_eq!(user_id.as_deref(), Some("userid"));
+        assert_eq!(user_name.as_deref(), Some("name"));
+        assert!(truncated, "stripping counts as a modification");
+
+        let (nul_only, truncated) = bound_optional_text(Some("\0".to_string()), 16);
+        assert!(nul_only.is_none());
+        assert!(truncated);
+
+        let tags = bound_trace_tags(vec!["ta\0g".to_string(), "\0".to_string()], false, false);
+        assert_eq!(tags, vec!["tag", TRACE_ENRICHMENT_TRUNCATED_TAG]);
+
+        let mut metadata = json!({
+            "litellm-user": {
+                "user_email": "alice\0@example.com",
+                "nested": {"bad\0key": ["arr\0ay", 7, null]},
+            }
+        });
+        strip_nul_bytes_from_value(&mut metadata);
+        assert_eq!(metadata["litellm-user"]["user_email"], "alice@example.com");
+        assert_eq!(
+            metadata["litellm-user"]["nested"]["badkey"],
+            json!(["array", 7, null])
+        );
     }
 
     #[test]

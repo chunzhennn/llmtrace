@@ -2,6 +2,61 @@ use super::*;
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires local PostgreSQL"]
+async fn traces_with_json_nul_escapes_persist_instead_of_poisoning_the_journal(
+    pool: PgPool,
+) -> anyhow::Result<()> {
+    use crate::{
+        plugins::PluginManager,
+        trace::{TraceEvent, build_trace},
+    };
+    let plugins = PluginManager::load(
+        &[],
+        &Default::default(),
+        &crate::metrics::RuntimeMetrics::default(),
+    )?;
+    let archive = ArchiveConfig {
+        storage_backend: ArchiveStorageBackend::Postgres,
+        ..Default::default()
+    };
+
+    // A plugin returning `\u0000` escapes (legal JSON) used to fail the
+    // insert with: invalid byte sequence for encoding "UTF8": 0x00.
+    let mut event = TraceEvent::base(Uuid::from_u128(42), Utc::now());
+    event.original_uri = "/v1/chat/completions".into();
+    event.upstream_url = "https://litellm.example/v1/chat/completions".into();
+    event.upstream_host = Some("litellm.example".into());
+    event.user_id = Some("user\u{0}id".into());
+    event.user_name = Some("name\u{0}".into());
+    event.status = Some(200);
+    event.duration_ms = Some(5);
+    event.model = Some("glm-5.3\u{0}".into());
+    event.request_body =
+        br#"{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}]}"#.to_vec();
+    event.response_body =
+        br#"{"choices":[{"message":{"role":"assistant","content":"hi"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#
+            .to_vec();
+    event.request_body_bytes = event.request_body.len() as i64;
+    event.response_body_bytes = event.response_body.len() as i64;
+    event.plugin_metadata = json!({
+        "litellm-user": {"user_email": "alice\u{0}@example.com", "bad\u{0}key": "va\u{0}lue"}
+    });
+    event.tags = vec!["poi\u{0}son".into()];
+
+    let (trace, messages, uid, name) = build_trace(event, &plugins)?;
+    assert_eq!(uid.as_deref(), Some("userid"));
+    assert_eq!(name.as_deref(), Some("name"));
+    assert_eq!(trace.model.as_deref(), Some("glm-5.3"));
+    assert_eq!(
+        trace.plugin_metadata["litellm-user"]["user_email"],
+        "alice@example.com"
+    );
+    assert_eq!(trace.plugin_metadata["litellm-user"]["badkey"], "value");
+    insert_trace(&pool, &archive, trace, messages, uid, name).await?;
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires local PostgreSQL"]
 async fn request_and_analytics_reads_preserve_filtering_and_aggregation(
     pool: PgPool,
 ) -> anyhow::Result<()> {
