@@ -10,22 +10,67 @@ use super::cache::PluginCache;
 const MAX_REQUEST_BYTES: usize = 16 * 1024;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
+/// One allowlisted lookup destination. Plain entries match the full URL
+/// exactly, query included. An entry configured with a trailing `?*` keeps
+/// scheme/host/port/path exact but accepts any query string, which per-request
+/// lookups such as `/key/info?key=<hash>` require.
+#[derive(Debug, Clone)]
+pub(super) struct AllowedUrl {
+    url: url::Url,
+    any_query: bool,
+}
+
+impl AllowedUrl {
+    pub fn parse(entry: &str) -> anyhow::Result<Self> {
+        match entry.strip_suffix("?*") {
+            Some(base) => {
+                let mut url = url::Url::parse(base)?;
+                if url.query().is_some() {
+                    anyhow::bail!("wildcard entries must not carry their own query");
+                }
+                url.set_query(None);
+                Ok(Self {
+                    url,
+                    any_query: true,
+                })
+            }
+            None => Ok(Self {
+                url: url::Url::parse(entry)?,
+                any_query: false,
+            }),
+        }
+    }
+
+    fn allows(&self, candidate: &url::Url) -> bool {
+        if !self.any_query {
+            return self.url == *candidate;
+        }
+        let mut stripped = candidate.clone();
+        stripped.set_query(None);
+        stripped == self.url
+    }
+}
+
 pub(super) struct HostState {
     pub limits: StoreLimits,
     client: reqwest::Client,
-    urls: Vec<url::Url>,
+    urls: Vec<AllowedUrl>,
     deadline: Instant,
     calls: usize,
     runtime: Option<tokio::runtime::Handle>,
     pub cache: Arc<PluginCache>,
+    /// Injected into every `http_get` from this plugin, overriding any
+    /// same-named header the plugin supplies itself.
+    pub http_auth: Option<(String, String)>,
 }
 
 impl HostState {
     pub fn new(
         client: reqwest::Client,
-        urls: &[url::Url],
+        urls: &[AllowedUrl],
         timeout_ms: u64,
         cache: Arc<PluginCache>,
+        http_auth: Option<(String, String)>,
     ) -> Self {
         Self {
             limits: StoreLimitsBuilder::new()
@@ -40,6 +85,7 @@ impl HostState {
             calls: 0,
             runtime: tokio::runtime::Handle::try_current().ok(),
             cache,
+            http_auth,
         }
     }
 }
@@ -90,7 +136,12 @@ fn http_get(
     memory.read(&*caller, ptr as usize, &mut request)?;
     let request: HttpGet = serde_json::from_slice(&request)?;
     let url = url::Url::parse(&request.url)?;
-    if !caller.data().urls.contains(&url) {
+    if !caller
+        .data()
+        .urls
+        .iter()
+        .any(|allowed| allowed.allows(&url))
+    {
         anyhow::bail!("URL is not explicitly allowed");
     }
     // Validate the output range before performing external I/O.
@@ -100,6 +151,11 @@ fn http_get(
     {
         anyhow::bail!("invalid output range");
     }
+    let injected_auth = caller
+        .data()
+        .http_auth
+        .as_ref()
+        .map(|(name, value)| (name.to_ascii_lowercase(), name.clone(), value.clone()));
     let mut builder = caller.data().client.get(url);
     for (name, value) in request.headers {
         if matches!(
@@ -108,6 +164,20 @@ fn http_get(
         ) {
             anyhow::bail!("unsupported HTTP lookup header");
         }
+        if injected_auth
+            .as_ref()
+            .is_some_and(|(lower, _, _)| *lower == name.to_ascii_lowercase())
+        {
+            // The host's service credential wins over a plugin-supplied
+            // same-named header.
+            continue;
+        }
+        builder = builder.header(
+            reqwest::header::HeaderName::from_bytes(name.as_bytes())?,
+            reqwest::header::HeaderValue::from_str(&value)?,
+        );
+    }
+    if let Some((_, name, value)) = injected_auth {
         builder = builder.header(
             reqwest::header::HeaderName::from_bytes(name.as_bytes())?,
             reqwest::header::HeaderValue::from_str(&value)?,
@@ -154,9 +224,13 @@ mod tests {
 
     fn lookup(
         request: Value,
-        allowed: Vec<url::Url>,
+        allowed: Vec<&str>,
         timeout_ms: u64,
     ) -> anyhow::Result<Option<Value>> {
+        let allowed: Vec<AllowedUrl> = allowed
+            .iter()
+            .map(|entry| AllowedUrl::parse(entry))
+            .collect::<Result<_, _>>()?;
         let bytes = serde_json::to_vec(&request)?;
         let data = bytes
             .iter()
@@ -187,6 +261,7 @@ mod tests {
                     1,
                     crate::metrics::RuntimeMetrics::default(),
                 )),
+                None,
             ),
         );
         store.limiter(|state| &mut state.limits);
@@ -209,16 +284,67 @@ mod tests {
 
     #[test]
     fn http_host_denies_unlisted_urls_before_io() -> anyhow::Result<()> {
-        let allowed = url::Url::parse("https://identity.example/whoami")?;
         for url in [
             "https://identity.example/other",
             "https://identity.example/whoami?token=secret",
             "https://identity.example.evil/whoami",
             "http://identity.example/whoami",
         ] {
-            assert!(lookup(json!({"url": url}), vec![allowed.clone()], 100)?.is_none());
+            assert!(
+                lookup(
+                    json!({"url": url}),
+                    vec!["https://identity.example/whoami"],
+                    100
+                )?
+                .is_none()
+            );
         }
         Ok(())
+    }
+
+    #[test]
+    fn wildcard_entries_accept_any_query_but_pin_the_path() -> anyhow::Result<()> {
+        // The wildcard relaxes only the query; paths and origins stay exact.
+        assert!(
+            lookup(
+                json!({"url": "https://identity.example/whoami?key=abc"}),
+                vec!["https://identity.example/whoami?*"],
+                100
+            )?
+            .is_none(),
+            "no server is running; a request that passes the allowlist fails on transport"
+        );
+        for url in [
+            "https://identity.example/other?key=abc",
+            "https://identity.example.evil/whoami?key=abc",
+        ] {
+            assert!(
+                lookup(
+                    json!({"url": url}),
+                    vec!["https://identity.example/whoami?*"],
+                    100
+                )?
+                .is_none()
+            );
+        }
+        // Without the wildcard marker the query must match exactly, so an
+        // extra parameter is denied before any I/O.
+        assert!(
+            lookup(
+                json!({"url": "https://identity.example/whoami?key=abc"}),
+                vec!["https://identity.example/whoami"],
+                100
+            )?
+            .is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn wildcard_entry_parsing_rejects_own_queries() {
+        assert!(AllowedUrl::parse("https://h.example/p?a=1?*").is_err());
+        assert!(AllowedUrl::parse("https://h.example/p?*").is_ok());
+        assert!(AllowedUrl::parse("https://h.example/p").is_ok());
     }
 
     #[tokio::test]
@@ -259,7 +385,8 @@ mod tests {
         for path in ["whoami", "redirect", "slow"] {
             let url = url::Url::parse(&format!("http://{address}/{path}"))?;
             let timeout_ms = if path == "slow" { 50 } else { 2000 };
-            let result = tokio::task::spawn_blocking(move || lookup(json!({"url": url.as_str(), "headers":{"authorization":"Bearer test-user-key"}}), vec![url], timeout_ms)).await??;
+            let allowed = format!("http://{address}/{path}");
+            let result = tokio::task::spawn_blocking(move || lookup(json!({"url": url.as_str(), "headers":{"authorization":"Bearer test-user-key"}}), vec![allowed.as_str()], timeout_ms)).await??;
             match path {
                 "whoami" => {
                     let result = result.unwrap();

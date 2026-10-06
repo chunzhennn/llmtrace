@@ -1516,6 +1516,8 @@ mod tests {
                 hooks: vec![PluginHook::ResponseEnd],
                 timeout_ms: 100,
                 http_get_urls: Vec::new(),
+                http_auth_header: None,
+                http_auth_env: None,
             }],
             plugin_cache: Default::default(),
         };

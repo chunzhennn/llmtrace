@@ -79,7 +79,9 @@ struct WasmPlugin {
     module: Module,
     epoch_deadline: u64,
     timeout_ms: u64,
-    http_get_urls: Vec<url::Url>,
+    http_get_urls: Vec<http::AllowedUrl>,
+    /// Header/value the host injects into every `http_get` this plugin makes.
+    http_auth: Option<(String, String)>,
 }
 
 impl PluginManager {
@@ -107,6 +109,32 @@ impl PluginManager {
 
             match Module::from_file(&engine, &config.wasm_path) {
                 Ok(module) => {
+                    // A configured auth injection whose environment variable
+                    // is missing disables the plugin rather than letting its
+                    // lookups arrive unauthenticated.
+                    let http_auth = match (
+                        config.http_auth_header.as_deref(),
+                        config.http_auth_env.as_deref(),
+                    ) {
+                        (Some(header), Some(environment)) => match std::env::var(environment) {
+                            Ok(value) if !value.trim().is_empty() => {
+                                Some((header.to_string(), value))
+                            }
+                            _ => {
+                                statuses.push(PluginStatus {
+                                    name: name.to_string(),
+                                    wasm_path: config.wasm_path.clone(),
+                                    hooks: config.hooks.clone(),
+                                    loaded: false,
+                                    error: Some(format!(
+                                        "http_auth_env {environment} is not set or empty"
+                                    )),
+                                });
+                                continue;
+                            }
+                        },
+                        _ => None,
+                    };
                     plugins.push(Arc::new(WasmPlugin {
                         name: name.to_string(),
                         wasm_path: config.wasm_path.clone(),
@@ -117,8 +145,9 @@ impl PluginManager {
                         http_get_urls: config
                             .http_get_urls
                             .iter()
-                            .map(|url| url::Url::parse(url))
+                            .map(|url| http::AllowedUrl::parse(url))
                             .collect::<Result<_, _>>()?,
+                        http_auth,
                     }));
                     statuses.push(PluginStatus {
                         name: name.to_string(),
@@ -223,6 +252,7 @@ impl WasmPlugin {
                 &self.http_get_urls,
                 self.timeout_ms,
                 cache.clone(),
+                self.http_auth.clone(),
             ),
         );
         store.limiter(|state| &mut state.limits);
@@ -411,7 +441,9 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         use axum::{Router, http::HeaderMap, routing::get};
+        use sha2::{Digest, Sha256};
 
+        let caller_key_hash = hex::encode(Sha256::digest(b"sk-test-1234"));
         let key_lookups = Arc::new(AtomicUsize::new(0));
         let user_lookups = Arc::new(AtomicUsize::new(0));
         let key_counter = key_lookups.clone();
@@ -419,36 +451,58 @@ mod tests {
         let app = Router::new()
             .route(
                 "/key/info",
-                get(move |headers: HeaderMap| async move {
-                    assert_eq!(headers["authorization"], "Bearer sk-test-1234");
-                    key_counter.fetch_add(1, Ordering::SeqCst);
-                    axum::Json(json!({
-                        "key": "sk-test-1234",
-                        "info": {
-                            "key_alias": "laptop",
-                            "team_id": "team-7",
-                            "user_id": "authentik-sub-42",
-                        }
-                    }))
-                }),
+                get(
+                    move |headers: HeaderMap,
+                          query: axum::extract::Query<
+                        std::collections::HashMap<String, String>,
+                    >| async move {
+                        assert_eq!(
+                            headers["authorization"], "Bearer sk-management-viewer-key",
+                            "lookups authenticate with the injected service credential"
+                        );
+                        assert_eq!(
+                            query.0.get("key").map(String::as_str),
+                            Some(caller_key_hash.as_str()),
+                            "the caller's key is addressed by its sha256, never transmitted"
+                        );
+                        key_counter.fetch_add(1, Ordering::SeqCst);
+                        axum::Json(json!({
+                            "key": caller_key_hash,
+                            "info": {
+                                "key_alias": "laptop",
+                                "team_id": "team-7",
+                                "user_id": "authentik-sub-42",
+                            }
+                        }))
+                    },
+                ),
             )
             .route(
                 "/user/info",
-                get(move |headers: HeaderMap| async move {
-                    assert_eq!(headers["authorization"], "Bearer sk-test-1234");
-                    user_counter.fetch_add(1, Ordering::SeqCst);
-                    axum::Json(json!({
-                        "user_id": "authentik-sub-42",
-                        "user_info": {
+                get(
+                    move |headers: HeaderMap,
+                          query: axum::extract::Query<
+                        std::collections::HashMap<String, String>,
+                    >| async move {
+                        assert_eq!(headers["authorization"], "Bearer sk-management-viewer-key");
+                        assert_eq!(
+                            query.0.get("user_id").map(String::as_str),
+                            Some("authentik-sub-42")
+                        );
+                        user_counter.fetch_add(1, Ordering::SeqCst);
+                        axum::Json(json!({
                             "user_id": "authentik-sub-42",
-                            "user_email": "alice@example.com",
-                            "user_role": "internal_user",
-                            "teams": ["team-7"],
-                        },
-                        "keys": [],
-                        "teams": [],
-                    }))
-                }),
+                            "user_info": {
+                                "user_id": "authentik-sub-42",
+                                "user_email": "alice@example.com",
+                                "user_role": "internal_user",
+                                "teams": ["team-7"],
+                            },
+                            "keys": [],
+                            "teams": [],
+                        }))
+                    },
+                ),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
@@ -460,12 +514,22 @@ mod tests {
             name: "litellm-user".to_string(),
             wasm_path,
             hooks: vec![crate::types::PluginHook::RequestStart],
+            http_auth_header: Some("authorization".to_string()),
+            http_auth_env: Some("LLMTRACE_TEST_IDENTITY_KEY".to_string()),
             timeout_ms: 5_000,
             http_get_urls: vec![
-                format!("http://{address}/key/info"),
-                format!("http://{address}/user/info"),
+                format!("http://{address}/key/info?*"),
+                format!("http://{address}/user/info?*"),
             ],
         };
+        // The host reads the service credential from the environment at load
+        // time and injects it into every http_get the plugin makes.
+        unsafe {
+            std::env::set_var(
+                "LLMTRACE_TEST_IDENTITY_KEY",
+                "Bearer sk-management-viewer-key",
+            );
+        }
         let metrics = crate::metrics::RuntimeMetrics::default();
         let manager = Arc::new(PluginManager::load(
             &[config],

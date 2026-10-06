@@ -223,7 +223,21 @@ pub struct PluginConfig {
     pub hooks: Vec<PluginHook>,
     pub timeout_ms: u64,
     /// Exact GET URLs a plugin may contact; empty disables network access.
+    /// An entry ending in `?*` keeps scheme/host/port/path exact but accepts
+    /// any query string, which dynamic per-request lookups need (for example
+    /// `http://gateway/key/info?key=<hash>`). The relaxed entry still pins
+    /// the destination to that one path.
     pub http_get_urls: Vec<String>,
+    /// Header name the host injects into every `http_get` call this plugin
+    /// makes, sourced at load time from `http_auth_env`. Lets a plugin act
+    /// with its own service credential without the secret ever entering the
+    /// TOML config or the plugin's linear memory. The injected value
+    /// overrides any same-named header the plugin supplies.
+    pub http_auth_header: Option<String>,
+    /// Environment variable holding the full value of `http_auth_header`
+    /// (for example `Bearer sk-service-key`). Missing variables disable the
+    /// plugin at load instead of silently sending unauthenticated lookups.
+    pub http_auth_env: Option<String>,
 }
 
 /// Process-wide bounded KV store exposed to plugins through the `cache_get`
@@ -1039,14 +1053,52 @@ impl Config {
                 ));
             }
             for endpoint in &plugin.http_get_urls {
-                if url::Url::parse(endpoint).map_or(true, |url| {
+                // `?*` marks a wildcard-query entry: everything before the
+                // suffix must still be an exact, credential-free HTTP(S) URL
+                // without its own query. Plain entries keep exact-query
+                // matching, so a query there stays allowed.
+                let (base, wildcard) = match endpoint.strip_suffix("?*") {
+                    Some(base) => (base, true),
+                    None => (endpoint.as_str(), false),
+                };
+                if url::Url::parse(base).map_or(true, |url| {
                     !matches!(url.scheme(), "http" | "https")
                         || url.host_str().is_none()
                         || !url.username().is_empty()
                         || url.password().is_some()
                         || url.fragment().is_some()
-                }) {
-                    errors.push(format!("plugins[{index}].http_get_urls requires HTTP(S) URLs without credentials or fragments"));
+                        || (wildcard && url.query().is_some())
+                        || url.path().ends_with('*')
+                }) || !endpoint.is_ascii()
+                {
+                    errors.push(format!("plugins[{index}].http_get_urls requires HTTP(S) URLs without credentials or fragments; a lone trailing ?* permits any query"));
+                }
+            }
+            match (&plugin.http_auth_header, &plugin.http_auth_env) {
+                (None, None) => {}
+                (Some(header), Some(environment)) => {
+                    let valid_header = !header.is_empty()
+                        && header.is_ascii()
+                        && !header.bytes().any(|byte| byte.is_ascii_whitespace());
+                    let valid_env = !environment.is_empty()
+                        && environment
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+                    if !valid_header {
+                        errors.push(format!(
+                            "plugins[{index}].http_auth_header must be a non-empty HTTP header name"
+                        ));
+                    }
+                    if !valid_env {
+                        errors.push(format!(
+                            "plugins[{index}].http_auth_env must be a non-empty environment variable name"
+                        ));
+                    }
+                }
+                _ => {
+                    errors.push(format!(
+                        "plugins[{index}].http_auth_header and http_auth_env must be set together"
+                    ));
                 }
             }
             let name = plugin.name.trim();
@@ -1642,6 +1694,8 @@ impl Default for PluginConfig {
             hooks: Vec::new(),
             timeout_ms: 50,
             http_get_urls: Vec::new(),
+            http_auth_header: None,
+            http_auth_env: None,
         }
     }
 }
@@ -2477,6 +2531,8 @@ mod tests {
                     hooks: vec![PluginHook::RequestStart, PluginHook::RequestStart],
                     timeout_ms: 0,
                     http_get_urls: Vec::new(),
+                    http_auth_header: None,
+                    http_auth_env: None,
                 },
                 PluginConfig {
                     name: "plugín".to_string(),
@@ -2484,6 +2540,8 @@ mod tests {
                     hooks: Vec::new(),
                     timeout_ms: MAX_PLUGIN_TIMEOUT_MS + 1,
                     http_get_urls: Vec::new(),
+                    http_auth_header: None,
+                    http_auth_env: None,
                 },
                 PluginConfig {
                     name: "p".repeat(MAX_PLUGIN_NAME_BYTES + 1),
@@ -2491,6 +2549,8 @@ mod tests {
                     hooks: vec![PluginHook::ResponseEnd],
                     timeout_ms: 50,
                     http_get_urls: Vec::new(),
+                    http_auth_header: None,
+                    http_auth_env: None,
                 },
             ],
             ..Default::default()
@@ -2635,6 +2695,8 @@ mod tests {
             hooks: vec![PluginHook::RequestStart],
             timeout_ms: 50,
             http_get_urls: Vec::new(),
+            http_auth_header: None,
+            http_auth_env: None,
         }
     }
 }

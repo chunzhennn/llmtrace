@@ -1,18 +1,23 @@
 //! llmtrace WASM plugin that attributes traces to LiteLLM users.
 //!
 //! On `llmtrace_on_request_start` the plugin reads the caller's LiteLLM
-//! credential from the unredacted hook headers and resolves it through the
-//! gateway's self-service endpoints, which need no master key:
+//! credential from the unredacted hook headers, hashes it, and resolves the
+//! hash through the gateway's management endpoints using a read-only
+//! service credential the llmtrace host injects into every `http_get`
+//! (`http_auth_header`/`http_auth_env` in the `[[plugins]]` config):
 //!
-//! - `GET {origin}/key/info` — defaults to the key in the Authorization
-//!   header; a key may always look up itself. Yields `user_id`, `team_id`,
-//!   `org_id` and `key_alias`.
-//! - `GET {origin}/user/info` — defaults to the key's own user. Yields
-//!   `user_email`, `user_alias`, `user_role` and `teams`.
+//! - `GET {origin}/key/info?key={sha256}` — resolves any key's `user_id`,
+//!   `team_id`, `org_id` and `key_alias`. Admin-view authorization also
+//!   covers keys whose own `allowed_routes` exclude the self-service route.
+//! - `GET {origin}/user/info?user_id={id}` — resolves `user_email`,
+//!   `user_alias`, `user_role` and `teams`.
+//!
+//! The caller's credential itself is never transmitted; only its SHA-256
+//! travels in the query, matching what LiteLLM stores at rest.
 //!
 //! The origin is derived from the trace's `upstream_url`, so one binary serves
-//! any deployment; the exact lookup URLs stay pinned in llmtrace's
-//! `http_get_urls` allowlist.
+//! any deployment; the lookup URLs stay pinned in llmtrace's `http_get_urls`
+//! allowlist with trailing `?*` wildcard-query entries.
 //!
 //! ## Plugin-side caching
 //!
@@ -119,12 +124,14 @@ pub fn identity(input: &Value, lookup: Lookup<'_>, cache: &dyn CacheBackend) -> 
         return hook_output(user_id, user_name, custom_fields, tags, warnings);
     };
 
-    let mut send_headers = BTreeMap::new();
-    send_headers.insert(credential_header.to_string(), credential_value.to_string());
+    // Authentication never travels through the plugin: the host injects the
+    // deployment's read-only management credential into every http_get, so
+    // lookups carry only the query identifying what to resolve.
+    let no_headers = BTreeMap::new();
 
     let key_document = lookup_json(
-        &format!("{origin}{KEY_INFO_PATH}"),
-        &send_headers,
+        &format!("{origin}{KEY_INFO_PATH}?key={key_hash}"),
+        &no_headers,
         lookup,
         "litellm key lookup",
         &mut warnings,
@@ -152,10 +159,13 @@ pub fn identity(input: &Value, lookup: Lookup<'_>, cache: &dyn CacheBackend) -> 
     }
 
     let mut user_lookup_failed = false;
-    if user_id.is_some() {
+    if let Some(user_id) = user_id.as_deref() {
         if let Some(info) = lookup_json(
-            &format!("{origin}{USER_INFO_PATH}"),
-            &send_headers,
+            &format!(
+                "{origin}{USER_INFO_PATH}?user_id={}",
+                percent_encode(user_id)
+            ),
+            &no_headers,
             lookup,
             "litellm user lookup",
             &mut warnings,
@@ -334,6 +344,27 @@ fn origin_of(upstream_url: &str) -> Option<String> {
         return None;
     }
     Some(format!("{scheme}://{authority}"))
+}
+
+/// Percent-encodes everything outside the RFC 3986 unreserved set. Critical
+/// for user ids that are email addresses: a literal `+` in a query decodes as
+/// a space server-side, and LiteLLM guards exactly that confusion.
+fn percent_encode(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char);
+            }
+            _ => {
+                out.push('%');
+                out.push(HEX[(byte >> 4) as usize] as char);
+                out.push(HEX[(byte & 0x0f) as usize] as char);
+            }
+        }
+    }
+    out
 }
 
 fn copy_string_field(source: &Map<String, Value>, field: &str, target: &mut Map<String, Value>) {
@@ -626,10 +657,17 @@ mod tests {
         key_response: Option<LookupResponse>,
         user_response: Option<LookupResponse>,
     ) -> impl FnMut(&str, &BTreeMap<String, String>) -> Option<LookupResponse> {
-        move |url, _headers| {
-            if url.ends_with(KEY_INFO_PATH) {
+        move |url, headers| {
+            assert!(
+                headers.is_empty(),
+                "the caller's credential must never be forwarded"
+            );
+            let path = url.split('?').next().unwrap_or(url);
+            if path.ends_with(KEY_INFO_PATH) {
+                let hash = url.split("key=").nth(1).unwrap_or_default();
+                assert_eq!(hash.len(), 64, "key lookups address a sha256 hex: {url}");
                 key_response.clone()
-            } else if url.ends_with(USER_INFO_PATH) {
+            } else if path.ends_with(USER_INFO_PATH) {
                 user_response.clone()
             } else {
                 panic!("unexpected lookup url: {url}");
@@ -739,7 +777,8 @@ mod tests {
         let user_lookups = std::sync::Arc::new(AtomicUsize::new(0));
         let seen = user_lookups.clone();
         let mut lookup = move |url: &str, _headers: &BTreeMap<String, String>| {
-            if url.ends_with(KEY_INFO_PATH) {
+            let path = url.split('?').next().unwrap_or(url);
+            if path.ends_with(KEY_INFO_PATH) {
                 Some(key_info(None))
             } else {
                 seen.fetch_add(1, Ordering::SeqCst);
@@ -962,6 +1001,23 @@ mod tests {
         );
         assert_eq!(origin_of("litellm:4000"), None);
         assert_eq!(origin_of("https:///v1"), None);
+    }
+
+    #[test]
+    fn percent_encoding_protects_query_values() {
+        assert_eq!(percent_encode("authentik-sub-42"), "authentik-sub-42");
+        assert_eq!(
+            percent_encode("krrish7@berri.ai"),
+            "krrish7%40berri.ai",
+            "user ids are commonly email addresses"
+        );
+        assert_eq!(
+            percent_encode("plus+addressed@example.com"),
+            "plus%2Baddressed%40example.com",
+            "a literal + must not decode as a space"
+        );
+        assert_eq!(percent_encode("with space"), "with%20space");
+        assert_eq!(percent_encode("用户"), "%E7%94%A8%E6%88%B7");
     }
 
     #[test]

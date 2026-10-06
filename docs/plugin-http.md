@@ -11,7 +11,9 @@ timeout_ms = 1000
 http_get_urls = ["https://llm.example.com/v1/whoami"]
 ```
 
-The allowlist compares parsed, normalized URLs exactly, including scheme, port, path, and query. It does not permit other paths on the same host. Redirects are returned to the plugin and never followed. HTTP is supported for internal services; use HTTPS when the connection needs TLS. Plugin lookup permissions are separate from proxy upstream permissions.
+The allowlist compares parsed, normalized URLs exactly, including scheme, port, path, and query. It does not permit other paths on the same host. An entry ending in `?*` keeps scheme, host, port, and path exact but accepts any query string — the shape per-request lookups need (for example `/key/info?key=<hash>`); the destination stays pinned to that one path. Redirects are returned to the plugin and never followed. HTTP is supported for internal services; use HTTPS when the connection needs TLS. Plugin lookup permissions are separate from proxy upstream permissions.
+
+A plugin can also act with its own service credential instead of relaying captured ones: set `http_auth_header` and `http_auth_env` together, and the host injects that header — read from the environment at load time — into every `http_get` the plugin makes, overriding any same-named header the plugin supplies. The secret never enters the TOML config or the plugin's linear memory. A configured environment variable that is unset or empty disables the plugin at load with a status error rather than sending unauthenticated lookups.
 
 The WASM import is:
 
@@ -90,12 +92,12 @@ Environment overrides: `LLMTRACE_PLUGIN_CACHE_CAPACITY` and `LLMTRACE_PLUGIN_CAC
 
 ## Bundled LiteLLM identity plugin
 
-`crates/litellm-user-plugin` builds the reference plugin for a LiteLLM upstream. It reads the caller's credential from the unredacted request headers (`authorization`, `x-api-key` or `api-key`) and resolves it through the gateway's self-service endpoints, which accept the key itself and need no master key:
+`crates/litellm-user-plugin` builds the reference plugin for a LiteLLM upstream. It reads the caller's credential from the unredacted request headers (`authorization`, `x-api-key` or `api-key`), hashes it, and resolves the hash through the gateway's management endpoints. Authentication uses a read-only service credential the host injects (`http_auth_header`/`http_auth_env`) — scope it to LiteLLM's `proxy_admin_viewer` role, which reads any key's or user's info but mutates nothing and, unlike the previous self-service lookup, also resolves keys whose own `allowed_routes` exclude the info routes:
 
-- `GET {origin}/key/info` — returns `user_id`, `team_id`, `org_id`, `key_alias` for the calling key.
-- `GET {origin}/user/info` — returns `user_email`, `user_alias`, `user_role`, `teams` for the calling key's user.
+- `GET {origin}/key/info?key={sha256}` — returns `user_id`, `team_id`, `org_id`, `key_alias` for any key.
+- `GET {origin}/user/info?user_id={id}` — returns `user_email`, `user_alias`, `user_role`, `teams` for any user.
 
-The origin is derived from the trace's `upstream_url`, so one binary serves any deployment; pin both URLs in `http_get_urls`. Output populates `user_id`/`user_name` plus `custom_fields` (`key_alias`, `team_id`, `org_id`, `user_email`, `user_alias`, `user_role`, `teams`, `litellm_key_hash`, `identity_source`). `litellm_key_hash` is the SHA-256 of the bare key — the same digest LiteLLM stores in `LiteLLM_VerificationToken.token` — so traces can be joined against LiteLLM tables offline without persisting the raw credential. Team or service keys without a user get the `litellm_key_without_user` tag; failed lookups get `litellm_identity_lookup_failed` plus a warning; the plugin never fabricates an identity and never sets `session_key`.
+The caller's credential itself is never transmitted; only its SHA-256 travels in the query, matching what LiteLLM stores at rest. The origin is derived from the trace's `upstream_url`, so one binary serves any deployment; pin both URLs in `http_get_urls` with trailing `?*`. Output populates `user_id`/`user_name` plus `custom_fields` (`key_alias`, `team_id`, `org_id`, `user_email`, `user_alias`, `user_role`, `teams`, `litellm_key_hash`, `identity_source`). `litellm_key_hash` is the SHA-256 of the bare key — the same digest LiteLLM stores in `LiteLLM_VerificationToken.token` — so traces can be joined against LiteLLM tables offline without persisting the raw credential. Team or service keys without a user get the `litellm_key_without_user` tag; failed lookups get `litellm_identity_lookup_failed` plus a warning; the plugin never fabricates an identity and never sets `session_key`.
 
 The plugin is also the reference consumer of the KV cache: it keys on `litellm_key_hash` and stores a compact identity document (< 1 KiB), so a hit skips both gateway calls entirely. Fully resolved identities — including team keys without a user — are cached for one hour: the primary attribution (`user_id`, `user_email`) is effectively immutable per key, while an expiring entry still picks up drifting secondary fields (a key's reassigned `team_id`, SSO-synced `teams`/`user_role`). Failed or partial resolutions are never cached and retry on the next trace; a hit emits output identical to a fresh resolution.
 
@@ -109,7 +111,9 @@ name = "litellm-user"
 wasm_path = "target/wasm32-unknown-unknown/release/litellm_user_plugin.wasm"
 hooks = ["on_request_start"]
 timeout_ms = 5000
-http_get_urls = ["http://litellm:4000/key/info", "http://litellm:4000/user/info"]
+http_get_urls = ["http://litellm:4000/key/info?*", "http://litellm:4000/user/info?*"]
+http_auth_header = "authorization"
+http_auth_env = "LLMTRACE_IDENTITY_LOOKUP_AUTH"
 ```
 
 The test `plugins::tests::litellm_user_plugin_resolves_identity_and_caches_in_the_plugin_kv` loads the built module through the real host, resolves identity against a mock gateway, and verifies the second invocation is served from the plugin KV cache with no additional gateway requests.

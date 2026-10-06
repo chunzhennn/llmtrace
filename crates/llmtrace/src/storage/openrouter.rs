@@ -120,6 +120,8 @@ async fn openrouter_live(pool: PgPool) -> anyhow::Result<()> {
         hooks: vec![crate::types::PluginHook::RequestStart],
         timeout_ms: 5000,
         http_get_urls: vec!["https://openrouter.ai/api/v1/key".into()],
+        http_auth_header: None,
+        http_auth_env: None,
     });
     let loaded = crate::plugins::PluginManager::load(
         &config.plugins,
