@@ -15,7 +15,7 @@ use crate::parsers;
 use crate::plugins::{HookInput, PluginEffects, PluginManager};
 use crate::redaction;
 use crate::storage::{self, TraceRecord};
-use crate::types::ParsedMessage;
+use crate::types::{ParsedMessage, ToolCall};
 use crate::types::{PluginHook, RequestKind};
 
 mod durable;
@@ -501,9 +501,15 @@ pub(crate) fn build_trace(
         upstream_url,
         upstream_host: event.upstream_host,
         status: event.status,
-        error: event.error.or(parsed.response.error).or_else(|| {
-            incomplete_stream.then(|| "upstream stream ended without a terminal event".to_string())
-        }),
+        error: event
+            .error
+            .or(parsed.response.error)
+            .or_else(|| {
+                incomplete_stream
+                    .then(|| "upstream stream ended without a terminal event".to_string())
+            })
+            .map(|error| strip_nul_bytes_owned(error).0)
+            .filter(|error| !error.is_empty()),
         request_kind: event.request_kind.unwrap_or(parsed.request_kind),
         model: event
             .model
@@ -517,7 +523,7 @@ pub(crate) fn build_trace(
         ttfb_ms: event.ttfb_ms,
         usage: parsed.response.usage,
         usage_complete: parsed.response.usage_complete && !event.response_body_truncated,
-        tool_calls: parsed.response.tool_calls,
+        tool_calls: strip_tool_call_nul_bytes(parsed.response.tool_calls),
         estimated_cost_microusd: None,
         duration_ms: event.duration_ms,
         bytes_in: event.request_body_bytes,
@@ -600,6 +606,21 @@ fn strip_nul_bytes_owned(value: String) -> (String, bool) {
         return (value, false);
     }
     (value.replace('\0', ""), true)
+}
+
+/// Strips NUL characters from tool call fields: they are serialized into a
+/// jsonb column, whose parser rejects `\u0000` escapes wherever they appear,
+/// so decoded NUL characters in captured arguments would fail persistence.
+fn strip_tool_call_nul_bytes(tool_calls: Vec<ToolCall>) -> Vec<ToolCall> {
+    tool_calls
+        .into_iter()
+        .map(|mut call| {
+            call.id = strip_nul_bytes_owned(call.id).0;
+            call.name = strip_nul_bytes_owned(call.name).0;
+            call.arguments = strip_nul_bytes_owned(call.arguments).0;
+            call
+        })
+        .collect()
 }
 
 /// Strips NUL characters from every string in a plugin metadata tree, object
@@ -698,13 +719,22 @@ fn bound_session_messages(mut messages: Vec<ParsedMessage>) -> (Vec<ParsedMessag
     let mut bounded = Vec::with_capacity(messages.len().min(MAX_SESSION_MESSAGES_PER_TRACE));
 
     for message in messages.into_iter().take(MAX_SESSION_MESSAGES_PER_TRACE) {
-        let (role, role_truncated) =
-            truncate_utf8_owned(message.role, MAX_SESSION_MESSAGE_ROLE_BYTES);
+        // Postgres text cannot hold NUL bytes, and JSON `\u0000` escapes in
+        // captured bodies decode into them legally, so parsed message fields
+        // must be stripped before they reach a bind parameter. Stripping
+        // counts as modification so the trace is tagged like a truncation.
+        let (role, role_nul) = strip_nul_bytes_owned(message.role);
+        let (content, content_nul) = strip_nul_bytes_owned(message.content);
+        let (role, role_truncated) = truncate_utf8_owned(role, MAX_SESSION_MESSAGE_ROLE_BYTES);
         let (content, content_truncated) =
-            truncate_utf8_owned(message.content, MAX_SESSION_MESSAGE_CONTENT_BYTES);
-        truncated |= role_truncated || content_truncated || message.content_truncated;
+            truncate_utf8_owned(content, MAX_SESSION_MESSAGE_CONTENT_BYTES);
+        truncated |= role_nul
+            || content_nul
+            || role_truncated
+            || content_truncated
+            || message.content_truncated;
         bounded.push(ParsedMessage {
-            content_truncated: message.content_truncated || content_truncated,
+            content_truncated: message.content_truncated || content_nul || content_truncated,
             role,
             content,
         });
@@ -1129,6 +1159,67 @@ mod tests {
         assert_eq!(bounded[0].role, "user");
         assert_eq!(bounded[0].content, "hello");
         assert!(!bounded[0].content_truncated);
+    }
+
+    #[test]
+    fn bound_session_messages_strips_nul_bytes_and_flags_truncation() {
+        let messages = vec![ParsedMessage {
+            content_truncated: false,
+            role: "user\u{0}".to_string(),
+            content: "class java.lang.NullPointerException\u{0} diagnostic".to_string(),
+        }];
+
+        let (bounded, truncated) = bound_session_messages(messages);
+
+        assert!(truncated);
+        assert_eq!(bounded.len(), 1);
+        assert_eq!(bounded[0].role, "user");
+        assert_eq!(
+            bounded[0].content,
+            "class java.lang.NullPointerException diagnostic"
+        );
+        assert!(bounded[0].content_truncated);
+    }
+
+    #[test]
+    fn build_trace_strips_nul_bytes_decoded_from_captured_bodies() {
+        let plugins = PluginManager::load(
+            &[],
+            &Default::default(),
+            &crate::metrics::RuntimeMetrics::default(),
+        )
+        .unwrap();
+        let mut event = TraceEvent::base(Uuid::new_v4(), Utc::now());
+        event.original_uri = "/v1/chat/completions".to_string();
+        event.upstream_url = "https://api.example.com/v1/chat/completions".to_string();
+        event.status = Some(500);
+        event.request_body = br#"{"model":"glm-5.3","messages":[{"role":"user","content":"gremlin POST \u001f\u0000 blob"}]}"#
+            .to_vec();
+        event.response_body = br#"{"error":{"message":"boom\u0000"},"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call-1","function":{"name":"grep","arguments":"{\"q\":\"a\u0000b\"}"}}]}}]}"#
+            .to_vec();
+
+        let (trace, messages, _, _) = build_trace(event, &plugins).unwrap();
+
+        assert!(
+            messages
+                .iter()
+                .all(|message| !message.role.contains('\0') && !message.content.contains('\0'))
+        );
+        assert!(
+            messages.iter().any(
+                |message| message.content.contains("gremlin POST") && message.content_truncated
+            )
+        );
+        assert_eq!(trace.tool_calls.len(), 1);
+        assert_eq!(trace.tool_calls[0].name, "grep");
+        assert_eq!(trace.tool_calls[0].arguments, "{\"q\":\"ab\"}");
+        assert_eq!(trace.error.as_deref(), Some("boom"));
+        assert!(
+            trace
+                .tags
+                .iter()
+                .any(|tag| tag == SESSION_MESSAGES_TRUNCATED_TAG)
+        );
     }
 
     #[test]

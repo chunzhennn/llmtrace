@@ -57,6 +57,62 @@ async fn traces_with_json_nul_escapes_persist_instead_of_poisoning_the_journal(
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires local PostgreSQL"]
+async fn session_messages_with_json_nul_escapes_persist_instead_of_poisoning_the_journal(
+    pool: PgPool,
+) -> anyhow::Result<()> {
+    use crate::{
+        plugins::PluginManager,
+        trace::{TraceEvent, build_trace},
+    };
+    let plugins = PluginManager::load(
+        &[],
+        &Default::default(),
+        &crate::metrics::RuntimeMetrics::default(),
+    )?;
+    let archive = ArchiveConfig {
+        storage_backend: ArchiveStorageBackend::Postgres,
+        ..Default::default()
+    };
+
+    // Captured bodies legally carry `\u0000` escapes that decode into NUL
+    // characters inside parsed message content, tool call arguments, and the
+    // upstream error string; each used to fail the insert with: invalid byte
+    // sequence for encoding "UTF8": 0x00 (observed with diagnostic blobs a
+    // client pasted into chat completions message content).
+    let mut event = TraceEvent::base(Uuid::from_u128(43), Utc::now());
+    event.original_uri = "/v1/chat/completions".into();
+    event.upstream_url = "https://litellm.example/v1/chat/completions".into();
+    event.upstream_host = Some("litellm.example".into());
+    event.status = Some(500);
+    event.duration_ms = Some(5);
+    event.request_body = br#"{"model":"glm-5.3","messages":[{"role":"user","content":"gremlin POST \u001f\u0000 blob"}]}"#
+        .to_vec();
+    event.response_body = br#"{"error":{"message":"boom\u0000"},"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call-1","function":{"name":"grep","arguments":"{\"q\":\"a\u0000b\"}"}}]}}]}"#
+        .to_vec();
+    event.request_body_bytes = event.request_body.len() as i64;
+    event.response_body_bytes = event.response_body.len() as i64;
+
+    let (trace, messages, uid, name) = build_trace(event, &plugins)?;
+    assert!(
+        messages
+            .iter()
+            .all(|message| !message.role.contains('\0') && !message.content.contains('\0'))
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.content.contains("gremlin POST") && message.content_truncated)
+    );
+    assert_eq!(trace.tool_calls.len(), 1);
+    assert_eq!(trace.tool_calls[0].name, "grep");
+    assert_eq!(trace.tool_calls[0].arguments, "{\"q\":\"ab\"}");
+    assert_eq!(trace.error.as_deref(), Some("boom"));
+    insert_trace(&pool, &archive, trace, messages, uid, name).await?;
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires local PostgreSQL"]
 async fn request_and_analytics_reads_preserve_filtering_and_aggregation(
     pool: PgPool,
 ) -> anyhow::Result<()> {
