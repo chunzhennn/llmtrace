@@ -105,6 +105,7 @@
 					</div>
 				</details>
 				<KeyValue label="Upstream header" value={c.proxy.upstream_header} mono />
+				<KeyValue label="Upstream host" value={c.proxy.upstream_host ?? 'from upstream URL'} mono />
 				<KeyValue label="Allowed upstreams" value={c.proxy.allow_upstreams_count} />
 				<KeyValue label="Proxy timeout" value={`${c.proxy.timeout_secs}s`} />
 				<KeyValue label="Max req body" value={formatBytes(c.proxy.max_request_body_bytes)} />

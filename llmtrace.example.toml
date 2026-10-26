@@ -30,6 +30,13 @@ allow_upstreams = []
 # Explicit prefixes capture all methods on matching forwarded routes; [] disables.
 # capture_path_prefixes = ["/v1/chat/completions", "/v1/responses"]
 upstream_header = "x-llmtrace-upstream"
+# Host header sent on forwarded requests; unset derives it from the upstream URL.
+# Set the public host when the upstream rebuilds absolute URLs from Host
+# (FastAPI/Starlette redirects, OAuth callbacks). Without it those responses
+# name the internal service address, which a browser cannot reach. It applies
+# to every allowed upstream, so keep it unset when the allowlist mixes
+# independent third-party APIs.
+# upstream_host = "api.example.com"
 # Forward request `Cookie` and response `Set-Cookie` through to the upstream.
 # Off by default: an API-only deployment has no use for cookies, and dropping
 # them keeps this proxy from relaying session state it cannot see into.

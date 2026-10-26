@@ -1117,6 +1117,7 @@ fn config_summary(config: &Config) -> Value {
             "path_prefixes": config.proxy.effective_path_prefixes(),
             "capture_path_prefixes": config.proxy.effective_capture_path_prefixes(),
             "upstream_header": &config.proxy.upstream_header,
+            "upstream_host": &config.proxy.upstream_host,
             "timeout_secs": config.proxy.timeout_secs,
             "max_request_body_bytes": config.proxy.max_request_body_bytes,
             "max_response_body_bytes": config.proxy.max_response_body_bytes,
@@ -1472,6 +1473,7 @@ mod tests {
                 allow_upstreams: vec!["api.openai.com".to_string()],
                 path_prefixes: Some(vec!["/v1".to_string()]),
                 upstream_header: "x-llmtrace-upstream".to_string(),
+                upstream_host: Some("llm.example.com".to_string()),
                 timeout_secs: 120,
                 max_request_body_bytes: 8192,
                 max_response_body_bytes: 4096,
@@ -1526,6 +1528,7 @@ mod tests {
 
         assert_eq!(summary["server"]["deployment"], "production");
         assert_eq!(summary["proxy"]["allow_upstreams_count"], 1);
+        assert_eq!(summary["proxy"]["upstream_host"], "llm.example.com");
         assert_eq!(summary["proxy"]["path_prefixes"], json!(["/v1"]));
         assert_eq!(summary["storage"]["retention_days"], 30);
         assert_eq!(

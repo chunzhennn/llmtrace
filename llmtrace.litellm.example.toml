@@ -11,6 +11,10 @@ proxy_public_url = "http://127.0.0.1:3000"
 preset = "litellm"
 default_upstream = "http://127.0.0.1:4000"
 allow_upstreams = ["http://127.0.0.1:4000", "ws://127.0.0.1:4000"]
+# LiteLLM rebuilds browser-facing redirects (SSO, /ui) from the request Host,
+# which this proxy derives from default_upstream by default. Set the public
+# host so those responses name the origin the browser actually used.
+# upstream_host = "llm.example.com"
 # Omit path_prefixes/capture_path_prefixes to use the preset defaults.
 # To transparently expose the entire LiteLLM application, including its UI and
 # management API, explicitly set path_prefixes = ["/"]. LiteLLM controls access.

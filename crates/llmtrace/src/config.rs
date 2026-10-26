@@ -7,6 +7,7 @@ use std::str::FromStr;
 use anyhow::Context;
 use argon2::password_hash::PasswordHash;
 use http::HeaderName;
+use http::uri::Authority;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -77,6 +78,18 @@ pub struct ProxyConfig {
     pub path_prefixes: Option<Vec<String>>,
     pub capture_path_prefixes: Option<Vec<String>>,
     pub upstream_header: String,
+    /// `Host` header sent on forwarded requests. Unset by default: the header
+    /// is derived from the resolved upstream URL.
+    ///
+    /// Set it when the upstream builds absolute URLs (redirects, OAuth
+    /// callbacks) for a browser-facing origin. The proxy never forwards the
+    /// inbound `Host`, so such an upstream otherwise names its internal service
+    /// address in `Location` headers -- for example
+    /// `http://litellm:4000/sso/key/generate`, which a browser cannot reach.
+    /// The value is a host or `host:port` without credentials, and it applies
+    /// to every allowed upstream, so leave it unset when the allowlist mixes
+    /// independent third-party APIs.
+    pub upstream_host: Option<String>,
     /// Forward request `Cookie` and response `Set-Cookie` instead of stripping
     /// them. Off by default: an API-only deployment has no use for cookies, and
     /// dropping them keeps this proxy from relaying session state it cannot see
@@ -613,6 +626,19 @@ impl Config {
                 "proxy.upstream_header must be a valid HTTP header name, got {:?}",
                 self.proxy.upstream_header
             ));
+        }
+
+        if let Some(upstream_host) = self.proxy.upstream_host.as_deref() {
+            let valid = !upstream_host.trim().is_empty()
+                && !upstream_host.contains('@')
+                && upstream_host
+                    .parse::<Authority>()
+                    .is_ok_and(|authority| !authority.host().is_empty());
+            if !valid {
+                errors.push(format!(
+                    "proxy.upstream_host must be a host or host:port without credentials, got {upstream_host:?}"
+                ));
+            }
         }
 
         validate_positive_range(
@@ -1248,6 +1274,10 @@ fn apply_env_overrides(
         "LLMTRACE_OAUTH_ALLOWED_DOMAINS" => config.auth.oauth.allowed_domains,
         "LLMTRACE_SENSITIVE_HEADERS" => config.redaction.sensitive_headers,
     );
+    if let Some(value) = env("LLMTRACE_PROXY_UPSTREAM_HOST") {
+        let value = value.trim();
+        config.proxy.upstream_host = (!value.is_empty()).then(|| value.to_owned());
+    }
     if let Some(value) = env("LLMTRACE_RETENTION_DAYS") {
         config.storage.retention_days = Some(parse_integer_env("LLMTRACE_RETENTION_DAYS", &value)?);
     }
@@ -1577,6 +1607,7 @@ impl Default for ProxyConfig {
             path_prefixes: None,
             capture_path_prefixes: None,
             upstream_header: "x-llmtrace-upstream".to_string(),
+            upstream_host: None,
             forward_cookies: false,
             timeout_secs: 300,
             max_request_body_bytes: 64 * 1024 * 1024,
@@ -2607,6 +2638,56 @@ mod tests {
         let error = config.validate().unwrap_err().to_string();
 
         assert!(error.contains("proxy.default_upstream must not contain credentials"));
+    }
+
+    #[test]
+    fn upstream_host_parses_file_and_environment_overrides() {
+        let mut config: Config =
+            toml::from_str("[proxy]\nupstream_host = \"llm.example.com\"\n").unwrap();
+        assert_eq!(
+            config.proxy.upstream_host.as_deref(),
+            Some("llm.example.com")
+        );
+        config.validate().unwrap();
+
+        apply_env_overrides(&mut config, |name| {
+            (name == "LLMTRACE_PROXY_UPSTREAM_HOST").then(|| " llm.internal.example:8443 ".into())
+        })
+        .unwrap();
+        assert_eq!(
+            config.proxy.upstream_host.as_deref(),
+            Some("llm.internal.example:8443")
+        );
+        config.validate().unwrap();
+
+        apply_env_overrides(&mut config, |name| {
+            (name == "LLMTRACE_PROXY_UPSTREAM_HOST").then(|| "  ".into())
+        })
+        .unwrap();
+        assert_eq!(config.proxy.upstream_host, None);
+
+        let mut ipv6 = Config::default();
+        ipv6.proxy.upstream_host = Some("[::1]:8443".to_string());
+        ipv6.validate().unwrap();
+    }
+
+    #[test]
+    fn validation_rejects_invalid_upstream_hosts() {
+        for value in [
+            "",
+            "   ",
+            "https://llm.example.com",
+            "llm.example.com/path",
+            "user@llm.example.com",
+            "llm example.com",
+        ] {
+            let mut config = Config::default();
+            config.proxy.upstream_host = Some(value.to_string());
+
+            let error = config.validate().unwrap_err().to_string();
+
+            assert!(error.contains("proxy.upstream_host"), "{value:?}");
+        }
     }
 
     #[test]

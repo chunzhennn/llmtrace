@@ -685,6 +685,7 @@ export interface RuntimeConfig {
 		path_prefixes: string[];
 		capture_path_prefixes: string[];
 		upstream_header: string;
+		upstream_host: string | null;
 		timeout_secs: number;
 		max_request_body_bytes: number;
 		max_response_body_bytes: number;

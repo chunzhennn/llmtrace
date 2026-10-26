@@ -95,6 +95,28 @@ browser UI is proxied. It does not widen what reaches the archive: `redaction.rs
 treats `cookie` and `set-cookie` as sensitive unconditionally, so stored traces
 are masked either way.
 
+Forwarding is also not enough for browser-facing redirects. LiteLLM builds
+absolute redirects from the request `Host`: Starlette's trailing-slash and
+directory redirects (`/sso/key/generate/`, `/ui`), SSO callbacks, and error
+pages. llmtrace derives `Host` from `default_upstream`, so those responses point
+the browser at `http://litellm:4000/...` instead of the public origin. The
+browser cannot resolve that name, so a navigation such as the dashboard's SSO
+login stops on a redirect it cannot follow. Set `proxy.upstream_host` to the
+public host so every redirect LiteLLM emits names the origin the browser used:
+
+```toml
+[proxy]
+upstream_host = "api.example.com"
+```
+
+The scheme still comes from the ASGI scope, so LiteLLM emits `http://` unless it
+trusts the proxy's `X-Forwarded-Proto`. uvicorn trusts forwarded headers only from
+`FORWARDED_ALLOW_IPS` (default `127.0.0.1`), and llmtrace connects from the pod
+network, so the redirect is `http://api.example.com/...` by default. An ingress
+that redirects port 80 to HTTPS makes that harmless. If you need HTTPS
+`Location` values directly, set `FORWARDED_ALLOW_IPS=*` on LiteLLM and keep port
+4000 reachable only through llmtrace.
+
 This exposes LiteLLM's own UI/management routes, protected by LiteLLM's permissions;
 they receive no conversation capture by default. In split mode `/ui`, `/api`,
 `/healthz` and `/metrics` on the user listener belong to the upstream. The
@@ -121,6 +143,7 @@ or capture rules. Ordinary encoded identifiers remain supported.
 | `LLMTRACE_ALLOW_UPSTREAMS` | Comma-separated destination allowlist |
 | `LLMTRACE_PROXY_PATH_PREFIXES` | Comma-separated forwarding prefixes |
 | `LLMTRACE_CAPTURE_PATH_PREFIXES` | Comma-separated capture prefixes; empty disables |
+| `LLMTRACE_PROXY_UPSTREAM_HOST` | `proxy.upstream_host` |
 
 Environment overrides file values. Explicit prefix lists override preset defaults,
 including when the preset is selected through the environment. Changes require a

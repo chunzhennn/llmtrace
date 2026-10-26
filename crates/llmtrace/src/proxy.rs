@@ -166,6 +166,9 @@ async fn proxy_passthrough_http(
         .http
         .request(parts.method, url)
         .body(reqwest::Body::wrap_stream(stream));
+    if let Some(host) = state.config.proxy.upstream_host.as_deref() {
+        upstream = upstream.header(header::HOST, host);
+    }
     for (name, value) in &parts.headers {
         if should_forward_header(name, &parts.headers, state.config.proxy.forward_cookies) {
             upstream = upstream.header(name, value);
@@ -266,6 +269,9 @@ async fn proxy_http(
             upstream_url.clone(),
         )
         .body(reqwest::Body::wrap_stream(request_body));
+    if let Some(host) = state.config.proxy.upstream_host.as_deref() {
+        upstream_request = upstream_request.header(header::HOST, host);
+    }
     for (name, value) in parts.headers.iter() {
         if should_forward_header(name, &parts.headers, state.config.proxy.forward_cookies) {
             upstream_request = upstream_request.header(name.as_str(), value.as_bytes());
@@ -692,6 +698,14 @@ async fn handle_websocket(
                 .headers_mut()
                 .insert(header_name, header_value);
         }
+    }
+    if let Some(host) = state.config.proxy.upstream_host.as_deref()
+        && let Ok(host) =
+            tokio_tungstenite::tungstenite::http::HeaderValue::from_bytes(host.as_bytes())
+    {
+        upstream_request
+            .headers_mut()
+            .insert(tokio_tungstenite::tungstenite::http::header::HOST, host);
     }
 
     let timeout_secs = state.config.proxy.timeout_secs;

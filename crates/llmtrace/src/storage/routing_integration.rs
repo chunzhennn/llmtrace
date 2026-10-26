@@ -10,7 +10,7 @@ use axum::{
     Router,
     body::Body,
     extract::ws::WebSocketUpgrade,
-    http::{Request, StatusCode},
+    http::{HeaderMap, Request, StatusCode, Uri},
     response::IntoResponse,
     routing::get,
 };
@@ -25,8 +25,24 @@ async fn litellm_split_listeners_stream_and_isolate_admin(pool: PgPool) -> anyho
     let release_download = Arc::new(tokio::sync::Notify::new());
     let gate = release_download.clone();
     let upstream = Router::new()
-        .route("/v1/realtime", get(|ws: WebSocketUpgrade| async {
-            ws.on_upgrade(|mut socket| async move {
+        .route("/v1/realtime", get(|ws: WebSocketUpgrade, uri: Uri, headers: HeaderMap| async move {
+            let echo_host = uri
+                .query()
+                .is_some_and(|query| query.split('&').any(|part| part == "echo_host=1"));
+            let host = headers
+                .get("host")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            ws.on_upgrade(move |mut socket| async move {
+                if echo_host
+                    && socket
+                        .send(axum::extract::ws::Message::Text(host.into()))
+                        .await
+                        .is_err()
+                {
+                    return;
+                }
                 while let Some(Ok(message)) = socket.recv().await {
                     if socket.send(message).await.is_err() { break; }
                 }
@@ -59,6 +75,7 @@ async fn litellm_split_listeners_stream_and_isolate_admin(pool: PgPool) -> anyho
             let value = json!({
                 "upstream": true, "uri": parts.uri.to_string(), "method": parts.method.as_str(),
                 "authorization": parts.headers.get("authorization").and_then(|h| h.to_str().ok()),
+                "host": parts.headers.get("host").and_then(|h| h.to_str().ok()),
                 "body": String::from_utf8_lossy(&body),
             });
             (
@@ -88,6 +105,7 @@ async fn litellm_split_listeners_stream_and_isolate_admin(pool: PgPool) -> anyho
         format!("http://{upstream_addr}"),
         format!("ws://{upstream_addr}"),
     ];
+    config.proxy.upstream_host = Some("llm.public.example".to_string());
     config.proxy.max_request_body_bytes = 1024;
     config.archive.storage_backend = ArchiveStorageBackend::Postgres;
     config.storage.journal.enabled = false;
@@ -156,6 +174,7 @@ async fn litellm_split_listeners_stream_and_isolate_admin(pool: PgPool) -> anyho
         let value: Value = response.json().await?;
         assert_eq!(value["authorization"], "Bearer user-key");
         assert_eq!(value["uri"], path);
+        assert_eq!(value["host"], "llm.public.example");
     }
     let options = http
         .request(
@@ -359,15 +378,34 @@ async fn litellm_split_listeners_stream_and_isolate_admin(pool: PgPool) -> anyho
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
     }
 
+    let captured = http
+        .post(format!("{proxy_url}/v1/embeddings"))
+        .bearer_auth("user-key")
+        .json(&json!({"model": "fixture", "input": "hello"}))
+        .send()
+        .await?;
+    assert_eq!(captured.status(), StatusCode::OK);
+    assert!(captured.headers().contains_key("x-llmtrace-trace-id"));
+    assert_eq!(
+        captured.json::<Value>().await?["host"],
+        "llm.public.example"
+    );
     for path in ["/chat/completions", "/v1/chat/completions"] {
         let response = http.post(format!("{proxy_url}{path}")).bearer_auth("user-key").json(&json!({"model":"fixture", "stream":true, "messages":[{"role":"user","content":"hello"}]})).send().await?;
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.headers().contains_key("x-llmtrace-trace-id"));
         assert!(response.text().await?.ends_with("data: [DONE]\n\n"));
     }
-    let ws_url = format!("ws://{proxy_addr}/v1/realtime?model=fixture");
+    let ws_url = format!("ws://{proxy_addr}/v1/realtime?model=fixture&echo_host=1");
     let (mut socket, response) = tokio_tungstenite::connect_async(ws_url).await?;
     assert!(response.headers().contains_key("x-llmtrace-trace-id"));
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), socket.next())
+            .await?
+            .unwrap()?
+            .into_text()?,
+        "llm.public.example"
+    );
     socket
         .send(tokio_tungstenite::tungstenite::Message::Text(
             "hello".into(),
@@ -419,7 +457,7 @@ async fn litellm_split_listeners_stream_and_isolate_admin(pool: PgPool) -> anyho
             let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM request_traces")
                 .fetch_one(&pool)
                 .await?;
-            if count == 3 {
+            if count == 4 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -443,6 +481,6 @@ async fn litellm_split_listeners_stream_and_isolate_admin(pool: PgPool) -> anyho
     )
     .fetch_one(&pool)
     .await?;
-    assert_eq!((traces, sessions), (3, 3));
+    assert_eq!((traces, sessions), (4, 4));
     Ok(())
 }
