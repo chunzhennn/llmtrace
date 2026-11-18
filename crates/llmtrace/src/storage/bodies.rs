@@ -92,29 +92,116 @@ pub(super) async fn load_trace_bodies(
     archive: &ArchiveConfig,
     request: &RequestMetadata,
 ) -> anyhow::Result<CapturedBodies> {
+    load_selected_bodies(tx, archive, request, BodySelection::Both).await
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum BodySelection {
+    RequestOnly { max_segment_bytes: usize },
+    Both,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("request body archive exceeds the NOTE read budget")]
+pub(super) struct BodyReadBudgetExceeded;
+
+#[derive(Debug, thiserror::Error)]
+enum MissingArchiveSource {
+    #[error("request archive file is missing")]
+    File(#[source] io::Error),
+    #[error("request archive blob is missing")]
+    Blob,
+}
+
+/// The NOTE worker reads and decodes only request records. Legacy paired segments
+/// may still require one shared decompression, but no response body is copied.
+pub(super) async fn load_request_body(
+    tx: &mut Transaction<'_, Postgres>,
+    archive: &ArchiveConfig,
+    request: &RequestMetadata,
+    max_segment_bytes: usize,
+) -> anyhow::Result<CapturedBody> {
+    Ok(load_selected_bodies(
+        tx,
+        archive,
+        request,
+        BodySelection::RequestOnly { max_segment_bytes },
+    )
+    .await?
+    .request)
+}
+
+async fn load_selected_bodies(
+    tx: &mut Transaction<'_, Postgres>,
+    archive: &ArchiveConfig,
+    request: &RequestMetadata,
+    selection: BodySelection,
+) -> anyhow::Result<CapturedBodies> {
     let id = request.summary.id;
     let records = sqlx::query_as::<_, ArchiveRecord>(
         "SELECT direction, segment_id, uncompressed_offset, uncompressed_len, body_sha256, complete
-         FROM payload_archive_records WHERE trace_id = $1 AND direction IN ('request_body', 'response_body')",
-    ).bind(id).fetch_all(&mut **tx).await?;
+         FROM payload_archive_records WHERE trace_id = $1 AND (direction = 'request_body' OR ($2 AND direction = 'response_body'))",
+    ).bind(id).bind(matches!(selection, BodySelection::Both)).fetch_all(&mut **tx).await?;
     let mut ids: Vec<Uuid> = records.iter().map(|r| r.segment_id).collect();
     ids.sort_unstable();
     ids.dedup();
+    let read_limit = match selection {
+        BodySelection::Both => None,
+        BodySelection::RequestOnly { max_segment_bytes } => Some(i64::try_from(max_segment_bytes)?),
+    };
+    if let Some(limit) = read_limit {
+        // Check metadata and TOAST lengths before fetching any large blob. A
+        // small request can share a historical segment with a huge response.
+        let over_budget: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM payload_archive_segments s
+            LEFT JOIN payload_archive_segment_blobs b ON b.segment_id = s.id WHERE s.id = ANY($1)
+            AND (s.uncompressed_bytes > $2 OR s.compressed_bytes > $2 OR octet_length(b.compressed_payload) > $2))
+            OR EXISTS (SELECT 1 FROM request_traces WHERE id = $3 AND octet_length(request_body_compressed) > $2)")
+            .bind(&ids).bind(limit).bind(id).fetch_one(&mut **tx).await?;
+        if over_budget {
+            return Err(BodyReadBudgetExceeded.into());
+        }
+    }
     let segments = sqlx::query_as::<_, ArchiveSegment>(
         "SELECT s.id, s.uncompressed_bytes, s.storage_backend, s.storage_key,
-                s.checksum_sha256, b.compressed_payload
+                s.checksum_sha256, CASE WHEN $2::bigint IS NULL OR octet_length(b.compressed_payload) <= $2 THEN b.compressed_payload ELSE NULL END AS compressed_payload
          FROM payload_archive_segments s
          LEFT JOIN payload_archive_segment_blobs b ON b.segment_id = s.id
          WHERE s.id = ANY($1)",
     )
     .bind(ids)
+    .bind(read_limit)
     .fetch_all(&mut **tx)
     .await?;
     // Fetch legacy data only when an archive record is absent. Metadata-only
     // requests never execute any of these body queries.
-    let inline: Option<(Vec<u8>, Vec<u8>)> = if records.len() < 2 {
-        sqlx::query_as("SELECT request_body_compressed, response_body_compressed FROM request_traces WHERE id = $1")
-            .bind(id).fetch_optional(&mut **tx).await?
+    let expected_records = match selection {
+        BodySelection::RequestOnly { .. } => 1,
+        BodySelection::Both => 2,
+    };
+    let inline: Option<(Vec<u8>, Vec<u8>)> = if records.len() < expected_records {
+        let query = match selection {
+            BodySelection::Both => {
+                "SELECT request_body_compressed, response_body_compressed FROM request_traces WHERE id = $1"
+            }
+            BodySelection::RequestOnly { .. } => {
+                "SELECT CASE WHEN octet_length(request_body_compressed) <= $2 THEN request_body_compressed ELSE NULL END, ''::bytea FROM request_traces WHERE id = $1"
+            }
+        };
+        match selection {
+            BodySelection::Both => {
+                sqlx::query_as(query)
+                    .bind(id)
+                    .fetch_optional(&mut **tx)
+                    .await?
+            }
+            BodySelection::RequestOnly { .. } => {
+                sqlx::query_as(query)
+                    .bind(id)
+                    .bind(read_limit)
+                    .fetch_optional(&mut **tx)
+                    .await?
+            }
+        }
     } else {
         None
     };
@@ -133,19 +220,51 @@ pub(super) async fn load_trace_bodies(
             [inline.0, inline.1],
             observed,
             truncated,
-            |segment| decode_segment(&archive, segment),
+            |segment| decode_segment(&archive, segment, read_limit),
         )
     })
     .await
     .context("body reader task failed")
 }
 
-fn decode_segment(archive: &ArchiveConfig, segment: ArchiveSegment) -> anyhow::Result<Vec<u8>> {
+fn decode_segment(
+    archive: &ArchiveConfig,
+    segment: ArchiveSegment,
+    read_limit: Option<i64>,
+) -> anyhow::Result<Vec<u8>> {
+    if read_limit.is_some_and(|limit| segment.uncompressed_bytes > limit) {
+        return Err(BodyReadBudgetExceeded.into());
+    }
     let compressed = match segment.storage_backend.as_str() {
-        "filesystem" => read_archive_file(&archive.filesystem_root, &segment.storage_key)?,
-        "postgres" => segment
-            .compressed_payload
-            .context("archive blob is missing")?,
+        "filesystem" => {
+            if let Some(limit) = read_limit {
+                let file = fs::File::open(archive_file_path(
+                    &archive.filesystem_root,
+                    &segment.storage_key,
+                )?)
+                .map_err(|error| {
+                    if error.kind() == io::ErrorKind::NotFound {
+                        anyhow::Error::new(MissingArchiveSource::File(error))
+                    } else {
+                        anyhow::Error::new(error)
+                    }
+                })?;
+                let mut bytes = Vec::new();
+                file.take(u64::try_from(limit)? + 1)
+                    .read_to_end(&mut bytes)?;
+                if bytes.len() > usize::try_from(limit)? {
+                    return Err(BodyReadBudgetExceeded.into());
+                }
+                bytes
+            } else {
+                read_archive_file(&archive.filesystem_root, &segment.storage_key)?
+            }
+        }
+        "postgres" => match segment.compressed_payload {
+            Some(payload) => payload,
+            None if read_limit.is_some() => return Err(MissingArchiveSource::Blob.into()),
+            None => anyhow::bail!("archive blob is missing"),
+        },
         other => anyhow::bail!("unknown archive storage backend {other:?}"),
     };
     anyhow::ensure!(
@@ -204,7 +323,18 @@ fn decode_bodies(
                     }
                 }
             }
-            Err(error) => tracing::warn!(%id, %segment_id, %error, "archive segment unavailable"),
+            Err(error) => {
+                if error.is::<MissingArchiveSource>() {
+                    for record in records
+                        .iter()
+                        .filter(|record| record.segment_id == segment_id)
+                    {
+                        let index = index(&record.direction);
+                        bodies[index].status = BodyStatus::Missing;
+                    }
+                }
+                tracing::warn!(%id, %segment_id, %error, "archive segment unavailable");
+            }
         }
     }
     for (i, compressed) in inline.into_iter().enumerate() {

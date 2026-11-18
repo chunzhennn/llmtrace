@@ -42,15 +42,22 @@ describe('coerceFilterValue', () => {
 		expect(coerceFilterValue('bool', 'false')).toEqual({ ok: true, value: false });
 	});
 
-	it('coerces timestamps to RFC3339', () => {
-		const result = coerceFilterValue('timestamp', '2026-07-01T12:00');
+	it('requires a timezone and preserves RFC3339 precision and offset', () => {
+		const timestamp = '2026-07-01T12:00:00.123456+08:00';
+		const result = coerceFilterValue('timestamp', timestamp);
 		expect(result.ok).toBe(true);
 		if (result.ok) {
 			expect(typeof result.value).toBe('string');
-			expect(new Date(result.value as string).toISOString()).toBe(result.value);
+			expect(result.value).toBe(timestamp);
 		}
 		expect(coerceFilterValue('timestamp', 'nope').ok).toBe(false);
 		expect(coerceFilterValue('timestamp', '').ok).toBe(false);
+		expect(coerceFilterValue('timestamp', '2026-07-01T12:00').ok).toBe(false);
+	});
+	it('rejects unsafe integers in scalar and nested JSON Builder values', () => {
+		for (const [kind, raw] of [['int', '9007199254740993'], ['json', '{"nested":[9007199254740993]}'], ['json_path', '9007199254740993']]) {
+			expect(coerceFilterValue(kind, raw).ok).toBe(false);
+		}
 	});
 
 	it('parses json values but falls back to a raw string', () => {
@@ -70,6 +77,12 @@ describe('coerceFilterValue', () => {
 		expect(coerceFilterValue('text', 'hello')).toEqual({ ok: true, value: 'hello' });
 		expect(coerceFilterValue('uuid', 'abc-123')).toEqual({ ok: true, value: 'abc-123' });
 		expect(coerceFilterValue('text_array', 'tag')).toEqual({ ok: true, value: 'tag' });
+	});
+	it('rejects NUL in text and decoded nested JSON keys or values', () => {
+		for (const [kind, raw] of [
+			['text', 'a\0b'], ['json', '{"key":"a\\u0000b"}'],
+			['json_path', '{"a\\u0000b":1}']
+		]) expect(coerceFilterValue(kind, raw)).toEqual({ ok: false, error: 'NUL is not supported in query values' });
 	});
 });
 

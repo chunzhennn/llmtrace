@@ -28,6 +28,29 @@ export function valueInputKind(filterKind: string | null, op: QueryOp): ValueInp
 
 export type CoerceResult = { ok: true; value: unknown } | { ok: false; error: string };
 
+export function safeJsonNumbers(value: unknown): boolean {
+	const pending = [value];
+	while (pending.length) {
+		const item = pending.pop();
+		if (typeof item === 'number' && (!Number.isFinite(item) || (Number.isInteger(item) && !Number.isSafeInteger(item)))) return false;
+		if (item && typeof item === 'object') for (const child of Object.values(item)) pending.push(child);
+	}
+	return true;
+}
+
+export function jsonHasNul(value: unknown): boolean {
+	const pending = [value];
+	while (pending.length) {
+		const item = pending.pop();
+		if (typeof item === 'string' && item.includes('\0')) return true;
+		if (item && typeof item === 'object') for (const [key, child] of Object.entries(item)) {
+			if (key.includes('\0')) return true;
+			pending.push(child);
+		}
+	}
+	return false;
+}
+
 const RFC3339 = /^(\d{4})-(\d\d)-(\d\d)T\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/i;
 
 export function isRfc3339Timestamp(value: string): boolean {
@@ -41,31 +64,29 @@ export function isRfc3339Timestamp(value: string): boolean {
 
 /** Coerce a raw string input into the JSON value the API expects for filterKind. */
 export function coerceFilterValue(filterKind: string | null, raw: string): CoerceResult {
+	if (raw.includes('\0')) return { ok: false, error: 'NUL is not supported in query values' };
 	switch (filterKind) {
 		case 'int': {
 			if (raw.trim() === '') return { ok: false, error: 'Enter an integer' };
 			const n = Number(raw);
 			if (!Number.isFinite(n) || !Number.isInteger(n)) return { ok: false, error: 'Enter an integer' };
+			if (!Number.isSafeInteger(n)) return { ok: false, error: 'Enter an integer within the safe integer range' };
 			return { ok: true, value: n };
 		}
 		case 'bool':
 			return { ok: true, value: raw === 'true' };
 		case 'timestamp': {
 			if (raw.trim() === '') return { ok: false, error: 'Enter a date/time' };
-			const date = new Date(raw);
-			if (Number.isNaN(date.getTime())) return { ok: false, error: 'Enter a valid date/time' };
-			// Preserve explicit offsets and sub-millisecond precision when switching editor modes.
-			if (RFC3339.test(raw)) {
-				if (!isRfc3339Timestamp(raw)) return { ok: false, error: 'Enter a valid date/time' };
-				return { ok: true, value: raw };
-			}
-			return { ok: true, value: date.toISOString() };
+			if (!isRfc3339Timestamp(raw)) return { ok: false, error: 'Enter an RFC3339 date/time with a timezone' };
+			return { ok: true, value: raw };
 		}
 		case 'json':
 		case 'json_path': {
 			// Accept a JSON literal (number/bool/object/array/string); fall back to the
 			// raw text so a bare word is sent as a JSON string.
 			const parsed = safeJsonParse(raw);
+			if (parsed.ok && jsonHasNul(parsed.value)) return { ok: false, error: 'NUL is not supported in query values' };
+			if (parsed.ok && !safeJsonNumbers(parsed.value)) return { ok: false, error: 'JSON numbers must be finite and integers must be within the safe integer range' };
 			if (parsed.ok && parsed.value === null) {
 				return { ok: false, error: 'Standalone JSON null is not supported. Use IS NULL or IS NOT NULL.' };
 			}

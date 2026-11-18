@@ -27,8 +27,8 @@ export function querySuggestions(text: string, position: number, schema: QuerySc
 	const dataset = fromIndex >= 0 ? schema.datasets.find((d) => d.name === (datasetName?.kind === 'word' ? datasetName.text.toLowerCase() : datasetName?.text)) : undefined;
 	const words = tokens.map((t) => t.kind === 'word' ? t.text.toUpperCase() : t.text);
 	const last = words.at(-1);
-	const names = () => {
-		const fields = dataset?.fields ?? schema.datasets.flatMap((d) => d.fields);
+	const names = (related = false) => {
+		const fields = dataset ? [...dataset.fields, ...(related ? dataset.related_filter_fields ?? [] : [])] : schema.datasets.flatMap((d) => d.fields);
 		const options: QuerySuggestion[] = [...new Map(fields.map((f) => [f.name, f])).values()].map((f) => ({
 			label: f.name, apply: quotedName(f.name), type: 'property', detail: f.filter_kind ?? 'field',
 			info: `${dataset?.name ?? 'Dataset'} field${f.operators.length ? ` · ${f.operators.map((op) => queryOperators[op]).join(', ')}` : ''}`
@@ -51,16 +51,16 @@ export function querySuggestions(text: string, position: number, schema: QuerySc
 		for (const token of tokens) if (token.kind === 'word' && ['SELECT', 'FROM', 'WHERE', 'ORDER', 'LIMIT'].includes(token.text.toUpperCase())) clause = token.text.toUpperCase();
 		const previous = tokens.at(-1);
 		const fieldName = previous?.kind === 'word' ? previous.text.toLowerCase() : previous?.text;
-		const field = dataset && fieldName ? queryField(schema, dataset, fieldName) : undefined;
+		const field = dataset && fieldName ? queryField(schema, dataset, fieldName, clause === 'WHERE' ? 'filter' : 'projection') : undefined;
 		if (clause === 'SELECT') options = [...names(), keyword('FROM'), { label: '*', type: 'keyword', detail: 'all dataset fields' }];
 		else if (clause === 'FROM') options = ['WHERE', 'ORDER BY', 'LIMIT'].map(keyword);
 		else if (clause === 'ORDER') options = last === 'BY' || last === ',' ? names() : ['ASC', 'DESC', 'LIMIT'].map(keyword);
 		else if (clause === 'WHERE') {
-			if (last === 'WHERE' || last === 'AND') options = names().filter((o) => o.label.startsWith(schema.plugin_metadata.field_prefix) || (dataset?.fields.find((f) => f.name === o.label)?.operators.length ?? 0) > 0);
+			if (last === 'WHERE' || last === 'AND') options = names(true).filter((o) => o.label.startsWith(schema.plugin_metadata.field_prefix) || ((dataset && queryField(schema, dataset, o.label, 'filter')?.operators.length) ?? 0) > 0);
 			else if (field) options = field.operators.map((op) => keyword(queryOperators[op]));
 			else if (['=', '!=', '<>', '>', '>=', '<', '<=', 'CONTAINS'].includes(last ?? '')) {
 				const name = tokens.at(-2)?.text;
-				const kind = name && dataset ? queryField(schema, dataset, name)?.filter_kind : null;
+				const kind = name && dataset ? queryField(schema, dataset, name, 'filter')?.filter_kind : null;
 				if (kind === 'bool') options = ['TRUE', 'FALSE'].map(keyword);
 				else if (kind === 'int') options = [0, 200, 400, 500].map((n) => ({ label: String(n), type: 'constant' }));
 				else if (kind === 'json' || kind === 'json_path') options = [keyword('TRUE'), keyword('FALSE'), { label: "JSON '{}'", type: 'keyword', detail: 'JSON value' }];

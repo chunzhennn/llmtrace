@@ -106,6 +106,30 @@ retry_interval_secs = 2
 # requires Authorization: Bearer <token>.
 # metrics_bearer_token = ""
 
+[note_index]
+# Configure indexed tag names in Admin → System → Prompt tags. The initial list is empty.
+# This section controls the background worker and its resource limits.
+enabled = true
+concurrency = 1
+# Separate connections, in addition to storage.max_connections and 4 query connections.
+max_connections = 2
+poll_interval_ms = 1000
+# Historical backfill is lower priority than newly captured requests.
+backfill_batch_size = 100
+backfill_interval_secs = 30
+lease_secs = 60
+max_attempts = 3
+shutdown_timeout_secs = 10
+max_body_bytes = 8388608
+max_segment_bytes = 67108864
+max_scan_bytes = 8388608
+max_fields = 8192
+max_value_bytes = 4096
+max_notes = 256
+max_total_value_bytes = 262144
+# Only supported extraction versions are accepted; omit to follow the active version.
+# build_version = 1
+
 [auth]
 # Required in production mode when server.public_url uses https. Set false only
 # for HTTP-only endpoints where non-Secure browser cookies are acceptable.

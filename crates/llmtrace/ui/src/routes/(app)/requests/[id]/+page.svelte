@@ -7,6 +7,7 @@
 	import { listReturnHref } from '$lib/utils/navigation';
 	import { base } from '$app/paths';
 	import PageHeader from '$lib/components/PageHeader.svelte';
+	import PromptIndexStatus from '$lib/components/PromptIndexStatus.svelte';
 	import Card from '$lib/components/Card.svelte';
 	import Tabs, { type Tab } from '$lib/components/Tabs.svelte';
 	import KeyValue from '$lib/components/KeyValue.svelte';
@@ -114,6 +115,8 @@
 		</a>
 	{/snippet}
 </PageHeader>
+
+<PromptIndexStatus {id} />
 
 {#if detail.loading && !detail.data}
 	<div class="flex flex-col gap-3">

@@ -1,5 +1,5 @@
 import type { DatasetSpec, FieldSpec, QueryFilter, QueryOp, QueryOrder, QuerySchema, StructuredQueryRequest } from '$lib/api/types';
-import { isRfc3339Timestamp } from './query';
+import { isRfc3339Timestamp, safeJsonNumbers, jsonHasNul } from './query';
 
 /** The editor language maps only to the existing structured query API. */
 export class QueryTextError extends Error {
@@ -76,8 +76,9 @@ export const queryOperators: Record<QueryOp, string> = {
 	contains: 'CONTAINS', is_null: 'IS NULL', is_not_null: 'IS NOT NULL'
 };
 
-export function queryField(schema: QuerySchema, dataset: DatasetSpec, name: string): FieldSpec | undefined {
-	const field = dataset.fields.find((f) => f.name === name);
+export function queryField(schema: QuerySchema, dataset: DatasetSpec, name: string, usage: 'projection' | 'filter' | 'sort' = 'projection'): FieldSpec | undefined {
+	const fields = usage === 'filter' ? [...dataset.fields, ...(dataset.related_filter_fields ?? [])] : dataset.fields;
+	const field = fields.find((f) => f.name === name);
 	if (field) return field;
 	const plugin = schema.plugin_metadata;
 	if (dataset.name !== plugin.dataset || !name.startsWith(plugin.field_prefix)) return;
@@ -88,12 +89,6 @@ export function queryField(schema: QuerySchema, dataset: DatasetSpec, name: stri
 }
 
 const byteLength = (value: string) => new TextEncoder().encode(value).length;
-
-function safeJsonNumbers(value: unknown): boolean {
-	if (typeof value === 'number') return Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value));
-	if (value && typeof value === 'object') return Object.values(value).every(safeJsonNumbers);
-	return true;
-}
 
 export function parseQueryText(text: string, schema: QuerySchema): StructuredQueryRequest {
 	const tokens = queryTokens(text);
@@ -125,12 +120,12 @@ export function parseQueryText(text: string, schema: QuerySchema): StructuredQue
 	const source = identifier();
 	const dataset = schema.datasets.find((d) => d.name === source.text);
 	if (!dataset) fail(`Unknown dataset "${source.text}". Choose ${schema.datasets.map((d) => d.name).join(', ')}.`, source);
-	const requireField = (token: QueryToken) => {
-		const field = queryField(schema, dataset!, token.text);
+	const requireField = (token: QueryToken, usage: 'projection' | 'filter' | 'sort' = 'projection') => {
+		const field = queryField(schema, dataset!, token.text, usage);
 		if (!field) fail(`Unknown field "${token.text}" in ${dataset!.name}.`, token);
 		return field!;
 	};
-	selected.forEach(requireField);
+	selected.forEach((token) => requireField(token));
 	const fields = [...new Set(all ? dataset!.fields.map((f) => f.name) : selected.map((f) => f.text))];
 	if (fields.length > schema.limits.max_fields) fail(`Select at most ${schema.limits.max_fields} fields.`, source);
 	const filters: QueryFilter[] = [];
@@ -163,7 +158,7 @@ export function parseQueryText(text: string, schema: QuerySchema): StructuredQue
 	if (keyword('WHERE')) {
 		do {
 			const name = identifier();
-			const field = requireField(name);
+			const field = requireField(name, 'filter');
 			let op: QueryOp;
 			if (keyword('IS')) { op = keyword('NOT') ? 'is_not_null' : 'is_null'; expect('NULL'); }
 			else if (keyword('CONTAINS')) op = 'contains';
@@ -179,6 +174,7 @@ export function parseQueryText(text: string, schema: QuerySchema): StructuredQue
 			else {
 				const token = peek();
 				const value = literal();
+				if (jsonHasNul(value)) fail('NUL is not supported in query values.', token);
 				const kind = field.filter_kind;
 				if (kind === 'int' && (typeof value !== 'number' || !Number.isSafeInteger(value))) fail(`${name.text} needs a safe integer.`, token);
 				if (kind === 'bool' && typeof value !== 'boolean') fail(`${name.text} needs TRUE or FALSE.`, token);
@@ -197,7 +193,7 @@ export function parseQueryText(text: string, schema: QuerySchema): StructuredQue
 	if (keyword('ORDER')) {
 		expect('BY');
 		do {
-			const name = identifier(); requireField(name);
+			const name = identifier(); requireField(name, 'sort');
 			const direction = keyword('DESC') ? 'desc' : (keyword('ASC'), 'asc');
 			order.push({ field: name.text, direction });
 		} while (symbol(','));
@@ -239,6 +235,11 @@ export function formatQueryText(request: StructuredQueryRequest, schema: QuerySc
 	if (order.length) lines.push(`ORDER BY ${order.map((o) => `${name(o.field)} ${(o.direction ?? 'desc').toUpperCase()}`).join(', ')}`);
 	lines.push(`LIMIT ${request.limit ?? 100};`);
 	return lines.join('\n');
+}
+
+/** Sessions tag filters and Query Builder share the Code validator. */
+export function validatedQuery(request: StructuredQueryRequest, schema: QuerySchema): StructuredQueryRequest {
+	return parseQueryText(formatQueryText(request, schema), schema);
 }
 
 export function queryErrorMessage(error: unknown, text: string): string {

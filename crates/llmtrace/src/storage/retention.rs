@@ -63,7 +63,15 @@ pub(super) const STORAGE_SUMMARY_SQL: &str = r#"
                 (8, 'ui_audit_events'),
                 (9, 'ui_sessions'),
                 (10, 'oauth_states'),
-                (11, 'archive_file_deletions')
+                (11, 'archive_file_deletions'),
+                (12, 'message_contents'),
+                (13, 'message_storage_migration'),
+                (14, 'note_values'),
+                (15, 'request_notes'),
+                (16, 'request_prompt_index_state'),
+                (17, 'note_index_settings'),
+                (18, 'note_index_coverage'),
+                (19, 'query_cursor_key')
         ),
         current_schema_oid AS (
             SELECT oid

@@ -1,6 +1,7 @@
 import { api, type QueryParams } from '../client';
 import type {
 	PluginsResponse,
+	PromptTagSettings,
 	RedactionPreview,
 	RedactionPreviewRequest,
 	RetentionStatus,
@@ -49,4 +50,13 @@ export function redactionPreview(
 	signal?: AbortSignal
 ): Promise<RedactionPreview> {
 	return api.post<RedactionPreview>('/redaction/preview', body, undefined, signal);
+}
+
+
+export function promptTagSettings(signal?: AbortSignal) {
+	return api.get<PromptTagSettings>('/settings/prompt-tags', undefined, signal);
+}
+
+export function savePromptTagSettings(settings: PromptTagSettings, signal?: AbortSignal) {
+	return api.post<PromptTagSettings>('/settings/prompt-tags', settings, undefined, signal);
 }

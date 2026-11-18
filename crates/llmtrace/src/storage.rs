@@ -25,7 +25,11 @@ mod archive;
 mod audit;
 mod bodies;
 mod ingest;
+mod message_contents;
+pub(crate) mod message_migration;
 mod models;
+mod note_context;
+pub(crate) mod note_index;
 mod paging;
 mod query;
 mod requests;
@@ -44,6 +48,8 @@ pub use audit::{
 };
 pub use ingest::{TraceRecord, insert_trace};
 pub(crate) use ingest::{insert_journaled_trace, journal_trace_persisted};
+pub(crate) use note_context::get_note_context;
+pub(crate) use query::QueryExecutor;
 pub use query::{
     StructuredQuery, StructuredQueryError, run_structured_query, structured_query_schema,
 };
@@ -179,6 +185,8 @@ fn read_rows<T: for<'row> FromRow<'row, sqlx::postgres::PgRow>>(
 mod integration;
 #[cfg(test)]
 mod openrouter;
+#[cfg(test)]
+mod optimization_performance;
 #[cfg(test)]
 mod performance;
 #[cfg(test)]

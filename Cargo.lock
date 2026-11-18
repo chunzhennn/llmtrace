@@ -1453,6 +1453,7 @@ dependencies = [
  "cookie",
  "futures-util",
  "hex",
+ "hmac",
  "http",
  "rand 0.8.6",
  "reqwest",

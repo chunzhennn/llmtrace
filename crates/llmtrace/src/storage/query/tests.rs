@@ -345,3 +345,12 @@ fn message_truncation_filter_accepts_boolean_values_only() {
         assert_eq!(result.is_ok(), accepted);
     }
 }
+
+#[test]
+fn nul_in_scalar_or_nested_json_filters_is_a_validation_error() {
+    assert!(value_as_string("content", &json!("a\0b")).is_err());
+    assert!(
+        validate_json_filter_value_size("plugin_metadata", &json!({"nested":["a\0b"]})).is_err()
+    );
+    assert!(validate_json_filter_value_size("plugin_metadata", &json!({"a\0b":true})).is_err());
+}

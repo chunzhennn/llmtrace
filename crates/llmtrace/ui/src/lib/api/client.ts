@@ -11,12 +11,14 @@ export const API_BASE = '/api';
 export class ApiError extends Error {
 	status: number;
 	retryAfterSecs: number | null;
+	code: string | null;
 
-	constructor(status: number, message: string, retryAfterSecs: number | null = null) {
+	constructor(status: number, message: string, retryAfterSecs: number | null = null, code: string | null = null) {
 		super(message);
 		this.name = 'ApiError';
 		this.status = status;
 		this.retryAfterSecs = retryAfterSecs;
+		this.code = code;
 	}
 }
 
@@ -55,16 +57,18 @@ interface RequestOptions {
 async function parseError(response: Response): Promise<ApiError> {
 	let message = `request failed with status ${response.status}`;
 	let retryAfter: number | null = null;
+	let code: string | null = null;
 	try {
 		const data = await response.json();
 		if (data && typeof data === 'object') {
 			if (typeof data.error === 'string') message = data.error;
 			if (typeof data.retry_after_secs === 'number') retryAfter = data.retry_after_secs;
+			if (typeof data.code === 'string') code = data.code;
 		}
 	} catch {
 		// non-JSON error body; keep the generic message
 	}
-	return new ApiError(response.status, message, retryAfter);
+	return new ApiError(response.status, message, retryAfter, code);
 }
 
 async function request<T>(

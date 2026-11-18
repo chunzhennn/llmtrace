@@ -78,6 +78,27 @@ async fn session_export_preserves_archives_and_snapshot(pool: PgPool) -> anyhow:
                 .bind(ids[0])
                 .fetch_one(&pool)
                 .await?;
+        if backend == ArchiveStorageBackend::Postgres {
+            use crate::storage::message_migration::{self, MessageMaintenanceAction as Action};
+            let mut before = collect_export(
+                SessionExport::prepare(&pool, &archive, session)
+                    .await?
+                    .unwrap(),
+            )
+            .await?;
+            message_migration::run(&pool, Action::ReferencesOnly, 100, true).await?;
+            message_migration::run(&pool, Action::ClearInline, 100, false).await?;
+            let mut after = collect_export(
+                SessionExport::prepare(&pool, &archive, session)
+                    .await?
+                    .unwrap(),
+            )
+            .await?;
+            for records in [&mut before, &mut after] {
+                records[0].as_object_mut().unwrap().remove("exported_at");
+            }
+            assert_eq!(before, after, "normalization must preserve the full export");
+        }
         let export = SessionExport::prepare(&pool, &archive, session)
             .await?
             .unwrap();

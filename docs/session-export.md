@@ -190,3 +190,25 @@ with older event times. Periodic full reconciliation covers data delayed beyond
 your lookback. The list queries are independent snapshots, so newly committed
 sessions may only appear on a subsequent scan. Scheduling and checkpoint storage
 belong to the consuming workflow.
+
+
+## Preview dictionary compatibility
+
+Message preview text may be stored inline, in `message_contents`, or in both
+during migration. Details, bounded preview export, structured `messages` queries,
+and this export use the `trace_messages` compatibility projection or the same content resolution
+after limiting a session page (so skipped rows do not load dictionary text). Message
+IDs, order, roles, exact persisted text and `content_truncated: null/false/true`
+are preserved; a missing dictionary entry is an integrity error, never an empty
+string substituted as success. Raw request/response captures are independent of
+this dictionary.
+
+The migration regression compares the complete parsed JSONL before/after inline
+cleanup (excluding only `exported_at`), including original body bytes and SHA-256,
+binary base64, preview IDs/null state/counts, truncation and final end marker.
+Prompt tag indexing adds no fields to version 1 session export. Its status and source
+context are separate authenticated metadata endpoints. Query-result JSONL remains
+a bounded, rows-only query export; it does not replace this full export.
+
+See [migration and rollback operations](storage-query-operations.md) before clearing
+inline preview content or restoring an older binary.

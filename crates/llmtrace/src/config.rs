@@ -48,6 +48,7 @@ pub struct Config {
     pub proxy: ProxyConfig,
     pub storage: StorageConfig,
     pub archive: ArchiveConfig,
+    pub note_index: crate::storage::note_index::NoteIndexOptions,
     pub auth: AuthConfig,
     pub observability: ObservabilityConfig,
     pub redaction: RedactionConfig,
@@ -512,6 +513,7 @@ impl Config {
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
+        self.note_index.validate()?;
         let mut errors = Vec::new();
 
         self.validate_server(&mut errors);

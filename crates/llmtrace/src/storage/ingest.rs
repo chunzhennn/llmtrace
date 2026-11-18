@@ -1,4 +1,6 @@
 //! Transactional trace ingestion, sessions, rollups and journal receipts.
+use super::message_contents;
+use super::message_contents::MessageWriteMode;
 use super::*;
 
 #[derive(Debug, Clone)]
@@ -200,25 +202,61 @@ pub(super) async fn insert_trace_internal(
         archive_prepared_payloads(&mut tx, archive, &trace, payload, journal_id).await?;
     }
 
+    // Enqueue and fence both version/mode in one round trip. SHARE locks stay
+    // through the trace commit, so explicit activation or cleanup cannot race it.
+    let write_mode: String = sqlx::query_scalar(
+        "WITH pending AS (
+            INSERT INTO request_prompt_index_state(request_id, index_version, capture_complete, tag_revision)
+            SELECT $1, active_version, $2, tag_revision FROM note_index_settings
+            WHERE singleton AND cardinality(tag_names) > 0 FOR SHARE
+        ) SELECT write_mode FROM message_storage_migration WHERE singleton FOR SHARE",
+    )
+    .bind(trace.id)
+    .bind(!trace.request_body_truncated)
+    .fetch_one(&mut *tx)
+    .await?;
+
     update_rollup(&mut tx, &trace).await?;
 
     if let Some(session_id) = trace.session_id
         && !messages.is_empty()
     {
+        let mode = MessageWriteMode::parse(&write_mode)?;
+        let content_ids = match mode {
+            MessageWriteMode::Legacy => vec![None; messages.len()],
+            MessageWriteMode::DualWrite | MessageWriteMode::ReferencesOnly => {
+                message_contents::intern_batch(&mut tx, &messages)
+                    .await?
+                    .into_ids(messages.len())?
+                    .into_iter()
+                    .map(Some)
+                    .collect()
+            }
+        };
         let truncated: Vec<bool> = messages
             .iter()
             .map(|message| message.content_truncated)
             .collect();
-        let (roles, contents): (Vec<String>, Vec<String>) = messages
-            .into_iter()
-            .map(|message| (message.role, message.content))
+        let (roles, contents): (Vec<&str>, Vec<Option<&str>>) = messages
+            .iter()
+            .map(|message| {
+                (
+                    message.role.as_str(),
+                    match mode {
+                        MessageWriteMode::Legacy | MessageWriteMode::DualWrite => {
+                            Some(message.content.as_str())
+                        }
+                        MessageWriteMode::ReferencesOnly => None,
+                    },
+                )
+            })
             .unzip();
 
         sqlx::query(
             r#"
-            INSERT INTO session_messages (request_id, session_id, role, content, created_at, content_truncated)
-            SELECT $1, $2, message.role, message.content, $5, message.content_truncated
-            FROM UNNEST($3::text[], $4::text[], $6::boolean[]) AS message(role, content, content_truncated)
+            INSERT INTO session_messages (request_id, session_id, role, content, created_at, content_truncated, content_id)
+            SELECT $1, $2, message.role, message.content, $5, message.content_truncated, message.content_id
+            FROM UNNEST($3::text[], $4::text[], $6::boolean[], $7::bigint[]) AS message(role, content, content_truncated, content_id)
             "#,
         )
         .bind(trace.id)
@@ -227,6 +265,7 @@ pub(super) async fn insert_trace_internal(
         .bind(&contents)
         .bind(trace.started_at)
         .bind(&truncated)
+        .bind(&content_ids)
         .execute(&mut *tx)
         .await?;
     }

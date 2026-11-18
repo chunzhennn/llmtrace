@@ -1,4 +1,5 @@
 <script lang="ts">
+	import PromptTagSettings from '$lib/components/PromptTagSettings.svelte';
 	import { onMount } from 'svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import Card from '$lib/components/Card.svelte';
@@ -51,7 +52,9 @@
 
 <svelte:head><title>System · llmtrace</title></svelte:head>
 
-<PageHeader title="System" description="Read-only runtime configuration, security posture, retention, and storage." />
+<PageHeader title="System" description="Prompt tags, runtime configuration, security posture, retention, and storage." />
+
+<PromptTagSettings />
 
 <!-- Security posture -->
 <Card title="Security posture">

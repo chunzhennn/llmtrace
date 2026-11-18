@@ -68,8 +68,8 @@ typed query requests, result rendering and mode switching. Frontend validation:
 
 The implementation uses CodeMirror and translates the supported statement grammar
 into the existing allowlisted `POST /api/query` request. SQL text is never sent to
-Postgres or a raw SQL endpoint. No backend route, configuration or migration changes
-are required.
+Postgres or a raw SQL endpoint. Prompt tag indexing and the additional query capabilities
+described below use the storage migrations and worker in the current backend.
 
 ## Write and run a query
 
@@ -106,7 +106,7 @@ FROM dataset
 ```
 
 Datasets and fields are the names exposed by query schema discovery, such as
-`requests`, `sessions`, `messages` and `rollups_minute`. `SELECT *` selects all
+`requests`, `sessions`, `messages`, `prompt_tags` and `rollups_minute`. `SELECT *` selects all
 listed fields in that dataset. Supported operators are `=`, `!=` / `<>`, `>`,
 `>=`, `<`, `<=`, `CONTAINS`, `IS NULL`, and `IS NOT NULL`, subject to the selected
 field's allowed operators.
@@ -148,3 +148,86 @@ in [session-export.md](session-export.md).
 The editor preserves the current query while switching modes; it does not persist
 query drafts across a page reload. Query execution and JSONL export use the existing
 admin authentication and backend field/operator validation.
+
+
+## Request prompt tag search
+
+Open **Admin → System → Prompt tags** to configure names. The initial list is empty.
+For example, enter `PROJECT, priority` to index `[PROJECT: atlas]` and
+`[priority: high]`. Names are case-sensitive, start with an ASCII letter, and
+accept letters, digits, underscores and hyphens. Each name can have up to 32
+characters, and the list can contain up to 32 names. An empty list disables indexing.
+
+Saving applies to new captures immediately. The worker rebuilds retained requests
+in batches when backfill is enabled. Searches use the new settings while the
+index fills. Saving the same names in a different order keeps the current index.
+A concurrent edit returns HTTP 409 so an older form cannot overwrite a newer edit.
+The authenticated settings endpoint is `GET /api/settings/prompt-tags`. To update it,
+POST the returned `revision` with the desired `tags` array.
+
+On **Sessions**, choose **Filter by prompt tag**, select a configured name and
+search by value, role or time. The same filters work in the Query editor.
+
+```sql
+SELECT id, user_name, last_seen FROM sessions
+WHERE "prompt_tag.name" = 'PROJECT' AND "prompt_tag.value" = 'atlas'
+  AND "prompt_tag.role" = 'user'
+ORDER BY last_seen DESC LIMIT 50;
+```
+
+All related conditions apply to the same occurrence. A matching session appears once.
+For individual hits, query the `prompt_tags` dataset.
+
+```sql
+SELECT id, request_id, tag_name, tag_value, observed_at, source_path
+FROM prompt_tags WHERE tag_name = 'PROJECT' AND tag_value = 'atlas'
+ORDER BY observed_at DESC LIMIT 50;
+```
+
+The scanner reads decoded request-side Chat, Responses, Anthropic Messages and
+legacy completion text. Tag values have leading and trailing ASCII whitespace
+removed. Exact matches preserve case, empty values and Unicode. Substring search
+treats wildcard characters literally. Expand a hit to read its source snippet
+from `GET /api/prompt-tags/{id}/context`. Truncated inputs, unsupported formats
+and unfinished backfill can leave gaps. Coverage describes this indexing state.
+
+The earlier API spellings `prompt_notes`, `note_value` and `prompt_note.*` remain
+query aliases across the configured names. Add `prompt_tag.name` to restrict a
+session query to one name.
+
+## Pagination, cancellation and export scope
+
+Responses retain `dataset / fields / rows / limit` and add `page` and optional
+`search`. `page.has_more` is based on one extra row. Stable unique ties are added
+internally. `page.row_ids` lets clients deduplicate live pages even when the ID was
+not selected as an output column.
+
+Cursor orders are advertised by `/api/query/schema`: sessions `last_seen DESC`
+and prompt_tags `observed_at DESC`, with internal unique tie-breakers. For those
+orders, send `page.next_cursor` as `cursor` on the next otherwise identical
+structured request. The authenticated cursor is bound to filters, projection,
+order, limit and active index version. A tag configuration change also expires tag-query cursors. Editing a query discards its cursor;
+tampering/version changes require restarting at page one. Other orders use bounded
+offset pages. Live indexing, new requests and retention may change later pages;
+there is no multi-page snapshot promise.
+
+**Cancel**, a newer run, or navigation aborts the browser request. Sequence checks
+prevent old responses from replacing new ones. Editing or failing a query retains
+the earlier result with its earlier conditions visibly labelled. Running,
+pagination and export share the busy state. Builder and Code reject unsafe
+integers (including nested JSON), standalone JSON null and NUL; timestamps require
+a timezone and preserve precision/offset.
+
+The schema advertises `execution_budget`: 8 process-wide slots, a separate
+4-connection read pool, 500 ms connection wait, 4 s SQL timeout, 6 s overall
+execution deadline and 8 MiB encoded response cap. Error envelopes have `error`
+and stable `code`: `query_invalid` (400), `query_capacity_exhausted` (429),
+`query_dependency_unavailable` (503), `query_timeout` (504),
+`query_response_too_large` (413), or `query_failed` (500).
+
+Query JSONL **contains rows only** and remains bounded by the current query limit;
+it is not an automatic download of all cursor pages. Headers
+`x-llmtrace-query-has-more`, `x-llmtrace-query-coverage`, and
+`x-llmtrace-query-index-version` expose its limited scope without adding metadata
+lines. The UI reads them and labels the export. Use [full session export](session-export.md)
+for every retained capture in a session.

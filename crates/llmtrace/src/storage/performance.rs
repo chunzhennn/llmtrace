@@ -21,6 +21,8 @@ use std::sync::{
 };
 use std::time::Instant;
 
+mod note_browser;
+mod note_load;
 mod ui_review;
 
 struct Server {
@@ -215,15 +217,51 @@ fn metric(values: &BTreeMap<String, f64>, name: &str) -> f64 {
 }
 
 fn rss_bytes(pid: u32) -> u64 {
-    fs::read_to_string(format!("/proc/{pid}/status"))
+    let linux_bytes = fs::read_to_string(format!("/proc/{pid}/status"))
         .ok()
         .and_then(|s| {
             s.lines()
                 .find(|line| line.starts_with("VmRSS:"))
                 .and_then(|line| line.split_whitespace().nth(1)?.parse::<u64>().ok())
         })
-        .unwrap_or_default()
-        * 1024
+        .map(|kib: u64| kib * 1024);
+    if let Some(bytes) = linux_bytes {
+        return bytes;
+    }
+    // macOS has no /proc. Cache this observational ps sample for 500 ms so
+    // process creation does not throttle the HTTP benchmark's completion loop.
+    struct RssSample {
+        pid: u32,
+        at: Instant,
+        bytes: u64,
+    }
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<RssSample>>> =
+        std::sync::OnceLock::new();
+    let mut cached = CACHE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("benchmark RSS sample cache poisoned; discard this run");
+    if let Some(sample) = cached.as_ref()
+        && sample.pid == pid
+        && sample.at.elapsed() < Duration::from_millis(500)
+    {
+        return sample.bytes;
+    }
+    let bytes = Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|kib| kib * 1024)
+        .unwrap_or(0);
+    *cached = Some(RssSample {
+        pid,
+        at: Instant::now(),
+        bytes,
+    });
+    bytes
 }
 
 fn percentile(values: &[f64], fraction: f64) -> f64 {

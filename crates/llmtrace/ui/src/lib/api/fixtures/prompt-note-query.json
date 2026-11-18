@@ -1,0 +1,20 @@
+{
+  "dataset": "sessions",
+  "fields": ["id", "last_seen", "user_name"],
+  "rows": [{"id": "00000000-0000-0000-0000-000000000001", "last_seen": "2026-11-01T00:00:00+00:00", "user_name": "synthetic user"}],
+  "limit": 10,
+  "page": {"has_more": false, "next_cursor": null, "offset": 0, "row_ids": ["00000000-0000-0000-0000-000000000001"]},
+  "search": {
+    "scope": "captured_request_prompt_notes",
+    "index_version": 1,
+    "coverage": "unknown",
+    "coverage_checked_at": null,
+    "coverage_counts_exact": false,
+    "coverage_count_scope": "all_retained_requests_maintenance_snapshot",
+    "counts": null,
+    "warnings": [
+      "Coverage is a maintenance snapshot of retained requests; zero matches do not prove absence.",
+      "Results are live; late indexing, new requests and retention can change later pages."
+    ]
+  }
+}
