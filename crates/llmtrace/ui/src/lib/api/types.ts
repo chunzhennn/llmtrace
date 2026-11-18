@@ -71,6 +71,7 @@ export interface JournalMetrics {
 
 export interface RuntimeMetrics {
     trace_journal: JournalMetrics;
+	note_index?: { running: boolean; published: number; failures: number };
 	trace_pipeline: {
 		enqueued: number;
 		persisted: number;
@@ -551,6 +552,8 @@ export interface StructuredQueryRequest {
 	filters?: QueryFilter[];
 	order_by?: QueryOrder[];
 	limit?: number;
+	cursor?: string;
+	offset?: number;
 }
 
 export interface StructuredQueryResult {
@@ -558,7 +561,41 @@ export interface StructuredQueryResult {
 	fields: string[];
 	rows: Record<string, unknown>[];
 	limit: number;
+	page?: { has_more: boolean; next_cursor: string | null; offset: number; row_ids?: string[] };
+	search?: NoteSearchCoverage | null;
 }
+
+export interface NoteSearchCoverage {
+	scope: 'captured_request_prompt_tags' | 'captured_request_prompt_notes';
+	index_version: number;
+	coverage: 'complete' | 'partial' | 'unknown';
+	coverage_checked_at: string | null;
+	coverage_counts_exact: boolean;
+	coverage_count_scope: string;
+	counts: { pending: number; processing: number; ready: number; partial: number; unsupported: number; failed: number; missing_state: number; missing_source: number } | null;
+	warnings: string[];
+}
+
+export type NoteContext =
+	| { status: 'available'; before: string; matched: string; after: string; truncated: boolean }
+	| { status: 'missing' | 'unreadable' | 'over_budget' | 'unsupported_version' };
+
+export interface PromptTagSettings {
+	revision: number;
+	tags: string[];
+}
+
+export interface RequestPromptIndex {
+	index_version: number;
+	state: 'disabled' | 'not_indexed' | 'pending' | 'processing' | 'ready' | 'partial' | 'unsupported' | 'failed';
+	capture_complete: boolean;
+	external_history: boolean;
+	diagnostics: string[];
+	indexed_at: string | null;
+	attempt_count: number;
+}
+
+export type QueryErrorCode = 'query_invalid' | 'query_capacity_exhausted' | 'query_dependency_unavailable' | 'query_timeout' | 'query_response_too_large' | 'query_failed';
 
 export interface FieldSpec {
 	name: string;
@@ -572,9 +609,19 @@ export interface DatasetSpec {
 	default_fields: string[];
 	default_order: QueryOrder[];
 	fields: FieldSpec[];
+	related_filter_fields?: FieldSpec[];
+	cursor_orders?: QueryOrder[][];
 }
 
 export interface QuerySchema {
+	execution_budget?: {
+		concurrency: number;
+		read_pool_connections: number;
+		connection_wait_ms: number;
+		deadline_ms: number;
+		statement_timeout_ms: number;
+		max_response_bytes: number;
+	};
 	limits: {
 		max_fields: number;
 		max_filters: number;
@@ -669,6 +716,25 @@ export interface PluginsResponse {
 // ---------------------------------------------------------------------------
 
 export interface RuntimeConfig {
+	note_index?: {
+		enabled: boolean;
+		concurrency: number;
+		max_connections: number;
+		backfill_batch_size: number;
+		backfill_interval_secs: number;
+		build_version: 1 | null;
+		poll_interval_ms: number;
+		lease_secs: number;
+		shutdown_timeout_secs: number;
+		max_attempts: number;
+		max_body_bytes: number;
+		max_segment_bytes: number;
+		max_scan_bytes: number;
+		max_fields: number;
+		max_value_bytes: number;
+		max_notes: number;
+		max_total_value_bytes: number;
+	};
 	server: {
 		listen: string;
 		admin_listen: string | null;

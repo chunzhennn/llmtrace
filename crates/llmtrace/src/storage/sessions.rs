@@ -1,6 +1,19 @@
 //! Session metadata, message previews and summary reads.
 use super::*;
 
+pub(super) const SESSION_MESSAGES_PAGE_SQL: &str = r#"
+        SELECT m.id, m.request_id, m.role, COALESCE(m.content, c.content) AS content,
+               m.created_at, m.content_truncated
+        FROM (
+            SELECT id, created_at
+            FROM session_messages WHERE session_id = $1
+            ORDER BY created_at ASC, id ASC LIMIT $2 OFFSET $3
+        ) selected
+        JOIN session_messages m ON m.id = selected.id
+        LEFT JOIN message_contents c ON c.id = m.content_id
+        ORDER BY selected.created_at ASC, selected.id ASC
+        "#;
+
 pub(super) const SESSION_REQUEST_STATS_SQL: &str = r#"
         SELECT COUNT(*)::bigint AS request_count,
                COUNT(*) FILTER (WHERE error IS NOT NULL OR status >= 400)::bigint AS error_count,
@@ -100,20 +113,15 @@ pub async fn get_session(
         .bind(id)
         .fetch_one(&mut *tx)
         .await?;
-    let messages = sqlx::query_as::<_, SessionMessage>(
-        r#"
-        SELECT id, request_id, role, content, created_at, content_truncated
-        FROM session_messages
-        WHERE session_id = $1
-        ORDER BY created_at ASC, id ASC
-        LIMIT $2 OFFSET $3
-        "#,
-    )
-    .bind(id)
-    .bind(page.fetch_limit())
-    .bind(page.offset)
-    .fetch_all(&mut *tx)
-    .await?;
+    // Page over index-covered keys first. Loading occurrence fields inside the
+    // offset scan would still visit the heap for every skipped preview, even
+    // though dictionary resolution itself happens after the limit.
+    let messages = sqlx::query_as::<_, SessionMessage>(SESSION_MESSAGES_PAGE_SQL)
+        .bind(id)
+        .bind(page.fetch_limit())
+        .bind(page.offset)
+        .fetch_all(&mut *tx)
+        .await?;
     tx.commit().await?;
     let has_more = messages.len() > page.limit as usize;
     let messages = messages.into_iter().take(page.limit as usize).collect();

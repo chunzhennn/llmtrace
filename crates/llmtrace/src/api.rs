@@ -154,6 +154,12 @@ pub fn router() -> Router<AppState> {
         .route("/security/posture", get(security_posture_report))
         .route("/retention/status", get(retention_status))
         .route("/storage/summary", get(storage_summary))
+        .route("/prompt-notes/{id}/context", get(note_context))
+        .route("/prompt-tags/{id}/context", get(note_context))
+        .route(
+            "/settings/prompt-tags",
+            get(prompt_tag_settings).post(save_prompt_tag_settings),
+        )
         .route("/redaction/preview", post(redaction_preview))
         .route("/usage/summary", get(usage_summary))
         .route("/usage/api-keys", get(api_key_usage))
@@ -171,6 +177,7 @@ pub fn router() -> Router<AppState> {
         .route("/requests/slow", get(slow_requests))
         .route("/requests/export.jsonl", get(export_requests_jsonl))
         .route("/requests/{id}", get(get_request))
+        .route("/requests/{id}/prompt-index", get(request_prompt_index))
         .route("/sessions", get(list_sessions))
         .route("/sessions/{id}/export.jsonl", get(export_session_jsonl))
         .route(
@@ -628,9 +635,29 @@ async fn run_query(
     State(state): State<AppState>,
     Json(payload): Json<storage::StructuredQuery>,
 ) -> Response {
-    match storage::run_structured_query(&state.pool, payload).await {
+    match state.query_executor.run(payload).await {
         Ok(value) => Json(value).into_response(),
         Err(error) => structured_query_error(error),
+    }
+}
+
+async fn note_context(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
+    match state
+        .query_executor
+        .note_context(&state.config.archive, &state.config.note_index, id)
+        .await
+    {
+        Ok(Some(context)) => Json(context).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => structured_query_error(error),
+    }
+}
+
+async fn request_prompt_index(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
+    match storage::note_index::request_index_status(&state.pool, id).await {
+        Ok(Some(status)) => Json(status).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => api_error(StatusCode::SERVICE_UNAVAILABLE, error),
     }
 }
 
@@ -638,11 +665,47 @@ async fn query_schema() -> Response {
     Json(storage::structured_query_schema()).into_response()
 }
 
+async fn prompt_tag_settings(State(state): State<AppState>) -> Response {
+    json_response(storage::note_index::tag_settings(&state.pool).await)
+}
+
+async fn save_prompt_tag_settings(
+    State(state): State<AppState>,
+    Extension(user): Extension<MeResponse>,
+    Json(mut settings): Json<storage::note_index::PromptTagSettings>,
+) -> Response {
+    if let Err(message) = crate::prompt_tags::validate_tag_names(&mut settings.tags) {
+        return bad_request(message);
+    }
+    match storage::note_index::save_tag_settings(&state.pool, &settings).await {
+        Ok(Some(saved)) => {
+            if saved.revision != settings.revision
+                && let Err(error) = storage::record_ui_audit_event(
+                    &state.pool,
+                    "prompt_tags_updated",
+                    Some(&user.user_id),
+                    json!({"revision":saved.revision,"tags":saved.tags}),
+                )
+                .await
+            {
+                tracing::warn!(%error, "failed to record prompt tag settings audit event");
+            }
+            Json(saved).into_response()
+        }
+        Ok(None) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error":"Tag settings changed. Reload them before saving."})),
+        )
+            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
 async fn export_query_jsonl(
     State(state): State<AppState>,
     Json(payload): Json<storage::StructuredQuery>,
 ) -> Response {
-    match storage::run_structured_query(&state.pool, payload).await {
+    match state.query_executor.run(payload).await {
         Ok(value) => structured_query_jsonl_response(value),
         Err(error) => structured_query_error(error),
     }
@@ -804,13 +867,70 @@ fn api_error(status: StatusCode, error: anyhow::Error) -> Response {
     (status, Json(json!({"error": error.to_string()}))).into_response()
 }
 
+#[derive(serde::Serialize)]
+struct QueryErrorResponse {
+    error: String,
+    code: QueryErrorCode,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum QueryErrorCode {
+    #[serde(rename = "query_invalid")]
+    Invalid,
+    #[serde(rename = "query_failed")]
+    Failed,
+    #[serde(rename = "query_capacity_exhausted")]
+    CapacityExhausted,
+    #[serde(rename = "query_dependency_unavailable")]
+    DependencyUnavailable,
+    #[serde(rename = "query_timeout")]
+    Timeout,
+    #[serde(rename = "query_response_too_large")]
+    ResponseTooLarge,
+}
+
 fn structured_query_error(error: storage::StructuredQueryError) -> Response {
-    match error {
-        storage::StructuredQueryError::Invalid(message) => bad_request(message),
-        storage::StructuredQueryError::Execution(error) => {
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, error)
+    use storage::StructuredQueryError as Error;
+    let (status, code, message) = match error {
+        Error::Invalid(message) => (StatusCode::BAD_REQUEST, QueryErrorCode::Invalid, message),
+        Error::Execution(_source) => {
+            tracing::error!("structured query execution failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                QueryErrorCode::Failed,
+                "internal server error".to_owned(),
+            )
         }
-    }
+        Error::Busy => (
+            StatusCode::TOO_MANY_REQUESTS,
+            QueryErrorCode::CapacityExhausted,
+            "Query capacity exhausted".to_owned(),
+        ),
+        Error::Unavailable => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            QueryErrorCode::DependencyUnavailable,
+            "Query dependency unavailable".to_owned(),
+        ),
+        Error::Timeout => (
+            StatusCode::GATEWAY_TIMEOUT,
+            QueryErrorCode::Timeout,
+            "Query deadline exceeded".to_owned(),
+        ),
+        Error::ResponseTooLarge => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            QueryErrorCode::ResponseTooLarge,
+            "Query response byte budget exceeded".to_owned(),
+        ),
+    };
+    (
+        status,
+        Json(QueryErrorResponse {
+            error: message,
+            code,
+        }),
+    )
+        .into_response()
 }
 
 fn structured_query_jsonl_response(value: Value) -> Response {
@@ -818,12 +938,34 @@ fn structured_query_jsonl_response(value: Value) -> Response {
         .get("dataset")
         .and_then(Value::as_str)
         .unwrap_or("query");
-    export_rows(
+    let mut response = export_rows(
         &value,
         "rows",
         &format!("llmtrace-{dataset}.jsonl"),
         "llmtrace-query.jsonl",
-    )
+    );
+    for (name, data) in [
+        (
+            "x-llmtrace-query-has-more",
+            value.pointer("/page/has_more").map(Value::to_string),
+        ),
+        (
+            "x-llmtrace-query-coverage",
+            value
+                .pointer("/search/coverage")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        ),
+        (
+            "x-llmtrace-query-index-version",
+            value.pointer("/search/index_version").map(Value::to_string),
+        ),
+    ] {
+        if let Some(data) = data.and_then(|data| HeaderValue::from_str(&data).ok()) {
+            response.headers_mut().insert(name, data);
+        }
+    }
+    response
 }
 
 fn request_list_jsonl_response(value: Value) -> Response {
@@ -1130,6 +1272,7 @@ fn config_summary(config: &Config) -> Value {
             "segment_uncompressed_bytes": config.archive.segment_uncompressed_bytes,
             "compression_level": config.archive.compression_level,
         },
+        "note_index": config.note_index,
         "storage": {
             "max_connections": config.storage.max_connections,
             "acquire_timeout_secs": config.storage.acquire_timeout_secs,
@@ -1426,7 +1569,10 @@ mod tests {
 
         let body = response_body_json(response).await;
 
-        assert_eq!(body, json!({"error": "unknown query dataset secret_table"}));
+        assert_eq!(
+            body,
+            json!({"error": "unknown query dataset secret_table", "code":"query_invalid"})
+        );
     }
 
     #[tokio::test]
@@ -1438,7 +1584,10 @@ mod tests {
 
         let body = response_body_json(response).await;
 
-        assert_eq!(body, json!({"error": "internal server error"}));
+        assert_eq!(
+            body,
+            json!({"error": "internal server error", "code":"query_failed"})
+        );
     }
 
     #[tokio::test]
@@ -1512,6 +1661,7 @@ mod tests {
             },
             redaction: Default::default(),
             pricing: Default::default(),
+            note_index: Default::default(),
             plugins: vec![PluginConfig {
                 name: "classifier".to_string(),
                 wasm_path: "/secret/plugin/classifier.wasm".into(),

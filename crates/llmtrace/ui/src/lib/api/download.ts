@@ -25,9 +25,9 @@ async function runExport(
 	method: 'GET' | 'POST',
 	path: string,
 	fallbackName: string,
-	options: { params?: QueryParams; body?: unknown } = {}
+	options: { params?: QueryParams; body?: unknown; signal?: AbortSignal; onQueryMetadata?: (metadata: QueryExportMetadata) => void } = {}
 ): Promise<number> {
-	const init: RequestInit = { method, credentials: 'same-origin' };
+	const init: RequestInit = { method, credentials: 'same-origin', signal: options.signal };
 	if (options.body !== undefined) {
 		init.headers = { 'content-type': 'application/json' };
 		init.body = JSON.stringify(options.body);
@@ -52,9 +52,16 @@ async function runExport(
 		fallbackName
 	);
 	const blob = await response.blob();
+	options.signal?.throwIfAborted();
+	options.onQueryMetadata?.({ rows: Number.isNaN(rows) ? 0 : rows,
+		has_more: response.headers.get('x-llmtrace-query-has-more') === 'true',
+		coverage: response.headers.get('x-llmtrace-query-coverage'),
+		index_version: response.headers.get('x-llmtrace-query-index-version') });
 	triggerDownload(blob, filename);
 	return Number.isNaN(rows) ? 0 : rows;
 }
+
+export interface QueryExportMetadata { rows: number; has_more: boolean; coverage: string | null; index_version: string | null }
 
 export const exportJsonl = {
 	requests: (params?: QueryParams) =>
@@ -75,6 +82,9 @@ export const exportJsonl = {
 		),
 	auditEvents: (params?: QueryParams) =>
 		runExport('GET', '/audit-events/export.jsonl', 'llmtrace-audit-events.jsonl', { params }),
-	query: (body: unknown) =>
-		runExport('POST', '/query/export.jsonl', 'llmtrace-query.jsonl', { body })
+	query: async (body: unknown, signal?: AbortSignal): Promise<QueryExportMetadata> => {
+		let metadata: QueryExportMetadata = { rows: 0, has_more: false, coverage: null, index_version: null };
+		await runExport('POST', '/query/export.jsonl', 'llmtrace-query.jsonl', { body, signal, onQueryMetadata: (value) => metadata = value });
+		return metadata;
+	}
 };

@@ -11,6 +11,7 @@ export default defineConfig({
 		// Component tests mount the SPA in jsdom using Svelte's browser runtime.
 		conditions: ['browser'],
 		alias: {
+			'$app/paths': fileURLToPath(new URL('./src/testkit/app-paths.ts', import.meta.url)),
 			$lib: fileURLToPath(new URL('./src/lib', import.meta.url))
 		}
 	},

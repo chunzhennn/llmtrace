@@ -2,7 +2,8 @@ import { expect, it } from 'vitest';
 import requestFixture from './fixtures/request-detail.json';
 import sessionFixture from './fixtures/session-detail.json';
 import messageFixture from './fixtures/session-message.json';
-import type { BodyStatus, RequestDetail, SessionDetail, SessionMessage } from './types';
+import queryFixture from './fixtures/prompt-note-query.json';
+import type { BodyStatus, RequestDetail, SessionDetail, SessionMessage, StructuredQueryResult } from './types';
 
 function bodyStatus(value: unknown): BodyStatus | null {
 	if (value === null || value === 'available' || value === 'missing' || value === 'unreadable') return value;
@@ -22,4 +23,11 @@ it('accepts the same request and session contracts as the Rust serializers', () 
 	expect(request).toEqual(requestFixture);
 	expect(session).toEqual(sessionFixture);
 	expect(message).toEqual(messageFixture);
+});
+
+it('accepts the real Rust NOTE query page and coverage contract', () => {
+	const { scope, coverage } = queryFixture.search;
+	if (scope !== 'captured_request_prompt_notes' || (coverage !== 'complete' && coverage !== 'partial' && coverage !== 'unknown')) throw new Error('Invalid NOTE coverage fixture');
+	const result: StructuredQueryResult = { ...queryFixture, search: { ...queryFixture.search, scope, coverage } };
+	expect(result).toEqual(queryFixture);
 });

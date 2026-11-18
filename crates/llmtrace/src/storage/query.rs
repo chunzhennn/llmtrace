@@ -1,12 +1,18 @@
 //! Allowlisted structured queries and schema discovery.
 use super::*;
+mod execution;
+mod session_note_filter;
+
+pub(crate) use execution::QueryExecutor;
+#[cfg(test)]
+pub(super) use execution::{ExplainPlanMode, explain};
 
 pub(super) const MAX_STRUCTURED_QUERY_FIELDS: usize = 64;
 pub(super) const MAX_STRUCTURED_QUERY_FILTERS: usize = 32;
 pub(super) const MAX_STRUCTURED_QUERY_ORDER_BY: usize = 8;
 pub(super) const MAX_STRUCTURED_QUERY_STRING_VALUE_BYTES: usize = 4 * 1024;
 pub(super) const MAX_STRUCTURED_QUERY_JSON_VALUE_BYTES: usize = 16 * 1024;
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StructuredQuery {
     pub dataset: String,
     pub fields: Option<Vec<String>>,
@@ -15,6 +21,8 @@ pub struct StructuredQuery {
     #[serde(default)]
     pub order_by: Vec<QueryOrder>,
     pub limit: Option<i64>,
+    pub cursor: Option<String>,
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -23,6 +31,14 @@ pub enum StructuredQueryError {
     Invalid(String),
     #[error(transparent)]
     Execution(#[from] anyhow::Error),
+    #[error("query capacity exhausted")]
+    Busy,
+    #[error("query dependency unavailable")]
+    Unavailable,
+    #[error("query deadline exceeded")]
+    Timeout,
+    #[error("query response byte budget exceeded")]
+    ResponseTooLarge,
 }
 
 impl StructuredQueryError {
@@ -31,25 +47,39 @@ impl StructuredQueryError {
     }
 
     fn execution(error: impl Into<anyhow::Error>) -> Self {
-        Self::Execution(error.into())
+        let error = error.into();
+        // Helpers can add context before reaching the query boundary. Classify
+        // the underlying SQLx error here as well as direct execution failures.
+        match error.downcast_ref::<sqlx::Error>() {
+            Some(
+                sqlx::Error::PoolTimedOut
+                | sqlx::Error::PoolClosed
+                | sqlx::Error::Io(_)
+                | sqlx::Error::Tls(_),
+            ) => Self::Unavailable,
+            Some(sqlx::Error::Database(source)) if source.code().as_deref() == Some("57014") => {
+                Self::Timeout
+            }
+            _ => Self::Execution(error),
+        }
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct QueryFilter {
     pub field: String,
     pub op: QueryOp,
     pub value: Option<Value>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct QueryOrder {
     pub field: String,
     #[serde(default)]
     pub direction: SortDirection,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryOp {
     Eq,
@@ -63,7 +93,7 @@ pub enum QueryOp {
     IsNotNull,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SortDirection {
     Asc,
@@ -198,6 +228,7 @@ impl QueryField {
 
 pub fn structured_query_schema() -> Value {
     json!({
+        "execution_budget": execution::budget(),
         "limits": {
             "max_fields": MAX_STRUCTURED_QUERY_FIELDS,
             "max_filters": MAX_STRUCTURED_QUERY_FILTERS,
@@ -218,6 +249,7 @@ pub fn structured_query_schema() -> Value {
         },
         "datasets": DATASETS
             .iter()
+            .filter(|dataset| dataset.name != "prompt_notes")
             .map(dataset_schema)
             .collect::<Vec<_>>(),
     })
@@ -235,8 +267,15 @@ pub(super) fn dataset_schema(dataset: &DatasetSpec) -> Value {
         "fields": dataset
             .fields
             .iter()
+            .filter(|f| dataset.name != "prompt_tags" || f.name != "note_value")
             .map(field_schema)
             .collect::<Vec<_>>(),
+        "related_filter_fields": if dataset.name == "sessions" { session_note_filter::schema() } else { json!([]) },
+        "cursor_orders": match dataset.name {
+            "sessions" => json!([[{"field":"last_seen", "direction":"desc"}]]),
+            "prompt_notes" | "prompt_tags" => json!([[{"field":"observed_at", "direction":"desc"}]]),
+            _ => json!([]),
+        },
     })
 }
 
@@ -328,7 +367,72 @@ static ROLLUP_FIELDS: &[FieldSpec] = &[
     field("ttft_sum_ms", Some(FilterKind::Int)),
 ];
 
+static PROMPT_NOTE_FIELDS: &[FieldSpec] = &[
+    field("id", Some(FilterKind::Uuid)),
+    field("request_id", Some(FilterKind::Uuid)),
+    field("session_id", Some(FilterKind::Uuid)),
+    field("observed_at", Some(FilterKind::Timestamp)),
+    field("role", Some(FilterKind::Text)),
+    field("source_path", Some(FilterKind::Text)),
+    field("source_kind", Some(FilterKind::Text)),
+    field("note_value", Some(FilterKind::Text)),
+    field("tag_value", Some(FilterKind::Text)),
+    field("tag_name", Some(FilterKind::Text)),
+    field("index_version", Some(FilterKind::Int)),
+    field("model", Some(FilterKind::Text)),
+    field("request_kind", Some(FilterKind::Text)),
+    field("api_key_hash", Some(FilterKind::Text)),
+    field("user_id", Some(FilterKind::Text)),
+    field("user_name", Some(FilterKind::Text)),
+    field("capture_complete", Some(FilterKind::Bool)),
+    field("external_history", Some(FilterKind::Bool)),
+    field("index_state", Some(FilterKind::Text)),
+];
+
 static DATASETS: &[DatasetSpec] = &[
+    DatasetSpec {
+        name: "prompt_tags",
+        relation: "trace_prompt_tags",
+        fields: PROMPT_NOTE_FIELDS,
+        default_fields: &[
+            "id",
+            "request_id",
+            "session_id",
+            "observed_at",
+            "role",
+            "tag_name",
+            "tag_value",
+            "source_path",
+            "index_version",
+            "capture_complete",
+            "index_state",
+        ],
+        default_order: &[DefaultOrder {
+            field: "observed_at",
+            direction: SortDirection::Desc,
+        }],
+    },
+    DatasetSpec {
+        name: "prompt_notes",
+        relation: "trace_prompt_notes",
+        fields: PROMPT_NOTE_FIELDS,
+        default_fields: &[
+            "id",
+            "request_id",
+            "session_id",
+            "observed_at",
+            "role",
+            "note_value",
+            "source_path",
+            "index_version",
+            "capture_complete",
+            "index_state",
+        ],
+        default_order: &[DefaultOrder {
+            field: "observed_at",
+            direction: SortDirection::Desc,
+        }],
+    },
     DatasetSpec {
         name: "requests",
         relation: "trace_requests",
@@ -412,73 +516,7 @@ pub async fn run_structured_query(
     pool: &PgPool,
     request: StructuredQuery,
 ) -> Result<Value, StructuredQueryError> {
-    let dataset = dataset_spec(&request.dataset).map_err(StructuredQueryError::invalid)?;
-    let selected = selected_fields(dataset, request.fields.as_deref())
-        .map_err(StructuredQueryError::invalid)?;
-    let order_by =
-        selected_order(dataset, &request.order_by).map_err(StructuredQueryError::invalid)?;
-    validate_structured_query_filters(&request.filters).map_err(StructuredQueryError::invalid)?;
-    let limit = request.limit.unwrap_or(100).clamp(1, 500);
-
-    let mut builder = QueryBuilder::<Postgres>::new(
-        "SELECT COALESCE(jsonb_agg(to_jsonb(q)), '[]'::jsonb) AS rows FROM (SELECT ",
-    );
-
-    for (index, field) in selected.iter().enumerate() {
-        if index > 0 {
-            builder.push(", ");
-        }
-        field.append_sql(&mut builder);
-        builder.push(" AS ");
-        append_identifier(&mut builder, field.name());
-    }
-
-    builder.push(" FROM ").push(dataset.relation);
-
-    if !request.filters.is_empty() {
-        builder.push(" WHERE ");
-        for (index, filter) in request.filters.iter().enumerate() {
-            if index > 0 {
-                builder.push(" AND ");
-            }
-            append_filter(&mut builder, dataset, filter).map_err(StructuredQueryError::invalid)?;
-        }
-    }
-
-    if !order_by.is_empty() {
-        builder.push(" ORDER BY ");
-        for (index, (field, direction)) in order_by.iter().enumerate() {
-            if index > 0 {
-                builder.push(", ");
-            }
-            field.append_sql(&mut builder);
-            builder.push(match direction {
-                SortDirection::Asc => " ASC",
-                SortDirection::Desc => " DESC",
-            });
-        }
-    }
-
-    builder.push(" LIMIT ");
-    builder.push_bind(limit);
-    builder.push(") q");
-
-    let mut tx = begin_api_read_tx(pool)
-        .await
-        .map_err(StructuredQueryError::execution)?;
-    let rows: Value = builder
-        .build_query_scalar()
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(StructuredQueryError::execution)?;
-    tx.commit().await.map_err(StructuredQueryError::execution)?;
-
-    Ok(json!({
-        "dataset": dataset.name,
-        "fields": selected.iter().map(|field| field.name()).collect::<Vec<_>>(),
-        "rows": rows,
-        "limit": limit,
-    }))
+    execution::run(pool, request).await
 }
 
 pub(super) fn dataset_spec(name: &str) -> anyhow::Result<&'static DatasetSpec> {
@@ -624,11 +662,6 @@ pub(super) fn valid_plugin_metadata_path_segment(segment: &str) -> bool {
         && segment
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-}
-
-pub(super) fn append_identifier(builder: &mut QueryBuilder<'_, Postgres>, name: &str) {
-    debug_assert!(!name.contains('"'));
-    builder.push("\"").push(name).push("\"");
 }
 
 pub(super) fn append_filter(
@@ -835,10 +868,11 @@ pub(super) fn append_text_array_filter(
     let value = value_as_string(field.name(), value)?;
     match op {
         QueryOp::Contains => {
-            builder.push_bind(value);
-            builder.push(" = ANY(");
             field.append_sql(builder);
-            builder.push(")");
+            builder
+                .push(" @> ARRAY[")
+                .push_bind(value)
+                .push("]::text[]");
             Ok(())
         }
         _ => anyhow::bail!(
@@ -874,6 +908,10 @@ pub(super) fn value_as_string(field: &str, value: &Value) -> anyhow::Result<Stri
             MAX_STRUCTURED_QUERY_STRING_VALUE_BYTES
         );
     }
+    anyhow::ensure!(
+        !value.contains('\0'),
+        "field {field} string value must not contain NUL"
+    );
     Ok(value)
 }
 
@@ -885,7 +923,22 @@ pub(super) fn validate_json_filter_value_size(field: &str, value: &Value) -> any
             MAX_STRUCTURED_QUERY_JSON_VALUE_BYTES
         );
     }
+    anyhow::ensure!(
+        !json_has_nul(value),
+        "field {field} JSON value must not contain NUL"
+    );
     Ok(())
+}
+
+fn json_has_nul(value: &Value) -> bool {
+    match value {
+        Value::String(value) => value.contains('\0'),
+        Value::Array(items) => items.iter().any(json_has_nul),
+        Value::Object(fields) => fields
+            .iter()
+            .any(|(key, value)| key.contains('\0') || json_has_nul(value)),
+        _ => false,
+    }
 }
 
 pub(super) fn value_as_i64(field: &str, value: &Value) -> anyhow::Result<i64> {

@@ -16,6 +16,7 @@ use crate::trace::TraceRecorder;
 pub struct AppState {
     pub config: Arc<Config>,
     pub pool: PgPool,
+    pub query_executor: Arc<crate::storage::QueryExecutor>,
     pub http: Client,
     pub plugins: Arc<PluginManager>,
     pub traces: TraceRecorder,
@@ -55,6 +56,7 @@ impl AppState {
 
         Ok(Self {
             config: Arc::new(config),
+            query_executor: Arc::new(crate::storage::QueryExecutor::new(&pool)),
             pool,
             http,
             plugins,

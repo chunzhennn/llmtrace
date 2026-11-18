@@ -74,6 +74,22 @@ pub(super) async fn maintain_archive(
     config: &StorageConfig,
     archive: &ArchiveConfig,
 ) -> anyhow::Result<u64> {
+    let mut dictionary_tx = pool.begin().await?;
+    sqlx::query("SET LOCAL statement_timeout = '5s'")
+        .execute(&mut *dictionary_tx)
+        .await?;
+    match super::message_contents::collect_unused(
+        &mut dictionary_tx,
+        config.retention_prune_batch_size,
+    )
+    .await
+    {
+        Ok(_) => dictionary_tx.commit().await?,
+        Err(error) => {
+            tracing::warn!(%error, "message dictionary GC deferred");
+            dictionary_tx.rollback().await?;
+        }
+    }
     let deadline = Instant::now() + MAINTENANCE_TIME_BUDGET;
     let mut deleted = 0;
     loop {

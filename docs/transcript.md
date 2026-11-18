@@ -113,3 +113,18 @@ migration does not guess from message length or decompress all archives. In
 particular, an exact 16 KiB complete message must not be mislabeled just because
 another message in its request was shortened. This flag is available on session
 messages, export previews and the allowlisted `messages` query dataset.
+
+
+## Storage normalization and prompt tag navigation
+
+The preview content dictionary does not change transcript reconstruction: the
+worker still reads the retained original bytes through full session export.
+Repeated context, branches, tool calls, outputs and non-text limitations keep the
+rules above. Normalizing a preview or clearing its inline column does not merge
+requests or remove repeated raw capture history.
+
+Session prompt tag search and the Query page link to this transcript and the source
+request. Tag source context is loaded separately on demand from the same original
+archive; its decoded text spans are returned as strings for Unicode-safe display.
+Search coverage and preview truncation do not prove that uncaptured provider
+history or unsupported payloads lack configured markers. See [tag search](query-editor.md#request-prompt-tag-search).

@@ -1,5 +1,5 @@
 use std::fmt::Write;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
@@ -29,6 +29,9 @@ struct RuntimeMetricsInner {
     trace_build_failures: AtomicU64,
     trace_persist_failures: AtomicU64,
     traces_persisted: AtomicU64,
+    note_index_published: AtomicU64,
+    note_index_failures: AtomicU64,
+    note_index_running: AtomicBool,
 
     plugin_cache_hits: AtomicU64,
     plugin_cache_misses: AtomicU64,
@@ -69,6 +72,21 @@ impl TraceQueueMetrics {
 }
 
 impl RuntimeMetrics {
+    pub(crate) fn note_index_running(&self, running: bool) {
+        self.inner
+            .note_index_running
+            .store(running, Ordering::Relaxed);
+    }
+    pub(crate) fn note_index_published(&self) {
+        self.inner
+            .note_index_published
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn note_index_failed(&self) {
+        self.inner
+            .note_index_failures
+            .fetch_add(1, Ordering::Relaxed);
+    }
     pub fn journal_written(&self) {
         self.inner.journal_written.fetch_add(1, Ordering::Relaxed);
     }
@@ -196,6 +214,11 @@ impl RuntimeMetrics {
             .clone();
 
         json!({
+            "note_index": {
+                "running": self.inner.note_index_running.load(Ordering::Relaxed),
+                "published": self.inner.note_index_published.load(Ordering::Relaxed),
+                "failures": self.inner.note_index_failures.load(Ordering::Relaxed),
+            },
             "trace_pipeline": {
                 "enqueued": self.inner.traces_enqueued.load(Ordering::Relaxed),
                 "persisted": self.inner.traces_persisted.load(Ordering::Relaxed),
@@ -268,6 +291,27 @@ impl RuntimeMetrics {
         let counters = self.counters();
         let retention = self.retention_snapshot();
         let mut output = String::new();
+        push_metric(
+            &mut output,
+            "gauge",
+            "llmtrace_note_index_running",
+            "Whether the derived prompt tag scheduler is running.",
+            u64::from(self.inner.note_index_running.load(Ordering::Relaxed)),
+        );
+        push_metric(
+            &mut output,
+            "counter",
+            "llmtrace_note_index_published_total",
+            "Derived prompt tag jobs published.",
+            self.inner.note_index_published.load(Ordering::Relaxed),
+        );
+        push_metric(
+            &mut output,
+            "counter",
+            "llmtrace_note_index_failures_total",
+            "Derived prompt tag worker failures.",
+            self.inner.note_index_failures.load(Ordering::Relaxed),
+        );
         push_metric(
             &mut output,
             "counter",

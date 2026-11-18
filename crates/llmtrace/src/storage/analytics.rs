@@ -929,6 +929,8 @@ pub async fn data_integrity(pool: &PgPool, since_hours: Option<i64>) -> anyhow::
         .fetch_one(&mut *tx)
         .await?;
 
+    let message_dictionary = super::message_migration::verification_snapshot(&mut tx).await?;
+
     tx.commit().await?;
 
     let mismatched_bucket_count = rollup_summary.get::<i64, _>("mismatched_bucket_count");
@@ -979,6 +981,8 @@ pub async fn data_integrity(pool: &PgPool, since_hours: Option<i64>) -> anyhow::
             "message_missing_session_count": message_missing_session_count,
             "empty_session_count": relationships.get::<i64, _>("empty_session_count"),
         },
+        "message_dictionary": message_dictionary,
+        "message_dictionary_scope": "last_explicit_migration_verification_not_current_exact_counts",
     }))
 }
 

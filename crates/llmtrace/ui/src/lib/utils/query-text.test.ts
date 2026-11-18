@@ -158,3 +158,26 @@ describe('query completion', () => {
 		expect(labels('SELECT id FROM sessions WHERE |')).not.toContain('plugin_metadata.');
 	});
 });
+
+it('limits tag fields to WHERE and completes only the server-allowed operators', () => {
+	const notesSchema: QuerySchema = { ...schema, datasets: schema.datasets.map(d => d.name !== 'sessions' ? d : { ...d, related_filter_fields: [
+		{ name: 'prompt_tag.value', filter_kind: 'text', operators: ['eq', 'contains', 'is_not_null'] },
+		{ name: 'prompt_tag.role', filter_kind: 'text', operators: ['eq'] }
+	] }) };
+	const code = `SELECT * FROM sessions WHERE "prompt_tag.value" = '' AND "prompt_tag.role" = 'tool'`;
+	const request = parseQueryText(code, notesSchema);
+	expect(request.fields).not.toContain('prompt_tag.value');
+	expect(request.filters).toEqual([{ field: 'prompt_tag.value', op: 'eq', value: '' }, { field: 'prompt_tag.role', op: 'eq', value: 'tool' }]);
+	expect(parseQueryText(formatQueryText(request, notesSchema), notesSchema)).toEqual(request);
+	for (const code of [
+		`SELECT "prompt_tag.value" FROM sessions`,
+		`SELECT * FROM sessions ORDER BY "prompt_tag.role"`,
+		`SELECT * FROM sessions WHERE "prompt_tag.value" IS NULL`
+	]) expect(() => parseQueryText(code, notesSchema)).toThrow();
+	const where = 'SELECT * FROM sessions WHERE ';
+	expect(querySuggestions(where, where.length, notesSchema).options.map(o => o.label)).toContain('prompt_tag.value');
+	const select = 'SELECT  FROM sessions';
+	expect(querySuggestions(select, 7, notesSchema).options.map(o => o.label)).not.toContain('prompt_tag.value');
+	const operators = 'SELECT * FROM sessions WHERE "prompt_tag.role" ';
+	expect(querySuggestions(operators, operators.length, notesSchema).options.map(o => o.label)).toEqual(['=']);
+});

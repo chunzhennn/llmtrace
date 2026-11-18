@@ -7,6 +7,7 @@ mod metrics;
 mod parsers;
 mod plugins;
 mod pricing;
+mod prompt_tags;
 mod proxy;
 mod redaction;
 mod routing;
@@ -49,11 +50,40 @@ struct Args {
     #[arg(short, long, env = "LLMTRACE_CONFIG")]
     config: Option<PathBuf>,
 
-    #[arg(long, conflicts_with = "migrate_only")]
+    #[arg(long, conflicts_with_all = ["migrate_only", "message_maintenance", "note_maintenance"])]
     check_config: bool,
 
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["message_maintenance", "note_maintenance"])]
     migrate_only: bool,
+
+    /// Run one bounded message migration batch and exit (requires explicit config).
+    #[arg(long, value_enum, requires = "config")]
+    message_maintenance: Option<storage::message_migration::MessageMaintenanceAction>,
+
+    #[arg(
+        long,
+        value_enum,
+        requires = "config",
+        conflicts_with = "message_maintenance"
+    )]
+    note_maintenance: Option<storage::note_index::NoteMaintenanceAction>,
+
+    #[arg(long, default_value_t = 1, requires = "note_maintenance")]
+    note_version: i32,
+
+    #[arg(long, default_value_t = 100, requires = "note_maintenance")]
+    note_batch_size: i64,
+
+    #[arg(long, default_value_t = 1000, requires = "message_maintenance")]
+    message_batch_size: i64,
+
+    /// Confirm all writers are upgraded and the documented rollout gates passed.
+    #[arg(long, requires = "message_maintenance")]
+    acknowledge_migration_gates: bool,
+
+    /// Stop allocating migration batches at this database size (bytes).
+    #[arg(long, requires = "message_maintenance")]
+    max_database_bytes: Option<i64>,
 }
 
 #[tokio::main]
@@ -85,6 +115,42 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if let Some(action) = args.message_maintenance {
+        use storage::message_migration::MessageMaintenanceAction;
+        if matches!(
+            action,
+            MessageMaintenanceAction::Backfill | MessageMaintenanceAction::RestoreInline
+        ) {
+            let max_bytes = args.max_database_bytes.context("allocating migration batches require --max-database-bytes and a database/WAL free-space check")?;
+            anyhow::ensure!(max_bytes > 0, "max database bytes must be positive");
+            let bytes: i64 =
+                sqlx::query_scalar("SELECT pg_database_size(current_database())::bigint")
+                    .fetch_one(&pool)
+                    .await?;
+            anyhow::ensure!(
+                bytes < max_bytes,
+                "database size stop threshold reached; migration paused"
+            );
+        }
+        let result = storage::message_migration::run(
+            &pool,
+            action,
+            args.message_batch_size,
+            args.acknowledge_migration_gates,
+        )
+        .await?;
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
+    if let Some(action) = args.note_maintenance {
+        let version = prompt_tags::NoteIndexVersion::try_from(args.note_version)
+            .map_err(anyhow::Error::msg)?;
+        let result =
+            storage::note_index::maintain(&pool, action, version, args.note_batch_size).await?;
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
+
     let runtime_metrics = RuntimeMetrics::default();
     let retention_pruner = storage::spawn_retention_pruner(
         pool.clone(),
@@ -109,8 +175,30 @@ async fn main() -> anyhow::Result<()> {
         &config.storage,
         runtime_metrics.clone(),
     )?;
+    let index_pool = if config.note_index.enabled {
+        let mut index_storage = config.storage.clone();
+        index_storage.max_connections = config.note_index.max_connections;
+        index_storage.acquire_timeout_secs = 2;
+        Some(
+            storage::connect(&index_storage)
+                .await
+                .context("failed to create separate prompt tag index pool")?,
+        )
+    } else {
+        None
+    };
     let state = AppState::new(config.clone(), pool, plugins, recorder, runtime_metrics)
         .context("failed to initialize app state")?;
+    let note_index_worker = index_pool
+        .map(|pool| {
+            storage::note_index::NoteIndexWorker::try_new(
+                pool,
+                config.archive.clone(),
+                config.note_index.clone(),
+                state.runtime_metrics.clone(),
+            )
+        })
+        .transpose()?;
     let server_result = serve_routers(&config, &state).await;
 
     if let Some(handle) = retention_pruner {
@@ -123,6 +211,12 @@ async fn main() -> anyhow::Result<()> {
     // Drop every recorder handle so the pipeline observes a closed channel, then drain it.
     drop(state);
     pipeline.drain().await;
+    if let Some(worker) = note_index_worker {
+        let shutdown = worker.shutdown().await?;
+        tracing::info!(report = %serde_json::to_string(&shutdown)?, "prompt tag index shutdown state");
+        let report = shutdown.finish().await?;
+        tracing::info!(report = %serde_json::to_string(&report)?, "prompt tag index worker stopped");
+    }
     tracing::info!("shutdown complete");
     server_result
 }

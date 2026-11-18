@@ -7,6 +7,7 @@
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import DataTable, { type Column } from '$lib/components/DataTable.svelte';
 	import Pagination from '$lib/components/Pagination.svelte';
+	import PromptTagSearch from '$lib/components/PromptTagSearch.svelte';
 	import { createResource } from '$lib/utils/resource.svelte';
 	import * as sessionsApi from '$lib/api/endpoints/sessions';
 	import type { Paginated, SessionSummary } from '$lib/api/types';
@@ -14,6 +15,7 @@
 	import type { QueryParams } from '$lib/api/client';
 
 	const DEFAULT_LIMIT = 50;
+	let tagSearch = $state(false);
 
 	function currentParams(): QueryParams {
 		const sp = page.url.searchParams;
@@ -66,6 +68,11 @@
 <svelte:head><title>Sessions · llmtrace</title></svelte:head>
 
 <PageHeader title="Sessions" description="Grouped conversations and their captured requests." />
+
+<button class="btn mb-4" onclick={() => tagSearch = !tagSearch}>{tagSearch ? 'Close prompt tag filter' : 'Filter by prompt tag'}</button>
+{#if tagSearch}<PromptTagSearch />{/if}
+
+{#if !tagSearch}
 
 <form onsubmit={submitSearch} class="card mb-4 flex flex-wrap items-center gap-2 p-3">
 	<input
@@ -120,4 +127,5 @@
 		hasMore={list.data.page.has_more}
 		onChange={setOffset}
 	/>
+{/if}
 {/if}

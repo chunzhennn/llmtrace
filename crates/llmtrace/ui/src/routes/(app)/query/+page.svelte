@@ -10,7 +10,8 @@
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import XIcon from '@lucide/svelte/icons/x';
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
+	import { base } from '$app/paths';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import Card from '$lib/components/Card.svelte';
 	import Spinner from '$lib/components/Spinner.svelte';
@@ -19,6 +20,8 @@
 	import Badge from '$lib/components/Badge.svelte';
 	import Tabs from '$lib/components/Tabs.svelte';
 	import QueryCodeEditor from '$lib/components/QueryCodeEditor.svelte';
+	import NoteCoverage from '$lib/components/NoteCoverage.svelte';
+	import NoteContext from '$lib/components/NoteContext.svelte';
 	import { createResource } from '$lib/utils/resource.svelte';
 	import { ApiError } from '$lib/api/client';
 	import * as queryApi from '$lib/api/endpoints/query';
@@ -33,8 +36,9 @@
 		StructuredQueryRequest,
 		StructuredQueryResult
 	} from '$lib/api/types';
-	import { coerceFilterValue, valueInputKind, opNeedsValue, displayCell } from '$lib/utils/query';
-	import { formatQueryText, parseQueryText, queryErrorMessage, queryField } from '$lib/utils/query-text';
+	import { coerceFilterValue, valueInputKind, opNeedsValue, displayCell, safeJsonNumbers } from '$lib/utils/query';
+	import { formatQueryText, parseQueryText, queryErrorMessage, queryField, validatedQuery } from '$lib/utils/query-text';
+	import { mergeQueryPage } from '$lib/utils/prompt-tags';
 
 	interface FilterRow {
 		id: number;
@@ -75,12 +79,17 @@
 	let running = $state(false);
 	let result = $state<StructuredQueryResult | undefined>();
 	let runError = $state<string | null>(null);
+	let lastRequest = $state<StructuredQueryRequest>();
+	let resultSignature = $state('');
+	let controller: AbortController | undefined;
+	let requestSeq = 0;
+	let activeSignature = '';
 
 	const currentDataset = $derived<DatasetSpec | undefined>(
 		schema.data?.datasets.find((d) => d.name === dataset)
 	);
 	const filterableFields = $derived<FieldSpec[]>(
-		(currentDataset?.fields ?? []).filter((f) => f.filter_kind && f.operators.length > 0)
+		[...(currentDataset?.fields ?? []), ...(currentDataset?.related_filter_fields ?? [])].filter((f) => f.filter_kind && f.operators.length > 0)
 	);
 	const supportsPluginMetadata = $derived(schema.data?.plugin_metadata.dataset === dataset);
 	const maxFields = $derived(schema.data?.limits.max_fields ?? 50);
@@ -110,6 +119,7 @@
 	}
 
 	onMount(() => { void schema.load(); });
+	onDestroy(() => { controller?.abort(); requestSeq++; });
 	$effect(() => {
 		const data = schema.data;
 		if (data && !dataset) {
@@ -151,20 +161,23 @@
 	function fieldSpec(name: string): FieldSpec | undefined {
 		return currentDataset?.fields.find((f) => f.name === name);
 	}
+	function filterSpec(name: string): FieldSpec | undefined {
+		return filterableFields.find((f) => f.name === name);
+	}
 
 	function rowKind(row: FilterRow): string | null {
 		if (row.custom) return schema.data?.plugin_metadata.filter_kind ?? 'json_path';
-		return fieldSpec(row.field)?.filter_kind ?? null;
+		return filterSpec(row.field)?.filter_kind ?? null;
 	}
 	function rowOperators(row: FilterRow): QueryOp[] {
 		if (row.custom) return schema.data?.plugin_metadata.operators ?? ['eq', 'ne', 'contains'];
-		return fieldSpec(row.field)?.operators ?? [];
+		return filterSpec(row.field)?.operators ?? [];
 	}
 
 	function addFilter(field: string) {
 		if (filters.length >= maxFilters) return;
 		const custom = field === '__plugin__';
-		const spec = fieldSpec(field);
+		const spec = filterSpec(field);
 		filters = [
 			...filters,
 			{
@@ -180,7 +193,7 @@
 		filters = filters.filter((f) => f.id !== id);
 	}
 	function onFilterFieldChange(row: FilterRow, name: string) {
-		const spec = fieldSpec(name);
+		const spec = filterSpec(name);
 		if (rowKind(row) !== spec?.filter_kind) row.value = spec?.filter_kind === 'bool' ? 'true' : '';
 		row.field = name;
 		if (spec && !spec.operators.includes(row.op)) {
@@ -229,7 +242,8 @@
 			order_by: outOrder.length ? outOrder : undefined,
 			limit
 		};
-		return { request };
+		try { return { request: schema.data ? validatedQuery(request, schema.data) : request }; }
+		catch (error) { return { error: error instanceof Error ? error.message : 'Invalid query.' }; }
 	}
 
 	function buildRequest(): { request?: StructuredQueryRequest; error?: string } {
@@ -257,10 +271,10 @@
 			selectedFields = [...(request.fields ?? spec.default_fields)];
 			columnSearch = '';
 			filters = (request.filters ?? []).map((f) => {
-				const kind = queryField(schema.data!, spec, f.field)?.filter_kind;
+				const kind = queryField(schema.data!, spec, f.field, 'filter')?.filter_kind;
 				return {
 					id: nextId(), field: f.field, op: f.op,
-					custom: !spec.fields.some((field) => field.name === f.field),
+					custom: f.field.startsWith(schema.data!.plugin_metadata.field_prefix),
 					value: f.value === undefined ? '' : kind === 'json' || kind === 'json_path'
 						? JSON.stringify(f.value) : String(f.value)
 				};
@@ -322,35 +336,71 @@
 		return built.request ? formatQueryText(built.request, schema.data) : '';
 	});
 
-	async function run() {
-		if (running) return;
-		const { request, error } = buildRequest();
-		if (error || !request) {
-			runError = error ?? 'Invalid query.';
-			return;
-		}
+	const querySignature = $derived(JSON.stringify(buildRequest().request ?? { invalid: mode === 'code' ? code : builderSignature() }));
+	const previousResult = $derived(!!result && (resultSignature !== querySignature || runError !== null));
+	$effect(() => {
+		const signature = querySignature;
+		if (controller && signature !== activeSignature) cancel();
+	});
+
+	function cancel() {
+		controller?.abort();
+		controller = undefined;
+		requestSeq++;
+		running = false;
+	}
+
+	async function execute(request: StructuredQueryRequest, append = false) {
+		cancel();
+		controller = new AbortController();
+		const signal = controller.signal;
+		const seq = ++requestSeq;
+		activeSignature = querySignature;
 		running = true;
 		runError = null;
 		try {
-			result = await queryApi.runQuery(request);
+			const next = await queryApi.runQuery(request, signal);
+			if (seq !== requestSeq || signal.aborted) return;
+			result = append && result ? mergeQueryPage(result, next) : next;
+			lastRequest = { ...request, cursor: undefined, offset: undefined };
+			resultSignature = activeSignature;
 		} catch (err) {
-			runError = err instanceof ApiError || err instanceof Error ? err.message : 'Query failed.';
+			if (seq === requestSeq && !signal.aborted) runError = err instanceof ApiError || err instanceof Error ? err.message : 'Query failed.';
 		} finally {
-			running = false;
+			if (seq === requestSeq) { running = false; controller = undefined; }
 		}
 	}
 
-	async function exportResults() {
+	async function run() {
+		if (running) return;
 		const { request, error } = buildRequest();
-		if (error || !request) {
-			toasts.error(error ?? 'Invalid query.');
-			return;
-		}
+		if (error || !request) { runError = error ?? 'Invalid query.'; return; }
+		await execute(request);
+	}
+
+	async function loadMore() {
+		if (running || previousResult || !lastRequest || !result?.page?.next_cursor) return;
+		await execute({ ...lastRequest, cursor: result.page.next_cursor }, true);
+	}
+
+	async function exportResults() {
+		if (running) return;
+		const { request, error } = buildRequest();
+		if (error || !request) { toasts.error(error ?? 'Invalid query.'); return; }
+		cancel();
+		controller = new AbortController();
+		const signal = controller.signal;
+		const seq = ++requestSeq;
+		activeSignature = querySignature;
+		running = true;
 		try {
-			const rows = await exportJsonl.query(request);
-			toasts.success(`Exported ${rows} row${rows === 1 ? '' : 's'}.`);
+			const metadata = await exportJsonl.query(request, signal);
+			if (seq !== requestSeq || signal.aborted) return;
+			toasts.success(`Exported this limited result: ${metadata.rows} rows.${metadata.has_more ? ' More rows exist.' : ''}${metadata.coverage ? ` Tag coverage: ${metadata.coverage}, index v${metadata.index_version}.` : ''}`);
 		} catch (err) {
-			toasts.error(err instanceof Error ? err.message : 'Export failed.');
+			if (seq === requestSeq && !signal.aborted) toasts.error(err instanceof Error ? err.message : 'Export failed.');
+		} finally {
+			if (seq === requestSeq) { running = false; controller = undefined; }
 		}
 	}
 
@@ -377,6 +427,7 @@
 					{/if}
 				</div>
 				<div class="flex items-center gap-2">
+					{#if running}<button type="button" class="btn" onclick={cancel}>Cancel</button>{/if}
 					<button type="button" class="btn" onclick={exportResults} disabled={running}>
 						<DownloadIcon size={15} /> Export
 					</button>
@@ -551,6 +602,10 @@
 				{#snippet actions()}
 					{#if result}<Badge tone="neutral">{result.dataset}</Badge>{/if}
 				{/snippet}
+				{#if previousResult}<p class="border-b border-border p-3 text-sm" role="status">Previous query results. Run the current conditions to refresh.</p>{/if}
+				{#if lastRequest && previousResult}<details class="p-3 text-xs"><summary>Previous query conditions</summary><pre class="whitespace-pre-wrap">{JSON.stringify(lastRequest, null, 2)}</pre></details>{/if}
+				{#if result?.search}<NoteCoverage search={result.search} />{/if}
+				{#if result && !safeJsonNumbers(result.rows)}<p class="p-3 text-danger" role="alert">Some numeric results exceed JavaScript's safe integer range and cannot be displayed precisely. Cursor IDs remain opaque.</p>{/if}
 				{#if running}
 					<div class="p-6"><Spinner label="Running query…" /></div>
 				{:else if !result}
@@ -565,24 +620,34 @@
 									{#each result.fields as col (col)}
 										<th class="text-fg-muted px-3 py-2 font-medium whitespace-nowrap">{col}</th>
 									{/each}
+									{#if ['prompt_tags', 'prompt_notes'].includes(result.dataset)}<th class="px-3 py-2">Source</th>{/if}
 								</tr>
 							</thead>
 							<tbody>
-								{#each result.rows as r, i (i)}
+								{#each result.rows as r, i (result.page?.row_ids?.[i] ?? (typeof r.id === 'string' ? r.id : i))}
 									<tr style="border-bottom: 1px solid var(--color-border);">
 										{#each result.fields as col (col)}
 											<td class="max-w-[24rem] truncate px-3 py-2 font-mono text-xs" title={displayCell(r[col])}>
 												{#if r[col] === null || r[col] === undefined}
 													<span class="text-fg-muted">—</span>
 												{:else}
-													{displayCell(r[col])}
+													{#if typeof r[col] === 'string' && (col === 'request_id' || col === 'session_id' || (col === 'id' && ['sessions', 'requests'].includes(result.dataset)))}
+														<a class="text-brand hover:underline" href={`${base}/${col === 'session_id' || result.dataset === 'sessions' ? 'sessions' : 'requests'}/${r[col]}`}>{displayCell(r[col])}</a>
+													{:else}{displayCell(r[col])}{/if}
 												{/if}
 											</td>
 										{/each}
+										{#if ['prompt_tags', 'prompt_notes'].includes(result.dataset)}<td class="px-3 py-2 text-xs">{#if typeof r.id === 'string'}<NoteContext id={r.id} />{/if}{#if typeof r.session_id === 'string'}<a class="text-brand" href={`${base}/sessions/${r.session_id}/transcript`}>Open transcript</a>{/if}</td>{/if}
 									</tr>
 								{/each}
 							</tbody>
 						</table>
+					</div>
+				{/if}
+				{#if result?.page?.has_more}
+					<div class="border-t border-border p-3 text-sm">
+						{#if result.page.next_cursor}<button type="button" class="btn" onclick={loadMore} disabled={running || previousResult}>Load more</button>
+						{:else}<p>More rows exist. Narrow the query or use an advertised cursor sort to continue.</p>{/if}
 					</div>
 				{/if}
 			</Card>

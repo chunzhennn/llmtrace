@@ -125,10 +125,41 @@ pub struct SessionMessage {
     pub id: i64,
     pub request_id: Uuid,
     /// None for legacy previews whose individual truncation status was not recorded.
-    pub content_truncated: Option<bool>,
+    #[sqlx(try_from = "Option<bool>")]
+    pub content_truncated: PreviewCompleteness,
     pub role: String,
     pub content: String,
     pub created_at: DateTime<Utc>,
+}
+
+/// An old NULL preview status is unknown, never an inferred complete message.
+/// Serialization deliberately preserves the existing nullable boolean wire shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "Option<bool>", into = "Option<bool>")]
+pub enum PreviewCompleteness {
+    Complete,
+    Truncated,
+    UnknownLegacy,
+}
+
+impl From<Option<bool>> for PreviewCompleteness {
+    fn from(value: Option<bool>) -> Self {
+        match value {
+            Some(false) => Self::Complete,
+            Some(true) => Self::Truncated,
+            None => Self::UnknownLegacy,
+        }
+    }
+}
+
+impl From<PreviewCompleteness> for Option<bool> {
+    fn from(value: PreviewCompleteness) -> Self {
+        match value {
+            PreviewCompleteness::Complete => Some(false),
+            PreviewCompleteness::Truncated => Some(true),
+            PreviewCompleteness::UnknownLegacy => None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
